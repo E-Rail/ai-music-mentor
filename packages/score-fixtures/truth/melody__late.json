@@ -1,0 +1,13 @@
+{
+  "scoreId": "melody",
+  "sample": "late",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "melody:RH:m7:b1:1",
+      "errorType": "early_late",
+      "expectedDeviation": "+200ms",
+      "severity": "medium"
+    }
+  ]
+}

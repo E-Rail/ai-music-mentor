@@ -1,0 +1,14 @@
+{
+  "scoreId": "melody",
+  "sample": "extra_note",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": null,
+      "errorType": "extra_note",
+      "measureNo": 3,
+      "expectedDeviation": "inserted pitch 79",
+      "severity": "medium"
+    }
+  ]
+}

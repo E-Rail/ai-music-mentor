@@ -1,0 +1,13 @@
+{
+  "scoreId": "chords",
+  "sample": "wrong_pitch",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "chords:RH:m4:b0:0",
+      "errorType": "wrong_pitch",
+      "expectedDeviation": "+1 semitone",
+      "severity": "high"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "scoreId": "pattern",
+  "sample": "local_drag",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": null,
+      "errorType": "tempo_instability",
+      "measureNo": 5,
+      "expectedDeviation": "measures 5-6 ritardando 15%",
+      "severity": "medium"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "scoreId": "pattern",
+  "sample": "missed_note",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "pattern:RH:m6:b0:0",
+      "errorType": "missed_note",
+      "expectedDeviation": "deleted",
+      "severity": "high"
+    }
+  ]
+}

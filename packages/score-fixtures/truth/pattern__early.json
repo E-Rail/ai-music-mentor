@@ -1,0 +1,13 @@
+{
+  "scoreId": "pattern",
+  "sample": "early",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "pattern:RH:m5:b1:2",
+      "errorType": "early_late",
+      "expectedDeviation": "-180ms",
+      "severity": "medium"
+    }
+  ]
+}

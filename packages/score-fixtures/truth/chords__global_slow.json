@@ -1,0 +1,13 @@
+{
+  "scoreId": "chords",
+  "sample": "global_slow",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": null,
+      "errorType": "tempo_instability",
+      "expectedDeviation": "global -12%",
+      "severity": "medium"
+    }
+  ]
+}

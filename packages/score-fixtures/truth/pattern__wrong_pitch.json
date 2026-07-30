@@ -1,0 +1,13 @@
+{
+  "scoreId": "pattern",
+  "sample": "wrong_pitch",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "pattern:RH:m4:b0_5:1",
+      "errorType": "wrong_pitch",
+      "expectedDeviation": "+1 semitone",
+      "severity": "high"
+    }
+  ]
+}

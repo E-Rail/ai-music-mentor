@@ -1,0 +1,65 @@
+[
+  {
+    "scoreId": "melody",
+    "title": "晨光练习曲（单旋律）",
+    "musicxml": "scores/melody.musicxml",
+    "standardMidi": "midi/melody__standard.mid",
+    "tempo": 96.0,
+    "measureCount": 8,
+    "eventCount": 32,
+    "samples": [
+      "wrong_pitch",
+      "missed_note",
+      "extra_note",
+      "early",
+      "late",
+      "global_slow",
+      "local_drag",
+      "chord_desync",
+      "human_1",
+      "human_2"
+    ]
+  },
+  {
+    "scoreId": "chords",
+    "title": "和声之路（双手和弦）",
+    "musicxml": "scores/chords.musicxml",
+    "standardMidi": "midi/chords__standard.mid",
+    "tempo": 84.0,
+    "measureCount": 8,
+    "eventCount": 32,
+    "samples": [
+      "wrong_pitch",
+      "missed_note",
+      "extra_note",
+      "early",
+      "late",
+      "global_slow",
+      "local_drag",
+      "chord_desync",
+      "human_1",
+      "human_2"
+    ]
+  },
+  {
+    "scoreId": "pattern",
+    "title": "流动之音（连续音型）",
+    "musicxml": "scores/pattern.musicxml",
+    "standardMidi": "midi/pattern__standard.mid",
+    "tempo": 112.0,
+    "measureCount": 8,
+    "eventCount": 64,
+    "samples": [
+      "wrong_pitch",
+      "missed_note",
+      "extra_note",
+      "early",
+      "late",
+      "global_slow",
+      "local_drag",
+      "chord_desync",
+      "human_1",
+      "human_2"
+    ]
+  }
+]

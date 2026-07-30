@@ -1,0 +1,13 @@
+{
+  "scoreId": "melody",
+  "sample": "chord_desync",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "melody:RH:m2:b0:0",
+      "errorType": "early_late",
+      "expectedDeviation": "+130ms one chord tone",
+      "severity": "low"
+    }
+  ]
+}

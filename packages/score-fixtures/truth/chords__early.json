@@ -1,0 +1,13 @@
+{
+  "scoreId": "chords",
+  "sample": "early",
+  "human": false,
+  "groundTruth": [
+    {
+      "eventId": "chords:RH:m5:b0:0",
+      "errorType": "early_late",
+      "expectedDeviation": "-180ms",
+      "severity": "medium"
+    }
+  ]
+}

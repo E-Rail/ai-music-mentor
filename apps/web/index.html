@@ -4,9 +4,57 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI 音乐导师 · 技术 Demo</title>
+    <style>
+      .boot-message {
+        box-sizing: border-box;
+        width: min(680px, calc(100% - 32px));
+        margin: 12vh auto 0;
+        padding: 28px;
+        color: #e7e9ee;
+        background: #151922;
+        border: 1px solid #2d3442;
+        border-radius: 16px;
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .boot-message h1 { margin: 0 0 10px; font-size: 26px; }
+      .boot-message p { margin: 8px 0; color: #adb5c5; }
+      .boot-message code { display: block; margin: 16px 0; padding: 12px; overflow-x: auto; color: #d9e5ff; background: #0d1017; border-radius: 8px; }
+      .boot-message a { color: #8ab4ff; }
+      body { margin: 0; min-height: 100vh; background: #0c0f14; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main id="boot-message" class="boot-message" role="status">
+        <h1>AI 音乐导师</h1>
+        <p id="boot-status">正在启动应用…</p>
+        <div id="direct-file-help" hidden>
+          <p>这个 index.html 需要前端编译器和分析服务，不能像普通网页一样直接双击运行。</p>
+          <p>请在项目根目录运行对应系统的启动器：</p>
+          <code>bash launch.sh</code>
+          <code>powershell -ExecutionPolicy Bypass -File .\launch.ps1</code>
+          <p>服务启动后，访问 <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>。</p>
+        </div>
+      </main>
+    </div>
+    <script>
+      (() => {
+        const bootMessage = document.getElementById('boot-message')
+        const status = document.getElementById('boot-status')
+        const help = document.getElementById('direct-file-help')
+        if (location.protocol === 'file:') {
+          status.textContent = '此文件不能直接打开。'
+          help.hidden = false
+          return
+        }
+        window.setTimeout(() => {
+          if (bootMessage?.isConnected) {
+            status.textContent = '应用脚本未能启动。请检查本地服务是否完整运行后刷新页面。'
+            help.hidden = false
+          }
+        }, 5000)
+      })()
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

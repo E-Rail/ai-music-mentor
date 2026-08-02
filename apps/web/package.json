@@ -2,11 +2,14 @@
   "name": "ai-music-mentor-web",
   "private": true,
   "version": "1.0.0",
+  "packageManager": "pnpm@10.12.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@tonejs/midi": "^2.0.28",
@@ -19,7 +22,9 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "@playwright/test": "^1.54.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "vite": "^5.4.10",
+    "vitest": "^3.2.4"
   }
 }

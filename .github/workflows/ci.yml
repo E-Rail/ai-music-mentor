@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+      - run: python -m pip install -r apps/api/requirements.txt
+      - name: Migrate schema
+        working-directory: apps/api
+        run: alembic upgrade head
+      - name: API, importer, mentor, and algorithm regression
+        run: python -m pytest tests -q
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      - name: State-machine tests
+        working-directory: apps/web
+        run: pnpm test
+      - name: Production build
+        working-directory: apps/web
+        run: pnpm build
+      - name: Install Chromium
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Mocked Web MIDI browser flow
+        working-directory: apps/web
+        run: pnpm test:e2e

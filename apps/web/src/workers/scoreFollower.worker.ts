@@ -5,27 +5,28 @@
 // - 速度：最近 4–8 个高置信匹配点鲁棒线性估计 + 指数平滑
 // - 连续 3 个低置信 → 冻结光标、扩大搜索窗口，高置信后重锁定
 
-interface ScoreEventLite {
-  eventId: string
+interface IncomingOnset {
+  onsetId: string
   measureNo: number
   onsetBeat: number
   pitches: number[]
-  optional: boolean
 }
 
 interface Candidate {
   k: number           // 下一个待匹配的乐谱 onset 下标
   cost: number        // 累计代价
   anchors: { beat: number; ms: number }[]
+  lastMatchIdx: number | null
+  observationConfidence: number
 }
 
 interface OnsetLite {
   idx: number
+  onsetId: string
   measureNo: number
   onsetBeat: number
   absBeat: number
   pitches: number[]
-  optional: boolean
 }
 
 const BEAM = 8
@@ -65,23 +66,15 @@ function estimateTempo(anchors: { beat: number; ms: number }[]): number {
   return deltas[Math.floor(deltas.length / 2)]
 }
 
-function clusterOnsets(events: ScoreEventLite[]): OnsetLite[] {
-  const map = new Map<string, OnsetLite>()
-  for (const e of events) {
-    const key = `${e.measureNo}:${e.onsetBeat}`
-    const cur = map.get(key)
-    if (cur) {
-      cur.pitches = [...new Set([...cur.pitches, ...e.pitches])].sort((a, b) => a - b)
-      cur.optional = cur.optional && e.optional
-    } else {
-      map.set(key, {
-        idx: 0, measureNo: e.measureNo, onsetBeat: e.onsetBeat,
-        absBeat: (e.measureNo - 1) * beatsPerMeasure + e.onsetBeat,
-        pitches: [...e.pitches], optional: e.optional,
-      })
-    }
-  }
-  const out = [...map.values()].sort((a, b) => a.absBeat - b.absBeat)
+function normalizeOnsets(incoming: IncomingOnset[]): OnsetLite[] {
+  const out = incoming.map((onset) => ({
+    idx: 0,
+    onsetId: onset.onsetId,
+    measureNo: onset.measureNo,
+    onsetBeat: onset.onsetBeat,
+    absBeat: (onset.measureNo - 1) * beatsPerMeasure + onset.onsetBeat,
+    pitches: [...new Set(onset.pitches)].sort((a, b) => a - b),
+  })).sort((a, b) => a.absBeat - b.absBeat)
   out.forEach((o, i) => { o.idx = i })
   return out
 }
@@ -91,8 +84,11 @@ self.onmessage = (ev: MessageEvent) => {
   if (msg.type === 'init') {
     beatsPerMeasure = msg.beatsPerMeasure
     nominalBpm = msg.bpm
-    onsets = clusterOnsets(msg.scoreEvents)
-    candidates = [{ k: 0, cost: 0, anchors: [] }]
+    onsets = normalizeOnsets(msg.onsets ?? [])
+    candidates = [{
+      k: 0, cost: 0, anchors: [], lastMatchIdx: null,
+      observationConfidence: 0,
+    }]
     lowConfStreak = 0
     frozen = false
     lastPos = null
@@ -100,7 +96,10 @@ self.onmessage = (ev: MessageEvent) => {
     return
   }
   if (msg.type === 'reset') {
-    candidates = [{ k: 0, cost: 0, anchors: [] }]
+    candidates = [{
+      k: 0, cost: 0, anchors: [], lastMatchIdx: null,
+      observationConfidence: 0,
+    }]
     lowConfStreak = 0
     frozen = false
     lastPos = null
@@ -108,9 +107,9 @@ self.onmessage = (ev: MessageEvent) => {
   }
   if (msg.type !== 'group' || !onsets.length) return
 
-  const groupPitches: number[] = msg.pitches
-  const tOnMs: number = msg.tOnMs
-  const spbDefault = 60 / nominalBpm
+  const group = msg.group ?? msg
+  const groupPitches: number[] = group.pitches
+  const tOnMs: number = group.tOnMs
 
   const next: Candidate[] = []
   for (const cand of candidates) {
@@ -135,34 +134,60 @@ self.onmessage = (ev: MessageEvent) => {
       const residNorm = cand.anchors.length
         ? Math.min(1, Math.abs(tOnMs - expectedMs) / Math.max(0.5 * spb * 1000, 150))
         : 0
-      const cost = 0.65 * dist + 0.25 * residNorm + 0.10 * 0
-      const conf = 1 - cost
-      if (!bestMatch || cost < bestMatch.cost) bestMatch = { k: j, cost, conf }
+      const matchCost = 0.65 * dist + 0.25 * residNorm + 0.10 * 0
+      const skipped = Math.max(0, j - cand.k)
+      // 冻结后降低远距离跳转惩罚，使高置信音高能真正重新锁定。
+      const skippedCost = frozen
+        ? Math.min(skipped, 8) * 0.08
+        : skipped * 0.65
+      const transitionCost = matchCost + skippedCost
+      const conf = 1 - matchCost
+      if (!bestMatch || transitionCost < bestMatch.cost) {
+        bestMatch = { k: j, cost: transitionCost, conf }
+      }
     }
 
     // match 转移
-    if (bestMatch && bestMatch.cost < 0.9) {
+    if (bestMatch && bestMatch.conf >= 0.35) {
       const o = onsets[bestMatch.k]
-      const anchors = [...cand.anchors]
+      const anchors = cand.anchors.slice(-7)
       if (bestMatch.conf >= 0.6) anchors.push({ beat: o.absBeat, ms: tOnMs })
-      next.push({ k: bestMatch.k + 1, cost: cand.cost + bestMatch.cost, anchors })
+      next.push({
+        k: bestMatch.k + 1,
+        cost: cand.cost + bestMatch.cost,
+        anchors,
+        lastMatchIdx: bestMatch.k,
+        observationConfidence: bestMatch.conf,
+      })
     }
     // skip 转移（漏音/跳过乐谱事件）
     if (cand.k < onsets.length) {
-      next.push({ k: cand.k + 1, cost: cand.cost + 1.0, anchors: [...cand.anchors] })
+      next.push({
+        k: cand.k + 1, cost: cand.cost + 1.0, anchors: cand.anchors.slice(-8),
+        lastMatchIdx: cand.lastMatchIdx, observationConfidence: 0.3,
+      })
     }
     // insert 转移（多弹了一个事件，位置不动）
-    next.push({ k: cand.k, cost: cand.cost + 0.8, anchors: [...cand.anchors] })
+    next.push({
+      k: cand.k, cost: cand.cost + 0.8, anchors: cand.anchors.slice(-8),
+      lastMatchIdx: cand.lastMatchIdx, observationConfidence: 0.35,
+    })
   }
 
   next.sort((a, b) => a.cost - b.cost)
   candidates = next.slice(0, BEAM)
+  const minimumCost = candidates[0].cost
+  for (const candidate of candidates) candidate.cost -= minimumCost
   const best = candidates[0]
-  const posIdx = Math.min(best.k, onsets.length - 1)
-  const matchedSomething = best.k > (lastPos?.idx ?? 0) || best.anchors.length > 0
-  const conf = best.anchors.length ? 0.85 : 0.4
+  const posIdx = Math.min(
+    Math.max(best.lastMatchIdx ?? (lastPos?.idx ?? 0), 0),
+    onsets.length - 1,
+  )
+  const matchedSomething = best.lastMatchIdx !== null &&
+    (lastPos === null || best.lastMatchIdx !== lastPos.idx)
+  const conf = best.observationConfidence
 
-  if (matchedSomething && best.anchors.length >= 1) {
+  if (matchedSomething && conf >= 0.6) {
     lowConfStreak = 0
     frozen = false
   } else {
@@ -178,6 +203,7 @@ self.onmessage = (ev: MessageEvent) => {
   self.postMessage({
     type: 'position',
     onsetIdx: posIdx,
+    onsetId: o.onsetId,
     measureNo: o.measureNo,
     onsetBeat: o.onsetBeat,
     bpm: Math.round(smoothedBpm * 10) / 10,

@@ -7,6 +7,7 @@
 // - 70ms 和弦窗口聚合（方案 5.3）
 
 import type { PerformanceEvent } from '../../types'
+import { t } from '../../i18n/messages'
 
 export interface MidiGroup {
   id: string
@@ -19,17 +20,35 @@ export interface MidiGroup {
 
 export type GroupHandler = (g: MidiGroup) => void
 export type StateHandler = (state: string) => void
-export type LiveNoteHandler = (pitch: number, velocity: number, on: boolean) => void
+export type LiveNoteHandler = (pitch: number, velocity: number, on: boolean, receivedTimeMs: number) => void
+export type BatchHandler = (
+  sessionId: string, batchId: string, sequence: number, events: PerformanceEvent[]
+) => Promise<unknown>
+export interface InputHealth {
+  duplicateMessages: number
+  jitterMs: number | null
+  tapCount: number
+}
+export type HealthHandler = (health: InputHealth) => void
 
 const NOTE_ON = 0x90
 const NOTE_OFF = 0x80
 const CONTROL_CHANGE = 0xb0
 const CHORD_WINDOW_MS = 70
 
+interface ActiveNote {
+  id: string
+  tOn: number
+  receivedTimeMs: number
+  velocity: number
+  pitch: number
+  channel: number
+}
+
 export class MidiCapture {
   private access: MIDIAccess | null = null
   private input: MIDIInput | null = null
-  private active = new Map<string, { tOn: number; velocity: number; pitch: number; channel: number }>()
+  private active = new Map<string, ActiveNote[]>()
   private chordBuffer: { pitch: number; tOn: number; velocity: number; id: string }[] = []
   private flushTimer: number | null = null
   private events: PerformanceEvent[] = []
@@ -38,18 +57,38 @@ export class MidiCapture {
   private groupSeq = 0
   private persistTimer: number | null = null
   private sessionKey = ''
+  private capturing = false
+  private acknowledgedEventIds = new Set<string>()
+  private remoteBatch: { id: string; sequence: number; events: PerformanceEvent[] } | null = null
+  private remoteSequence = 0
+  private mirrorPromise: Promise<void> | null = null
+  private duplicateMessages = 0
+  private tapTimes: number[] = []
+  private lastRawMessage: { signature: string; time: number } | null = null
 
   onGroup: GroupHandler | null = null
   onStateChange: StateHandler | null = null
   onLiveNote: LiveNoteHandler | null = null
+  onBatch: BatchHandler | null = null
+  onHealth: HealthHandler | null = null
+  onDeviceLost: ((name: string) => void) | null = null
 
   async requestAccess(): Promise<string[]> {
     if (!navigator.requestMIDIAccess) {
-      throw Object.assign(new Error('当前浏览器不支持 Web MIDI，请使用 Chromium 系浏览器'), { code: 'MIDI_UNSUPPORTED' })
+      throw Object.assign(new Error(t('midiUnsupported')), { code: 'MIDI_UNSUPPORTED' })
     }
     this.access = await navigator.requestMIDIAccess({ sysex: false })
-    this.access.onstatechange = () => {
-      this.onStateChange?.('设备状态变化，请检查连接')
+    this.access.onstatechange = (event) => {
+      const port = event.port
+      if (!port) {
+        this.onStateChange?.(t('midiStateChanged'))
+        return
+      }
+      const name = port.name || port.id
+      this.onStateChange?.(`${name}：${port.state === 'connected' ? t('connected') : t('disconnected')}`)
+      if (port.state === 'disconnected' && this.input && port.id === this.input.id) {
+        this.onDeviceLost?.(name)
+      }
     }
     return this.listInputs()
   }
@@ -57,24 +96,31 @@ export class MidiCapture {
   listInputs(): string[] {
     if (!this.access) return []
     const names: string[] = []
-    this.access.inputs.forEach((i) => names.push(i.name || i.id))
+    this.access.inputs.forEach((input) => {
+      if (input.state === 'connected') names.push(input.name || input.id)
+    })
     return names
   }
 
   selectInput(name: string): boolean {
     if (!this.access) return false
     let found: MIDIInput | null = null
-    this.access.inputs.forEach((i) => {
-      if ((i.name || i.id) === name) found = i
+    this.access.inputs.forEach((input) => {
+      if (input.state === 'connected' && (input.name || input.id) === name) found = input
     })
     if (!found) return false
     if (this.input) this.input.onmidimessage = null
     this.input = found as MIDIInput
+    void this.input.open()
     ;(this.input as MIDIInput).onmidimessage = (m: MIDIMessageEvent) => this.handleMessage(m)
     return true
   }
 
   startCapture(sessionKey: string): void {
+    if (this.persistTimer) window.clearInterval(this.persistTimer)
+    if (this.flushTimer) window.clearTimeout(this.flushTimer)
+    this.persistTimer = null
+    this.flushTimer = null
     this.events = []
     this.pedals = []
     this.noteSeq = 0
@@ -82,14 +128,59 @@ export class MidiCapture {
     this.active.clear()
     this.chordBuffer = []
     this.sessionKey = sessionKey
+    this.capturing = true
+    this.acknowledgedEventIds.clear()
+    this.remoteBatch = null
+    this.remoteSequence = 0
+    this.mirrorPromise = null
+    this.duplicateMessages = 0
+    this.tapTimes = []
+    this.lastRawMessage = null
     this.persistTimer = window.setInterval(() => this.persist(), 2000)
   }
 
-  stopCapture(): PerformanceEvent[] {
+  stopCapture(options: { persist?: boolean } = {}): PerformanceEvent[] {
     if (this.persistTimer) window.clearInterval(this.persistTimer)
     this.persistTimer = null
-    this.persist()
+    if (this.flushTimer) window.clearTimeout(this.flushTimer)
+    this.flushTimer = null
+    this.flushChord()
+    const now = performance.now()
+    for (const notes of this.active.values()) {
+      for (const note of notes) {
+        this.finishNote(note, now)
+        this.onLiveNote?.(note.pitch, 0, false, now)
+      }
+    }
+    this.active.clear()
+    this.capturing = false
+    this.events.sort((a, b) => a.tOnMs - b.tOnMs || a.pitch - b.pitch)
+    if (options.persist !== false) this.persist()
     return [...this.events]
+  }
+
+  dispose(): void {
+    this.onGroup = null
+    this.onStateChange = null
+    this.onLiveNote = null
+    this.onBatch = null
+    this.onHealth = null
+    this.onDeviceLost = null
+    if (this.capturing) {
+      this.stopCapture()
+    } else {
+      if (this.persistTimer) window.clearInterval(this.persistTimer)
+      if (this.flushTimer) window.clearTimeout(this.flushTimer)
+      this.persistTimer = null
+      this.flushTimer = null
+    }
+    if (this.input) {
+      this.input.onmidimessage = null
+      void this.input.close()
+    }
+    if (this.access) this.access.onstatechange = null
+    this.input = null
+    this.access = null
   }
 
   /** 方案 10.1 MIDI 消息处理伪代码 */
@@ -102,29 +193,57 @@ export class MidiCapture {
     const d1 = data[1]
     const d2 = data[2]
     const now = performance.now()
+    const receivedTimeMs = (message as MIDIMessageEvent & { receivedTime?: number }).receivedTime || now
+    const signature = `${status}:${d1}:${d2}`
+    if (this.lastRawMessage?.signature === signature &&
+        Math.abs(receivedTimeMs - this.lastRawMessage.time) < 1) {
+      this.duplicateMessages += 1
+      this.emitHealth()
+      return
+    }
+    this.lastRawMessage = { signature, time: receivedTimeMs }
 
     if (command === NOTE_ON && d2 > 0) {
+      this.tapTimes.push(receivedTimeMs)
+      this.tapTimes = this.tapTimes.slice(-5)
+      this.emitHealth()
+      this.onLiveNote?.(d1, d2, true, receivedTimeMs)
+      if (!this.capturing) return
       this.noteSeq += 1
       const id = `pe_${this.noteSeq}`
-      this.active.set(`${channel}:${d1}`, { tOn: now, velocity: d2, pitch: d1, channel })
+      const key = `${channel}:${d1}`
+      const notes = this.active.get(key) ?? []
+      notes.push({ id, tOn: now, receivedTimeMs, velocity: d2, pitch: d1, channel })
+      this.active.set(key, notes)
       this.chordBuffer.push({ pitch: d1, tOn: now, velocity: d2, id })
-      this.onLiveNote?.(d1, d2, true)
       if (this.flushTimer) window.clearTimeout(this.flushTimer)
       this.flushTimer = window.setTimeout(() => this.flushChord(), CHORD_WINDOW_MS)
     } else if (command === NOTE_OFF || (command === NOTE_ON && d2 === 0)) {
-      const start = this.active.get(`${channel}:${d1}`)
-      if (start) {
-        this.active.delete(`${channel}:${d1}`)
-        this.events.push({
-          id: `pe_${this.events.length + 1}`, tOnMs: start.tOn, tOffMs: now,
-          pitch: d1, velocity: start.velocity, channel, source: 'web-midi',
-          pedalDown: this.isPedalDown(start.tOn),
-        })
+      if (this.capturing) {
+        const key = `${channel}:${d1}`
+        const notes = this.active.get(key)
+        const start = notes?.shift()
+        if (start) this.finishNote(start, now)
+        if (notes && notes.length === 0) this.active.delete(key)
       }
-      this.onLiveNote?.(d1, 0, false)
+      this.onLiveNote?.(d1, 0, false, receivedTimeMs)
     } else if (command === CONTROL_CHANGE && d1 === 64) {
-      this.pedals.push({ down: d2 >= 64, time: now })
+      if (this.capturing) this.pedals.push({ down: d2 >= 64, time: now })
     }
+  }
+
+  private finishNote(note: ActiveNote, tOffMs: number): void {
+    this.events.push({
+      id: note.id,
+      tOnMs: note.tOn,
+      tOffMs: Math.max(note.tOn, tOffMs),
+      pitch: note.pitch,
+      velocity: note.velocity,
+      channel: note.channel,
+      source: 'web-midi',
+      pedalDown: this.isPedalDown(note.tOn),
+      receivedTimeMs: note.receivedTimeMs,
+    })
   }
 
   private flushChord(): void {
@@ -151,8 +270,25 @@ export class MidiCapture {
     return down
   }
 
+  private emitHealth(): void {
+    const intervals = this.tapTimes.slice(1).map((time, index) => time - this.tapTimes[index])
+    const mean = intervals.length
+      ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length
+      : 0
+    const jitterMs = intervals.length >= 2
+      ? Math.sqrt(intervals.reduce((sum, value) => sum + (value - mean) ** 2, 0) / intervals.length)
+      : null
+    this.onHealth?.({
+      duplicateMessages: this.duplicateMessages,
+      jitterMs: jitterMs === null ? null : Math.round(jitterMs * 10) / 10,
+      tapCount: Math.min(this.tapTimes.length, 5),
+    })
+  }
+
   private persist(): void {
-    if (!this.sessionKey) return
+    const sessionKey = this.sessionKey
+    if (!sessionKey) return
+    const events = this.events.map((event) => ({ ...event }))
     try {
       const req = indexedDB.open('ai-music-mentor', 1)
       req.onupgradeneeded = () => {
@@ -161,9 +297,40 @@ export class MidiCapture {
       req.onsuccess = () => {
         const tx = req.result.transaction('recordings', 'readwrite')
         tx.objectStore('recordings').put(
-          { events: this.events, savedAt: Date.now() }, this.sessionKey)
+          { events, savedAt: Date.now() }, sessionKey)
       }
     } catch { /* IndexedDB 不可用时静默 */ }
+    void this.mirrorPending()
+  }
+
+  private mirrorPending(): Promise<void> {
+    if (!this.onBatch || !this.sessionKey) return Promise.resolve()
+    if (this.mirrorPromise) return this.mirrorPromise
+    if (!this.remoteBatch) {
+      const pending = this.events.filter((event) => !this.acknowledgedEventIds.has(event.id))
+      if (!pending.length) return Promise.resolve()
+      this.remoteSequence += 1
+      this.remoteBatch = {
+        id: `batch-${this.sessionKey}-${this.remoteSequence}`,
+        sequence: this.remoteSequence,
+        events: pending.map((event) => ({ ...event })),
+      }
+    }
+    const batch = this.remoteBatch
+    this.mirrorPromise = this.onBatch(this.sessionKey, batch.id, batch.sequence, batch.events)
+      .then(() => {
+        batch.events.forEach((event) => this.acknowledgedEventIds.add(event.id))
+        if (this.remoteBatch?.id === batch.id) this.remoteBatch = null
+      })
+      .catch(() => { /* retry the same idempotency key on the next local flush */ })
+      .finally(() => { this.mirrorPromise = null })
+    return this.mirrorPromise
+  }
+
+  async flushBatches(): Promise<void> {
+    this.persist()
+    await this.mirrorPending()
+    await this.mirrorPending()
   }
 
   /** 恢复未提交记录（刷新后） */
@@ -180,6 +347,24 @@ export class MidiCapture {
         }
         req.onerror = () => resolve([])
       } catch { resolve([]) }
+    })
+  }
+
+  static clearRecovery(sessionKey: string): Promise<void> {
+    if (!sessionKey) return Promise.resolve()
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('ai-music-mentor', 1)
+        req.onupgradeneeded = () => { req.result.createObjectStore('recordings') }
+        req.onsuccess = () => {
+          const tx = req.result.transaction('recordings', 'readwrite')
+          tx.objectStore('recordings').delete(sessionKey)
+          tx.oncomplete = () => resolve()
+          tx.onerror = () => resolve()
+          tx.onabort = () => resolve()
+        }
+        req.onerror = () => resolve()
+      } catch { resolve() }
     })
   }
 }

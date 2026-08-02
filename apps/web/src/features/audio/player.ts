@@ -6,6 +6,7 @@
 
 import * as Tone from 'tone'
 import { Midi } from '@tonejs/midi'
+import { t, tf } from '../../i18n/messages'
 
 let started = false
 export async function ensureAudio(): Promise<void> {
@@ -15,19 +16,26 @@ export async function ensureAudio(): Promise<void> {
   }
 }
 
-const PPQ = 480
-
 export class MidiPlayer {
   private synth: Tone.PolySynth | null = null
   private metronome: Tone.MembraneSynth | null = null
 
+  async unlock(): Promise<void> {
+    await ensureAudio()
+  }
+
   async loadMidi(url: string): Promise<Midi> {
-    return new Midi(await (await fetch(url)).arrayBuffer())
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(tf('midiLoadFailed', { status: response.status }))
+    }
+    return new Midi(await response.arrayBuffer())
   }
 
   /** 预备拍：beats 个咔哒声，返回总时长 ms */
   async countIn(beats: number, bpm: number): Promise<void> {
     await ensureAudio()
+    if (!Number.isFinite(bpm) || bpm <= 0) throw new Error(t('invalidCountInTempo'))
     this.metronome ??= new Tone.MembraneSynth().toDestination()
     const interval = 60 / bpm
     const now = Tone.now()
@@ -49,7 +57,11 @@ export class MidiPlayer {
     measuresTotal?: number
   } = {}): Promise<void> {
     await ensureAudio()
+    const notes = midi.tracks.flatMap((track) => track.notes)
+    if (!notes.length) throw new Error(t('midiHasNoPlayableNotes'))
+
     this.stop()
+    this.synth?.dispose()
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: { attack: 0.004, decay: 0.3, sustain: 0.4, release: 0.8 },
@@ -60,37 +72,37 @@ export class MidiPlayer {
     transport.cancel()
     transport.stop()
     transport.position = 0
-    const fileBpm = (midi as any).header.tempos[0]?.bpm ?? 120
+    const fileBpm = midi.header.tempos[0]?.bpm ?? 120
     transport.bpm.value = fileBpm * (opts.bpmScale ?? 1)
-    transport.PPQ = PPQ
+    transport.PPQ = midi.header.ppq
 
-    const spb = 60 / fileBpm   // 文件速度下每拍秒数
-    for (const n of (midi as any).notes as any[]) {
-      const beats = n.time / spb
+    for (const note of notes) {
       transport.scheduleOnce((time) => {
         this.synth?.triggerAttackRelease(
-          Tone.Frequency(n.midi, 'midi').toFrequency(),
-          Math.max(0.05, n.duration), time, n.velocity)
-      }, `${Math.max(0, Math.round(beats * PPQ))}i`)
+          Tone.Frequency(note.midi, 'midi').toFrequency(),
+          `${Math.max(1, note.durationTicks)}i`, time, note.velocity)
+      }, `${Math.max(0, note.ticks)}i`)
     }
     if (opts.onMeasure && opts.measuresTotal) {
       // 由调用方按小节数自行排程（伴奏模式）
     }
-    const totalBeats = (midi as any).duration / spb
     transport.scheduleOnce(() => {
+      transport.stop()
+      this.synth?.releaseAll()
       opts.onEnd?.()
-    }, `${Math.round((totalBeats + 0.5) * PPQ)}i`)
+    }, `${midi.durationTicks + Math.round(midi.header.ppq / 2)}i`)
     transport.start()
   }
 
   /** 柔性跟随：每小节结束更新下一小节 BPM（限速 ±5%，指数平滑） */
   followTempo(currentBpm: number, observedBpm: number): number {
+    if (!Number.isFinite(observedBpm) || observedBpm <= 0) return currentBpm
     const next = 0.8 * currentBpm + 0.2 * observedBpm
     return Math.min(Math.max(next, currentBpm * 0.95), currentBpm * 1.05)
   }
 
   setBpm(bpm: number): void {
-    Tone.getTransport().bpm.value = bpm
+    if (Number.isFinite(bpm) && bpm > 0) Tone.getTransport().bpm.value = bpm
   }
 
   stop(): void {

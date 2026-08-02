@@ -63,6 +63,18 @@ def _slice(bundle: ScoreBundle, measures: list[int]) -> list[ScoreEvent]:
             if e.measureNo in measures and not e.optional]
 
 
+def _as_standalone_score(events: list[ScoreEvent]) -> list[ScoreEvent]:
+    """Renumber a generated fragment so it behaves like an independent score."""
+    measure_map = {
+        source: generated
+        for generated, source in enumerate(sorted({event.measureNo for event in events}), 1)
+    }
+    return [
+        event.model_copy(update={"measureNo": measure_map[event.measureNo]})
+        for event in events
+    ]
+
+
 def _apply_rhythm_variant(events: list[ScoreEvent]) -> list[ScoreEvent]:
     """附点长-短变体：同一拍内两个八分音 → 3/4 + 1/4 拍。"""
     by_pair: dict[tuple, list[ScoreEvent]] = {}
@@ -145,14 +157,15 @@ def generate_exercise(report: DiagnosisReport,
         from app.services.generation.score_build import (
             events_to_midi, events_to_musicxml, validate_well_formed)
 
-        # MusicXML 只放一遍（循环由播放端/MIDI 体现）
-        xml_events = copy.deepcopy(fragment)
-        if not validate_well_formed(xml_events):
+        # The persisted generated score is a standalone piece numbered from
+        # measure 1. Playback repetition remains a MIDI concern.
+        practice_events = _as_standalone_score(fragment)
+        if not validate_well_formed(practice_events):
             raise ExerciseGenerationError("生成的乐谱结构不合法")
-        events_to_musicxml(xml_events, meta, tempo,
+        events_to_musicxml(practice_events, meta, tempo,
                            f"微练习 · 第 {measures[0]}-{measures[-1]} 小节",
                            xml_path)
-        events_to_midi(fragment, meta, tempo, midi_path, repeat=repeat)
+        events_to_midi(practice_events, meta, tempo, midi_path, repeat=repeat)
 
         return Exercise(
             exerciseId=exercise_id,
@@ -192,13 +205,14 @@ def _fallback(report: DiagnosisReport, bundle: ScoreBundle,
     meta = bundle.meta
     measures = select_measures(report, params.errorIds, bundle, lead_in=1)
     fragment = _slice(bundle, measures)
+    practice_events = _as_standalone_score(fragment)
     tempo = round(meta.tempo * 0.6)
     exercise_id = f"ex_{uuid.uuid4().hex[:10]}"
     xml_path = out_dir / f"{exercise_id}.musicxml"
     midi_path = out_dir / f"{exercise_id}.mid"
-    events_to_musicxml(copy.deepcopy(fragment), meta, tempo,
+    events_to_musicxml(practice_events, meta, tempo,
                        f"降级练习 · 第 {measures[0]}-{measures[-1]} 小节", xml_path)
-    events_to_midi(fragment, meta, tempo, midi_path,
+    events_to_midi(practice_events, meta, tempo, midi_path,
                    repeat=max(1, params.loopCount))
     fb_params = params.model_copy(update={"strategy": "loop"})
     return Exercise(

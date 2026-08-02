@@ -106,18 +106,18 @@ def answer_question(report: DiagnosisReport, question: str,
         if base.hypotheses:
             h = base.hypotheses[0]
             base.summary = (
-                f"从本次证据看：{base.evidence[0]['fact'] if base.evidence else '详见报告'}。"
-                f"{h['cause']}（置信度 {h['confidence']}）。"
-                f"需要说明：{h['limitation']}。")
+                f"从本次证据看：{base.evidence[0].fact if base.evidence else '详见报告'}。"
+                f"{h.cause}（置信度 {h.confidence}）。"
+                f"需要说明：{h.limitation}。")
         else:
             base.summary = "本次演奏没有足够证据指向具体原因，整体完成度较好。"
     elif any(k in q for k in ("怎么练", "如何练", "练习", "提高", "改进")):
         if base.plan:
             p = base.plan[0]
-            tempo_txt = f"，从 {p['tempo']}% 速度起步" if p.get("tempo") else ""
+            tempo_txt = f"，从 {p.tempo} BPM 起步" if p.tempo else ""
             base.summary = (
-                f"建议做「{p['label']}」练习{tempo_txt}，循环 {p['repetitions']} 次。"
-                f"达标标准：{p['successCriterion']}。"
+                f"建议做「{p.label}」练习{tempo_txt}，循环 {p.repetitions} 次。"
+                f"达标标准：{p.successCriterion}。"
                 f"当前 timing MAE 为 {m.timingMaeMs} ms，可以作为对比基线。")
     elif any(k in q for k in ("分数", "多少分", "评价", "怎么样")):
         base.summary = (

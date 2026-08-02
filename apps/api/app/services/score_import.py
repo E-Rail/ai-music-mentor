@@ -13,6 +13,7 @@ import re
 
 import music21
 
+from app import config
 from app.schemas.models import ScoreBundle, ScoreEvent, ScoreMeta
 
 
@@ -57,10 +58,22 @@ def parse_musicxml(xml_bytes: bytes, score_id: str) -> ScoreBundle:
         expanded = score
 
     meta = _extract_meta(expanded, xml_bytes, score_id)
-    if meta.measureCount > 200:
-        raise ScoreUnsupportedError(f"小节数 {meta.measureCount} 超过上限 200")
+    if meta.measureCount > config.MAX_MEASURES:
+        raise ScoreUnsupportedError(
+            f"小节数 {meta.measureCount} 超过上限 {config.MAX_MEASURES}")
 
     events = _extract_events(expanded, score_id)
+    if not events:
+        raise ScoreUnsupportedError("乐谱中没有可练习的音符")
+    note_count = sum(len(event.pitches) for event in events)
+    if note_count > config.MAX_SCORE_NOTES:
+        raise ScoreUnsupportedError(f"音符数量 {note_count} 超过上限 {config.MAX_SCORE_NOTES}")
+    max_beat = max(
+        (event.measureNo - 1) * meta.beatsPerMeasure + event.onsetBeat + event.durationBeat
+        for event in events
+    )
+    if max_beat * 60 / max(meta.tempo, 1) > config.MAX_SCORE_DURATION_SECONDS:
+        raise ScoreUnsupportedError("乐谱演奏时长超过上限")
     return ScoreBundle(meta=meta, events=events)
 
 
@@ -84,10 +97,24 @@ def _extract_meta(score: music21.stream.Score, xml_bytes: bytes, score_id: str) 
         measure_count = max(measure_count, len(p.getElementsByClass(music21.stream.Measure)))
 
     score_hash = hashlib.sha256(xml_bytes).hexdigest()[:16]
+    tempo_map = []
+    for mark in tempos:
+        if not mark.number:
+            continue
+        measure = mark.getContextByClass(music21.stream.Measure)
+        tempo_map.append({"measureNo": int(measure.measureNumber or 1) if measure else 1,
+                          "onsetBeat": float(mark.offset), "bpm": float(mark.number)})
+    meter_map = []
+    for signature in ts_list:
+        measure = signature.getContextByClass(music21.stream.Measure)
+        meter_map.append({"measureNo": int(measure.measureNumber or 1) if measure else 1,
+                          "onsetBeat": float(signature.offset),
+                          "timeSignature": signature.ratioString})
     return ScoreMeta(
         scoreId=score_id, title=title, composer=composer, tempo=bpm,
         timeSignature=ts_str, beatsPerMeasure=beats_per_measure,
-        measureCount=measure_count, parts=parts, scoreHash=score_hash,
+        measureCount=measure_count, parts=parts,
+        tempoMap=tempo_map, meterMap=meter_map, scoreHash=score_hash,
     )
 
 
@@ -101,14 +128,21 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
         for meas in measures:
             m_no = int(meas.measureNumber or 0)
             # measure 内 offset（quarterLength），转为拍
-            groups: dict[float, dict] = {}
+            groups: dict[tuple[float, int], dict] = {}
             for el in meas.recurse().notesAndRests:
                 if el.isRest:
                     continue
                 onset_q = float(el.offset)
-                if onset_q not in groups:
-                    groups[onset_q] = {"pitches": [], "dur": 0.0, "optional": False, "voice": 1}
-                g = groups[onset_q]
+                voice_context = el.getContextByClass(music21.stream.Voice)
+                try:
+                    voice = int(voice_context.id) if voice_context is not None else 1
+                except (TypeError, ValueError):
+                    voice = 1
+                key = (onset_q, voice)
+                if key not in groups:
+                    groups[key] = {"pitches": [], "dur": 0.0,
+                                   "optional": False, "voice": voice}
+                g = groups[key]
                 if el.isChord:
                     g["pitches"].extend(n.pitch.midi for n in el.notes)
                 else:
@@ -116,8 +150,8 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                 g["dur"] = max(g["dur"], float(el.duration.quarterLength))
                 if el.duration.isGrace:
                     g["optional"] = True
-            for idx, onset_q in enumerate(sorted(groups)):
-                g = groups[onset_q]
+            for idx, (onset_q, voice) in enumerate(sorted(groups)):
+                g = groups[(onset_q, voice)]
                 if not g["pitches"]:
                     continue
                 onset_token = re.sub(r"\.", "_", f"{onset_q:g}")

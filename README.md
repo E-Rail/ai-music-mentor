@@ -1,107 +1,121 @@
-# AI 音乐导师 · 技术 Demo
+# AI 音乐导师 · Production-shaped Demo v2
 
-MIDI 实时跟谱 → 错误诊断 → 微练习生成 → 自适应伴奏再次验证的完整闭环。
+面向初中级钢琴学习者的中文优先桌面 Chromium 应用：导入乐谱或 MIDI，用 USB MIDI 键盘演奏，获得可核验证据、确定性诊断、微练习、伴奏重试和前后对比。
 
-## 快速启动
+这仍是单用户 Demo，但核心边界已经按真实产品设计：版本化 API、统一导入契约、SQLAlchemy/Alembic、文件存储接口、持久化分析任务、录音双重恢复、受约束的模型解释和同源发布。
 
-### 1. 后端（FastAPI + music21）
+## 最快启动
+
+macOS 或 Linux：
 
 ```bash
+bash launch.sh
+```
+
+Windows PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launch.ps1
+```
+
+两个启动器都会构建应用、执行数据库迁移、启动服务并打开正确的网址。首次启动若缺少项目依赖，会通过 pnpm/Corepack 和本地 Python `.venv` 自动安装；之后不要求系统全局安装 pnpm。
+
+不要直接双击 `apps/web/index.html` 或 `apps/web/dist/index.html`：这个产品需要 FastAPI 分析服务，并且浏览器会阻止 `file://` 页面加载 Vite 模块。现在即使误开 index，也会显示正确的启动说明，不再是一片空白。
+
+启动后会自动打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。脚本构建前端、执行 Alembic 迁移，并由 FastAPI 同源提供页面与 `/api/v1`。关闭启动脚本所在的终端即可停止本地服务。
+
+完全隔离的一条命令：
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+开发模式：
+
+```bash
+# terminal 1
 cd apps/api
-pip install -r requirements.txt
-
-# 生成受控测试样本（3 首内置曲 + 注入错误 MIDI + ground_truth）
-python ../../packages/score-fixtures/generate_fixtures.py
-
-# 启动
+alembic upgrade head
 uvicorn app.main:app --reload --port 8000
+
+# terminal 2
+cd apps/web
+pnpm dev
 ```
 
-启动后访问 http://localhost:8000/api/health 应返回 `{"status":"ok"}`。
-内置 3 首曲目会自动注册。
+Web MIDI 需要 localhost 或 HTTPS，并建议使用当前桌面 Chromium。
 
-### 2. 前端（React + Vite）
+## 支持的输入
+
+- `.musicxml` / `.xml` / `.mxl`：保留原始精确记谱。MXL 在读取前检查文件签名、解压大小、路径穿越、链接与加密条目。
+- `.mid` / `.midi`：原始 MIDI 保留为权威播放时间线；界面显示明确标注的量化简化谱。缺失速度默认 Standard MIDI 的 120 BPM，缺失拍号默认 4/4。
+- `.pdf`：已有 `PdfOmrImporter` 接口槽，但本里程碑明确拒绝并提示下一阶段，不伪装成可靠识谱。
+
+MIDI 导入后必须复核速度、拍号、量化网格和轨道/左右手映射。简化谱不会声称拥有原始指法或声部。
+
+## 模型导师配置
+
+不配置 provider 时，应用使用确定性的中文规则导师，完整练习闭环仍可工作。接入 OpenAI-compatible provider 时，把凭据留在服务端：
 
 ```bash
-cd apps/web
-pnpm install    # 或 npm install
-pnpm dev        # 或 npm run dev
+MENTOR_API_BASE=https://openrouter.ai/api/v1
+MENTOR_API_KEY=replace-with-your-server-side-api-key
+MENTOR_MODEL=deepseek/deepseek-v4-flash-0731
+MENTOR_RESPONSE_MODE=json_schema  # json_schema | json_object | prompt_json
+MENTOR_REASONING_EFFORT=low       # OpenRouter 推理模型；为结构化导师答案保留输出预算
+MENTOR_TIMEOUT_SECONDS=15
+MENTOR_MAX_OUTPUT_TOKENS=1600
 ```
 
-访问 http://localhost:5173
+根目录的 `.env` 会被本地启动脚本间接加载；操作系统或容器中已设置的环境变量优先。
 
-> Web MIDI 需要安全上下文：localhost 或 HTTPS。建议使用 Chromium 系浏览器。
+模型只接收有限的诊断、所选错误、问题、证据和确定性练习候选。聊天请求最多携带最近 10 条、总计 6000 字符的对话上下文，浏览器把消息保存在当前设备；后端日志不保存问题正文。输出经过严格 Pydantic 校验；畸形响应重试一次，之后自动回退本地导师。日志只记录 provider、model、prompt version、response mode、耗时和回退原因，不记录凭据或原始演奏。
 
-### 3. 降级模式（无 MIDI 设备）
+练习生成支持 `aiAssist: true` 与最长 1000 字符的 `generationNote`。AI 只规划已验证的错误 ID、策略、速度比例、循环和声部；服务端再次校验这些选择，MusicXML/MIDI 仍由确定性生成器构建。模型不可用时会返回可解释的本地安全方案，而不会让训练流程中断。
 
-在「设备校准」页勾选「使用上传 MIDI 降级」，即可上传 `.mid` 文件作为演奏记录。
-`packages/score-fixtures/midi/` 下有预置的注入错误样本可供测试。
+每份生成结果都会重新进入与上传文件相同的 `ScoreImporter` 校验流程，获得独立 `practiceScoreId`、规范化事件、永久乐谱/MIDI 文件和父子谱系。它不是一次性预览：可以作为下一轮会话的正式曲目继续跟谱、伴奏、诊断、导师对话和再次生成。若本轮仍有问题，新的 AI 建议只使用本轮报告证据，形成 `诊断 → 生成曲 → 再诊断 → 新建议 → 下一首生成曲` 的循环。
 
 ## 测试
 
 ```bash
-# 后端受控样本回归（事件级 F1 ≥ 0.90）
-cd apps/api && python -m pytest ../../tests/alignment -v
+# 全部后端、导入器、模型适配器和算法回归
+python -m pytest tests -q
 
-# 端到端 API 流程（需先启动后端）
-python ../../tests/api/test_e2e_flow.py
+# 前端状态机
+cd apps/web && pnpm test
+
+# 类型与生产构建
+pnpm build
+
+# 安装一次 Chromium 后，运行 mocked Web MIDI 流程
+pnpm exec playwright install chromium
+pnpm test:e2e
 ```
 
-## 项目结构
+受控算法门槛为事件定位 F1 ≥ 0.90；当前 fixture 回归为 1.00。CI 同时运行迁移、Python 测试、Vitest、生产构建和 Playwright。
 
-```
-ai-music-mentor/
-├─ apps/
-│  ├─ web/                 # React + TypeScript 前端
-│  │  ├─ src/App.tsx       # 6 页面主控
-│  │  ├─ src/features/midi/        # Web MIDI 采集与校准
-│  │  ├─ src/features/score/       # OSMD 谱面渲染 + 错误高亮
-│  │  ├─ src/features/follower/    # 跟谱 Worker 客户端
-│  │  ├─ src/features/audio/       # Tone.js 播放
-│  │  ├─ src/workers/              # beam-search 在线跟谱
-│  │  └─ src/api/                  # 后端接口客户端
-│  └─ api/                 # FastAPI 后端
-│     ├─ app/routes/api.py         # 11 个 REST/WS 接口
-│     ├─ app/services/alignment/   # 和弦分组 / 速度估计 / onset聚类 / DP全局对齐
-│     ├─ app/services/diagnosis/   # 错误检测 / 评分 / 置信度 / 模式归因
-│     ├─ app/services/generation/  # 微练习生成 / 伴奏生成
-│     ├─ app/services/mentor/      # AI 导师（规则模板 + LLM Adapter）
-│     └─ app/schemas/models.py     # 核心数据模型
-├─ packages/
-│  ├─ score-fixtures/      # 3 首内置曲 + 受控 MIDI 样本生成器
-│  └─ shared-schema/
-├─ tests/
-│  ├─ alignment/           # 受控样本算法回归
-│  └─ api/                 # 端到端接口测试
-└─ data/                   # 运行时数据（SQLite + 乐谱/MIDI 文件）
-```
+## 关键 API
 
-## 核心算法
+所有正式路由位于 `/api/v1`；`/api` 仅作为 Demo v1 临时兼容别名。
 
-| 模块 | 实现 | 方案章节 |
-|---|---|---|
-| 和弦分组 | 70ms 窗口聚合，慢速曲上调到 100ms | 5.3 |
-| 在线跟谱 | beam search（宽度 8），窗口 [k−2,k+6]，Web Worker | 5.4 |
-| 全局对齐 | 两遍 DP：初始线性速度 → 锚点分段鲁棒速度拟合 → 精对齐 | 5.5 |
-| 错误检测 | 6+1 类：错音/漏音/多音/提前延后/时值异常/速度不稳/力度异常 | 5.6 |
-| 置信度 | 0.45×证据 + 0.35×一致性 + 0.20×特异性 | 5.7 |
-| 微练习 | 6 种确定性策略 + 降级兜底 | 5.8 |
-| 自适应伴奏 | 按小节 ±5% 限速 + 指数平滑 | 5.9 |
-| AI 导师 | 规则模板（默认）/ LLM Adapter（JSON Schema 约束 + Pydantic 校验 + 模板兜底） | 5.10 |
+- `POST /scores/import`, `PATCH /scores/{id}/normalization`
+- `GET /scores/{id}`, `GET /scores/{id}/render.musicxml`, `GET /scores/{id}/timeline.midi`
+- `POST /sessions`, `POST /sessions/{id}/event-batches`, `POST /sessions/{id}/finish`
+- `GET /analysis/{jobId}`, `GET /reports/{reportId}`
+- `POST /exercises`, `POST /accompaniments`, `POST /mentor/responses`
+- `GET /comparisons`
+- `GET /health`, `GET /readiness`
 
-## 环境变量
+`finish` 返回 HTTP 202 和持久化任务 ID。相同会话重复提交会得到同一任务/报告。
 
-```bash
-APP_ENV=development
-DATABASE_URL=sqlite:///./data/app.db
-MENTOR_PROVIDER=rules          # rules | llm
-MENTOR_API_KEY=                # 仅服务器端
-MENTOR_TIMEOUT_SECONDS=8
-```
+## 可靠性设计
 
-## 当前进度
+- 浏览器每两秒把录音写入 IndexedDB，并用稳定批次 ID 幂等镜像到后端。
+- 音频上下文由用户点击同步激活；网络请求不会抢在它前面。
+- 在线跟谱只在 Web Worker 中驱动光标与伴奏；最终评分始终离线重算。
+- USB 断开时冻结光标并保留事件，提供重新连接、提交现有录音或明确丢弃。
+- 柔性伴奏只在小节边界更新速度，跟谱置信度低于 0.60 时冻结。
+- SQLite 通过明确实体表持久化；本地 Profile 为未来所有权预留外键。上传源永久保留，废弃会话和生成物按策略清理。
 
-- ✅ 后端完整闭环，受控样本事件级 F1 = 1.000，端到端 API 测试全绿
-- ✅ 前端 6 页面 + MIDI 采集 + 跟谱 Worker + OSMD 谱面 + Tone.js 播放，TypeScript 类型检查通过，Vite 构建通过
-- ⬜ 真实 MIDI 键盘联调（需本地设备）
-- ⬜ 接入真实 LLM（设置 `MENTOR_PROVIDER=llm` + `MENTOR_API_KEY`）
+详见 [v2 架构](docs/architecture-v2.md) 与 [USB MIDI 硬件验收清单](docs/hardware-acceptance.md)。最终硬件验收仍需要真实 USB MIDI 乐器和三份代表性练习文件。

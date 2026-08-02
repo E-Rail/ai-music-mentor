@@ -10,19 +10,32 @@
 import { useEffect, useRef, useState } from 'react'
 import { OpenSheetMusicDisplay } from 'opensheetmusicdisplay'
 import type { ErrorEvent } from '../../types'
-import { ERROR_TYPE_LABEL } from '../../types'
-
-interface MeasureBox { x: number; y: number; w: number; h: number }
+import { ERROR_TYPE_LABEL, t, tf } from '../../i18n/messages'
+import {
+  buildScoreLayout, locateScorePosition, staffHintFromEventIds, type ScoreMeasureLayout,
+  type StaffHint,
+} from './scoreGeometry'
 
 interface Props {
   xmlUrl: string
   beatsPerMeasure: number
   errors?: ErrorEvent[]
-  resolvedKeys?: Set<string>           // `${type}@${measure}` 已改善
+  resolvedKeys?: Set<string>           // errorComparisonKey(error) 已改善
   cursor?: { measure: number; beat: number; frozen?: boolean; confidence?: number } | null
   selectedErrorId?: string | null
   onErrorClick?: (e: ErrorEvent) => void
   height?: number
+}
+
+export function errorComparisonKey(error: ErrorEvent): string {
+  const ids = [
+    ...(error.location.eventIds ?? []),
+    ...(error.location.eventId ? [error.location.eventId] : []),
+  ].filter(Boolean).sort()
+  const anchor = ids.length
+    ? `events:${[...new Set(ids)].join('|')}`
+    : `m:${error.location.measure}|b:${Number(error.location.beat || 0).toFixed(3)}|d:${error.detail.trim().replace(/\s+/g, ' ')}`
+  return `${error.type}@${anchor}`
 }
 
 const MARKER_STYLE: Record<string, { border: string; color: string; dashed?: boolean; hollow?: boolean }> = {
@@ -36,91 +49,99 @@ const MARKER_STYLE: Record<string, { border: string; color: string; dashed?: boo
 
 export function ScoreViewer(props: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const osmdRef = useRef<OpenSheetMusicDisplay | null>(null)
-  const [boxes, setBoxes] = useState<MeasureBox[]>([])
+  const [layout, setLayout] = useState<ScoreMeasureLayout[]>([])
   const [sheetSize, setSheetSize] = useState<{ w: number; h: number } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     async function render() {
       if (!containerRef.current) return
       setLoadError(null)
+      setLayout([])
+      setSheetSize(null)
       containerRef.current.innerHTML = ''
       const osmd = new OpenSheetMusicDisplay(containerRef.current, {
         autoResize: false, backend: 'svg', drawTitle: true, drawSubtitle: false,
         drawComposer: false, pageBackgroundColor: 'white',
       })
-      osmdRef.current = osmd
       try {
-        const text = await (await fetch(props.xmlUrl)).text()
+        const response = await fetch(props.xmlUrl, { signal: controller.signal })
+        if (!response.ok) throw new Error(tf('scoreLoadHttpFailed', { status: response.status }))
+        const text = await response.text()
+        if (cancelled) return
         await osmd.load(text)
+        if (cancelled) return
         osmd.render()
         if (cancelled) return
-        // 计算小节盒（OSMD 单位 → 百分比定位）
-        const list = (osmd as any).GraphicSheet?.MeasureList ?? []
+        // OSMD layout uses staff-space units while the VexFlow SVG uses pixels.
+        // Convert the measure and exact staff-entry anchors at this boundary.
+        const list = osmd.GraphicSheet?.MeasureList ?? []
+        const pixelsPerUnit = osmd.Drawer.calculatePixelDistance(1)
         const svg = containerRef.current.querySelector('svg')
-        const vb = svg?.getAttribute('viewBox')?.split(/\s+/).map(Number)
-        const mb: MeasureBox[] = []
-        for (let m = 0; m < list.length; m += 1) {
-          const staves = list[m] as any[]
-          if (!staves?.length) { mb.push({ x: 0, y: 0, w: 0, h: 0 }); continue }
-          let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity
-          for (const g of staves) {
-            const ps = g?.PositionAndShape
-            if (!ps) continue
-            const x = ps.AbsolutePosition?.x ?? 0
-            const y = ps.AbsolutePosition?.y ?? 0
-            const w = ps.Size?.width ?? 0
-            const h = ps.Size?.height ?? 0
-            minX = Math.min(minX, x); minY = Math.min(minY, y)
-            maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h)
-          }
-          mb.push({ x: minX, y: minY, w: maxX - minX, h: maxY - minY })
-        }
-        setBoxes(mb)
+        const vb = svg?.getAttribute('viewBox')?.split(/[\s,]+/).map(Number)
+        setLayout(buildScoreLayout(list, pixelsPerUnit))
         if (vb && vb.length === 4) setSheetSize({ w: vb[2], h: vb[3] })
       } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : '乐谱渲染失败')
+        if (!cancelled && !(e instanceof DOMException && e.name === 'AbortError')) {
+          setLoadError(e instanceof Error ? e.message : t('scoreRenderFailed'))
+        }
       }
     }
     render()
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [props.xmlUrl])
 
-  function posOf(measure: number, beat: number): { left: string; top: string; height: string; xFrac: number; yFrac: number } | null {
-    if (!sheetSize || !boxes.length) return null
-    const box = boxes[Math.min(Math.max(measure - 1, 0), boxes.length - 1)]
-    if (!box || !box.w) return null
-    const frac = Math.min(Math.max(beat / props.beatsPerMeasure, 0), 1)
-    const x = box.x + frac * box.w
-    const y = box.y
+  function posOf(measure: number, beat: number, staffHint: StaffHint, spanWholeMeasure = false): {
+    left: string; top: string; height: string
+  } | null {
+    if (!sheetSize || !layout.length) return null
+    const position = locateScorePosition(
+      layout, measure, beat, props.beatsPerMeasure, staffHint, spanWholeMeasure,
+    )
+    if (!position) return null
+    const x = Math.min(Math.max(position.x, 0), sheetSize.w)
+    const top = Math.min(Math.max(position.top, 0), sheetSize.h)
+    const height = Math.min(Math.max(position.height, 1), sheetSize.h - top)
     return {
       left: `${(x / sheetSize.w) * 100}%`,
-      top: `${(y / sheetSize.h) * 100}%`,
-      height: `${(box.h / sheetSize.h) * 100}%`,
-      xFrac: x / sheetSize.w,
-      yFrac: y / sheetSize.h,
+      top: `${(top / sheetSize.h) * 100}%`,
+      height: `${(height / sheetSize.h) * 100}%`,
     }
   }
 
   return (
     <div className="score-viewer" style={{ position: 'relative', minHeight: props.height ?? 260 }}>
       <div ref={containerRef} style={{ width: '100%', overflow: 'hidden', background: 'white', borderRadius: 8 }} />
-      {loadError && <div className="score-error">⚠️ {loadError}</div>}
+      {loadError && <div className="score-error" role="alert">⚠️ {loadError}</div>}
 
       {/* 错误标记层 */}
       {sheetSize && (props.errors ?? []).map((err) => {
-        const p = posOf(err.location.measure, err.location.beat)
+        const p = posOf(
+          err.location.measure,
+          err.location.beat,
+          staffHintFromEventIds([
+            err.location.eventId,
+            ...(err.location.eventIds ?? []),
+          ]),
+        )
         if (!p) return null
         const st = MARKER_STYLE[err.type] ?? MARKER_STYLE.wrong_pitch
-        const resolved = props.resolvedKeys?.has(`${err.type}@${err.location.measure}`)
+        const resolved = props.resolvedKeys?.has(errorComparisonKey(err))
         const selected = props.selectedErrorId === err.id
         return (
           <button
             key={err.id}
             className="score-marker"
-            title={`${ERROR_TYPE_LABEL[err.type] ?? err.type} · 第${err.location.measure}小节`}
+            data-measure={err.location.measure}
+            data-beat={err.location.beat}
+            title={`${ERROR_TYPE_LABEL[err.type] ?? err.type} · ${tf('errorPosition', {
+              measure: err.location.measure, beat: err.location.beat + 1, severity: '',
+            }).replace(/ · $/, '')}`}
+            aria-label={`${resolved ? t('improved') : ERROR_TYPE_LABEL[err.type] ?? err.type}，${tf('errorPosition', {
+              measure: err.location.measure, beat: err.location.beat + 1, severity: '',
+            }).replace(/ · $/, '')}`}
             onClick={() => props.onErrorClick?.(err)}
             style={{
               position: 'absolute', left: p.left, top: p.top, height: p.height,
@@ -135,7 +156,7 @@ export function ScoreViewer(props: Props) {
               fontSize: 10, whiteSpace: 'nowrap', padding: '1px 4px', borderRadius: 4,
               background: resolved ? '#30a46c' : st.border, color: 'white',
             }}>
-              {resolved ? '✓ 已改善' : (st.hollow ? '漏' : ERROR_TYPE_LABEL[err.type] ?? err.type)}
+              {resolved ? `✓ ${t('improved')}` : (st.hollow ? t('missing') : ERROR_TYPE_LABEL[err.type] ?? err.type)}
             </span>
           </button>
         )
@@ -143,7 +164,7 @@ export function ScoreViewer(props: Props) {
 
       {/* 跟谱光标 */}
       {sheetSize && props.cursor && (() => {
-        const p = posOf(props.cursor.measure, props.cursor.beat)
+        const p = posOf(props.cursor.measure, props.cursor.beat, null, true)
         if (!p) return null
         const lowConf = (props.cursor.confidence ?? 1) < 0.5 || props.cursor.frozen
         return (
@@ -156,7 +177,7 @@ export function ScoreViewer(props: Props) {
               <span style={{
                 position: 'absolute', top: -18, left: -30, fontSize: 10,
                 color: '#3e63dd', whiteSpace: 'nowrap',
-              }}>正在重新定位…</span>
+              }}>{t('relocking')}…</span>
             )}
           </div>
         )

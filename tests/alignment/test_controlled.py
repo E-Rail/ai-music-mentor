@@ -145,3 +145,10 @@ def test_human_samples_no_crash():
     for score_id, name, meta, report in RESULTS:
         if meta.get("human"):
             assert report.metrics.overallScore >= 0
+
+
+def test_error_details_never_expose_internal_group_ids():
+    for score_id, name, _meta, report in RESULTS:
+        for error in report.errors:
+            assert not error.detail.startswith("group:"), \
+                f"{score_id}/{name} 泄露内部诊断 ID: {error.detail}"

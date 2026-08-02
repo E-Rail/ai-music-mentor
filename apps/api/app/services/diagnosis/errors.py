@@ -265,7 +265,8 @@ def classify_errors(pairs: list[AlignmentPair],
             f"第 {near_measure} 小节附近多弹 {pitch_set_str(g.pitches)}",
             expected="（无此音）", actual=pitch_set_str(g.pitches))
         ctx.add_error(ErrorType.extra_note, near_measure, near_beat,
-                      [], Severity.medium, [ev_id], f"group:{g.id}")
+                      [], Severity.medium, [ev_id],
+                      f"实际多弹 {pitch_set_str(g.pitches)}")
 
     # ---------- 速度不稳 ----------
     _tempo_instability(ctx, matched_onsets, onset_beat_abs, bpm)

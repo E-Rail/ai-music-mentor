@@ -1,5 +1,7 @@
 // 跟谱 Worker 客户端封装
 
+import { t } from '../../i18n/messages'
+
 export interface FollowerPosition {
   onsetId: string
   measureNo: number
@@ -19,6 +21,7 @@ export interface FollowerOnset {
 export class FollowerClient {
   private worker: Worker | null = null
   onPosition: ((p: FollowerPosition) => void) | null = null
+  onError: ((message: string) => void) | null = null
 
   start(onsets: FollowerOnset[], beatsPerMeasure: number, bpm: number): void {
     this.stop()
@@ -29,6 +32,9 @@ export class FollowerClient {
       if (ev.data.type === 'position' && this.onPosition) {
         this.onPosition(ev.data as FollowerPosition)
       }
+    }
+    this.worker.onerror = (event) => {
+      this.onError?.(event.message || t('followerStartFailed'))
     }
     this.worker.postMessage({ type: 'init', onsets, beatsPerMeasure, bpm })
   }

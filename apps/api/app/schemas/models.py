@@ -6,11 +6,32 @@ AI 文本保存 modelAdapter / promptVersion / reportId，但不作为成绩真�
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ALGORITHM_VERSION = "1.0.0"
 DEFAULT_THRESHOLD_PROFILE = "default-v1"
+
+
+class ScoreSourceType(str, Enum):
+    musicxml = "musicxml"
+    mxl = "mxl"
+    midi = "midi"
+    pdf = "pdf"
+
+
+class ScoreDisplayMode(str, Enum):
+    exact_notation = "exact_notation"
+    simplified_quantized_staff = "simplified_quantized_staff"
+
+
+class SourceReference(BaseModel):
+    """Immutable reference to an uploaded or generated artifact."""
+    artifactId: str
+    kind: str
+    sha256: str
+    originalName: str = ""
 
 
 # ---------- 乐谱侧 ----------
@@ -37,6 +58,8 @@ class ScoreMeta(BaseModel):
     beatsPerMeasure: float = 4.0
     measureCount: int = 0
     parts: list[str] = Field(default_factory=list)
+    tempoMap: list[dict[str, Any]] = Field(default_factory=list)
+    meterMap: list[dict[str, Any]] = Field(default_factory=list)
     scoreHash: str = ""
     builtin: bool = False
 
@@ -46,18 +69,44 @@ class ScoreBundle(BaseModel):
     events: list[ScoreEvent]
 
 
+class ScoreNormalization(BaseModel):
+    tempo: float = Field(gt=10, le=400)
+    timeSignature: str = Field(pattern=r"^\d{1,2}/\d{1,2}$")
+    quantization: Literal["1/4", "1/8", "1/12", "1/16", "1/24", "1/32"] = "1/16"
+    trackMapping: dict[str, Literal["RH", "LH", "split", "ignore"]] = Field(default_factory=dict)
+    confirmed: bool = False
+
+
+class NormalizedScore(BaseModel):
+    scoreId: str
+    sourceType: ScoreSourceType
+    displayMode: ScoreDisplayMode
+    bundle: ScoreBundle
+    warnings: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    normalization: ScoreNormalization
+    sourceReferences: list[SourceReference] = Field(default_factory=list)
+
+
 # ---------- 演奏侧 ----------
 
 class PerformanceEvent(BaseModel):
     """原始演奏证据，不可被 AI 修改。"""
-    id: str
-    tOnMs: float
-    tOffMs: float = 0.0
-    pitch: int
-    velocity: int = 64
-    channel: int = 0
-    source: str = "web-midi"
+    id: str = Field(min_length=1, max_length=128)
+    tOnMs: float = Field(ge=0, allow_inf_nan=False)
+    tOffMs: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    pitch: int = Field(ge=0, le=127)
+    velocity: int = Field(default=64, ge=0, le=127)
+    channel: int = Field(default=0, ge=0, le=15)
+    source: str = Field(default="web-midi", min_length=1, max_length=32)
     pedalDown: bool = False
+    receivedTimeMs: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_note_interval(self) -> "PerformanceEvent":
+        if self.tOffMs and self.tOffMs < self.tOnMs:
+            raise ValueError("tOffMs must be greater than or equal to tOnMs")
+        return self
 
 
 class PerformanceGroup(BaseModel):
@@ -161,22 +210,27 @@ class DiagnosisReport(BaseModel):
     algorithmVersion: str = ALGORITHM_VERSION
     thresholdProfile: str = DEFAULT_THRESHOLD_PROFILE
     scoreHash: str = ""
+    sourceReferences: list[SourceReference] = Field(default_factory=list)
     createdAt: str = ""
 
 
 # ---------- 练习 / 伴奏 / AI 导师 ----------
 
 class ExerciseParams(BaseModel):
-    strategy: str = "loop"           # loop | slow_ladder | hands_separate | rhythm_variant | beat_skeleton | chunk_connect
-    tempoRatio: float = 0.6
-    hands: Optional[str] = None      # RH / LH
-    loopCount: int = 4
+    strategy: Literal[
+        "auto", "loop", "slow_ladder", "hands_separate", "rhythm_variant",
+        "beat_skeleton", "chunk_connect",
+    ] = "loop"
+    tempoRatio: float = Field(default=0.6, ge=0.25, le=1.25)
+    hands: Optional[Literal["RH", "LH"]] = None
+    loopCount: int = Field(default=4, ge=1, le=10)
     errorIds: list[str] = Field(default_factory=list)
 
 
 class Exercise(BaseModel):
     exerciseId: str
     sourceScoreId: str
+    practiceScoreId: str = ""
     sourceMeasures: list[int]
     ruleId: str
     params: ExerciseParams
@@ -186,12 +240,59 @@ class Exercise(BaseModel):
     tempoPlan: list[float] = Field(default_factory=list)
 
 
+class MentorEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    measure: int = Field(ge=1)
+    beat: float = Field(ge=0)
+    fact: str = Field(min_length=1, max_length=500)
+
+
+class MentorHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cause: str = Field(min_length=1, max_length=500)
+    confidence: float = Field(ge=0, le=1)
+    limitation: str = Field(min_length=1, max_length=500)
+
+
+class MentorPlanItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    exerciseType: str = Field(min_length=1, max_length=80)
+    measures: list[int] = Field(max_length=16)
+    tempo: Optional[float] = Field(ge=20, le=300)
+    repetitions: int = Field(ge=1, le=20)
+    successCriterion: str = Field(min_length=1, max_length=500)
+    label: str = Field(max_length=200)
+
+
 class MentorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     summary: str
-    evidence: list[dict] = Field(default_factory=list)    # {measure, beat, fact}
-    hypotheses: list[dict] = Field(default_factory=list)  # {cause, confidence, limitation}
-    plan: list[dict] = Field(default_factory=list)        # {exerciseType, measures, tempo, repetitions, successCriterion}
-    encouragement: str = ""
+    evidence: list[MentorEvidence]
+    hypotheses: list[MentorHypothesis]
+    plan: list[MentorPlanItem]
+    encouragement: str
+
+
+class MentorChatTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2_000)
+
+
+class ExercisePlannerResponse(BaseModel):
+    """AI may choose bounded parameters; deterministic code still builds the score."""
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=160)
+    strategy: Literal[
+        "loop", "slow_ladder", "hands_separate", "rhythm_variant",
+        "beat_skeleton", "chunk_connect",
+    ]
+    errorIds: list[str] = Field(max_length=8)
+    tempoRatio: float = Field(ge=0.25, le=1.25)
+    loopCount: int = Field(ge=1, le=10)
+    hands: Optional[Literal["RH", "LH"]]
+    rationale: str = Field(min_length=1, max_length=800)
+    noteAcknowledgement: str = Field(max_length=500)
 
 
 class SessionComparison(BaseModel):
@@ -204,38 +305,96 @@ class SessionComparison(BaseModel):
     suggestion: str = ""
 
 
+class PracticeSession(BaseModel):
+    sessionId: str
+    profileId: str = "local"
+    scoreId: str
+    rangeStart: int
+    rangeEnd: int
+    device: str
+    status: Literal[
+        "created", "recording", "device_lost", "queued", "analyzing",
+        "completed", "failed", "discarded", "abandoned",
+    ] = "created"
+    countInBeats: int = Field(default=4, ge=1, le=12)
+    countInBpm: float = Field(default=120, ge=20, le=300)
+    createdAt: str
+    sourceReferences: list[SourceReference] = Field(default_factory=list)
+
+
+class AnalysisJob(BaseModel):
+    analysisJobId: str
+    sessionId: str
+    status: Literal["queued", "running", "completed", "failed"]
+    progress: int = Field(default=0, ge=0, le=100)
+    reportId: Optional[str] = None
+    errorCode: Optional[str] = None
+    errorMessage: Optional[str] = None
+
+
 # ---------- API 请求体 ----------
 
 class SessionCreate(BaseModel):
     scoreId: str
-    rangeStart: int = 1
-    rangeEnd: int = 0               # 0 = 到结尾
+    rangeStart: int = Field(default=1, ge=1)
+    rangeEnd: int = Field(default=0, ge=0)  # 0 = 到结尾
     device: str = "web-midi"
+    countInBeats: Optional[int] = Field(default=None, ge=1, le=12)
+    countInBpm: Optional[float] = Field(default=None, ge=20, le=300)
+
+    @model_validator(mode="after")
+    def validate_range_order(self) -> "SessionCreate":
+        if self.rangeEnd and self.rangeEnd < self.rangeStart:
+            raise ValueError("rangeEnd must be zero or greater than or equal to rangeStart")
+        return self
 
 
 class SessionFinish(BaseModel):
-    events: list[PerformanceEvent]
+    events: list[PerformanceEvent] = Field(default_factory=list, max_length=50_000)
     uploadedMidiRef: Optional[str] = None
+
+
+class EventBatchCreate(BaseModel):
+    batchId: str = Field(min_length=1, max_length=128)
+    sequence: int = Field(ge=0)
+    events: list[PerformanceEvent] = Field(min_length=1, max_length=5_000)
+
+
+class ScoreNormalizationPatch(BaseModel):
+    tempo: float = Field(gt=10, le=400)
+    timeSignature: str = Field(pattern=r"^\d{1,2}/\d{1,2}$")
+    quantization: Literal["1/4", "1/8", "1/12", "1/16", "1/24", "1/32"] = "1/16"
+    trackMapping: dict[str, Literal["RH", "LH", "split", "ignore"]] = Field(default_factory=dict)
+    confirmed: bool = True
 
 
 class ExerciseCreate(BaseModel):
     reportId: str
     errorIds: list[str] = Field(default_factory=list)
     params: ExerciseParams = Field(default_factory=ExerciseParams)
+    aiAssist: bool = False
+    generationNote: str = Field(default="", max_length=1_000)
 
 
 class MentorRequest(BaseModel):
     reportId: str
     errorId: Optional[str] = None
-    question: str = ""
+    question: str = Field(default="", max_length=2_000)
+    history: list[MentorChatTurn] = Field(default_factory=list, max_length=12)
 
 
 class AccompanimentCreate(BaseModel):
     scoreId: str
-    rangeStart: int = 1
-    rangeEnd: int = 0
-    style: str = "chord_bass"       # 简化和弦/低音
-    mode: str = "flexible"          # strict | flexible
+    rangeStart: int = Field(default=1, ge=1)
+    rangeEnd: int = Field(default=0, ge=0)
+    style: Literal["chord_bass"] = "chord_bass"
+    mode: Literal["strict", "flexible"] = "flexible"
+
+    @model_validator(mode="after")
+    def validate_range_order(self) -> "AccompanimentCreate":
+        if self.rangeEnd and self.rangeEnd < self.rangeStart:
+            raise ValueError("rangeEnd must be zero or greater than or equal to rangeStart")
+        return self
 
 
 class ApiError(BaseModel):

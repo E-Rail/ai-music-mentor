@@ -34,6 +34,26 @@ function Invoke-Native {
     }
 }
 
+function Test-NativeCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 turns native stderr into error records. Failed
+        # probes are expected, so do not let the global Stop preference abort
+        # candidate discovery before the exit code can be inspected.
+        $ErrorActionPreference = "Continue"
+        & $FilePath @Arguments *> $null
+        return $LASTEXITCODE -eq 0
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+}
+
 function Test-Ready {
     try {
         $Response = Invoke-WebRequest -Uri $ReadyUrl -UseBasicParsing -TimeoutSec 1
@@ -49,8 +69,7 @@ function Test-Python {
 
     $Probe = "import alembic, defusedxml, dotenv, fastapi, httpx, mido, music21, multipart, numpy, pydantic, sqlalchemy, uvicorn"
     [string[]]$ProbeArgs = @($Python.Prefix) + @("-c", $Probe)
-    & $Python.Executable @ProbeArgs *> $null
-    return $LASTEXITCODE -eq 0
+    return Test-NativeCommand -FilePath $Python.Executable -Arguments $ProbeArgs
 }
 
 function Find-Python {
@@ -86,8 +105,7 @@ function Find-Python {
             continue
         }
         [string[]]$ProbeArgs = @($Candidate.Prefix) + @("-c", "import sys; assert sys.version_info >= (3, 10)")
-        & $Executable @ProbeArgs *> $null
-        if ($LASTEXITCODE -eq 0) {
+        if (Test-NativeCommand -FilePath $Executable -Arguments $ProbeArgs) {
             $BasePython = @{ Executable = $Executable; Prefix = @($Candidate.Prefix) }
             break
         }
@@ -118,10 +136,23 @@ function Find-Python {
 function Build-Web {
     $Tsc = Join-Path $WebDir "node_modules\.bin\tsc.cmd"
     $Vite = Join-Path $WebDir "node_modules\.bin\vite.cmd"
+    $Vitest = Join-Path $WebDir "node_modules\.bin\vitest.cmd"
+    $ModulesMetadata = Join-Path $WebDir "node_modules\.modules.yaml"
+    $Lockfile = Join-Path $WebDir "pnpm-lock.yaml"
 
     Push-Location $WebDir
     try {
-        if (-not (Test-Path $Tsc) -or -not (Test-Path $Vite)) {
+        $NeedsInstall = -not (Test-Path $Tsc) -or
+            -not (Test-Path $Vite) -or
+            -not (Test-Path $Vitest) -or
+            -not (Test-Path $ModulesMetadata)
+
+        if (-not $NeedsInstall -and (Test-Path $Lockfile)) {
+            $NeedsInstall = (Get-Item $Lockfile).LastWriteTimeUtc -gt
+                (Get-Item $ModulesMetadata).LastWriteTimeUtc
+        }
+
+        if ($NeedsInstall) {
             if ($null -eq (Find-Application @("node.exe"))) {
                 throw "Node.js is required. Install Node.js, then run launch.ps1 again."
             }
@@ -147,6 +178,10 @@ function Build-Web {
             }
             else {
                 throw "pnpm, Corepack, or npx is required. Reinstall a current Node.js release."
+            }
+
+            if (-not (Test-Path $Tsc) -or -not (Test-Path $Vite) -or -not (Test-Path $Vitest)) {
+                throw "Web dependencies were installed, but required build tools are unavailable."
             }
         }
 

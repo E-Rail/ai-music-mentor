@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { FRAME_SIZE, LiveNoteDetector, frequencyToMidi } from './liveDetector'
+import {
+  FRAME_SIZE, LiveNoteDetector, detectPolyphony, frequencyToMidi,
+} from './liveDetector'
 
 const SAMPLE_RATE = 48_000
 const HOP = 512
@@ -174,5 +176,41 @@ describe('LiveNoteDetector without a learned room', () => {
     const signal = roomNoise(2, 0.002, 31)
     mixInto(signal, note(midiToHz(64), 0.7), Math.floor(SAMPLE_RATE * 0.7))
     expect(detect(detector, signal).map((item) => item.pitch)).toEqual([64])
+  })
+})
+
+describe('hearing more than one note at once', () => {
+  /** Magnitude spectrum of a set of harmonic tones, as the detector sees it. */
+  function spectrumOf(midis: number[], fftSize = 4096): Float32Array {
+    const binHz = SAMPLE_RATE / fftSize
+    const magnitude = new Float32Array(fftSize / 2)
+    for (const midi of midis) {
+      const fundamental = 440 * 2 ** ((midi - 69) / 12)
+      for (let harmonic = 1; harmonic <= 6; harmonic += 1) {
+        const bin = Math.round((fundamental * harmonic) / binHz)
+        if (bin > 0 && bin < magnitude.length) magnitude[bin] += 1 / harmonic
+      }
+    }
+    return magnitude
+  }
+
+  const BIN_HZ = SAMPLE_RATE / 4096
+
+  it('reads a single note as a single note', () => {
+    expect(detectPolyphony(spectrumOf([72]), BIN_HZ, 110, 1400)).toEqual([72])
+  })
+
+  it('reads a two-hand octave as two notes', () => {
+    // What the demo songs actually are: melody over a left-hand bass.
+    expect(detectPolyphony(spectrumOf([48, 72]), BIN_HZ, 110, 1400)).toContain(72)
+  })
+
+  it('reads a C major triad as three notes', () => {
+    const found = detectPolyphony(spectrumOf([60, 64, 67]), BIN_HZ, 110, 1400)
+    expect(found).toEqual(expect.arrayContaining([60, 64, 67]))
+  })
+
+  it('finds nothing in an empty spectrum', () => {
+    expect(detectPolyphony(new Float32Array(2048), BIN_HZ, 110, 1400)).toEqual([])
   })
 })

@@ -226,3 +226,59 @@ describe('target ordering', () => {
     expect(targetIndexAtElapsedBeats(targets, 3, 4)).toBe(3)
   })
 })
+
+describe('correcting a mistake', () => {
+  it('marks the fix as corrected rather than as a clean hit', () => {
+    const live = tracker(scale(8))
+    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
+    expect(live.state.status).toBe('match')
+
+    // Wrong note at the second position, then the player fixes it.
+    const wrong = live.observe({ pitches: [70], atMs: 625, followerIndex: 1 })
+    expect(wrong.status).toBe('different')
+    const fixed = live.observe({ pitches: [61], atMs: 900, followerIndex: 1 })
+    expect(fixed.status).toBe('corrected')
+  })
+
+  it('does not carry a correction forward to the next note', () => {
+    const live = tracker(scale(8))
+    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
+    live.observe({ pitches: [70], atMs: 625, followerIndex: 1 })
+    live.observe({ pitches: [61], atMs: 900, followerIndex: 1 })
+    const clean = live.observe({ pitches: [62], atMs: 1_500, followerIndex: 2 })
+    expect(clean.status).toBe('match')
+  })
+
+  it('a half-played chord counts as a miss that can then be corrected', () => {
+    const live = tracker(CHORD)
+    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
+    expect(live.observe({ pitches: [64], atMs: 625, followerIndex: 1 }).status)
+      .toBe('partial')
+    expect(live.observe({ pitches: [64, 67], atMs: 900, followerIndex: 1 }).status)
+      .toBe('corrected')
+  })
+})
+
+describe('a correction survives the follower moving on', () => {
+  // 小星星 opens C C G G — repeated notes, so the follower can legitimately
+  // place a played G on either of two onsets.
+  const TWINKLE = [72, 72, 79, 79].map((pitch, index) => ({
+    eventId: `t:RH:m1:b${index}:1`, measureNo: 1, onsetBeat: index,
+    absoluteBeat: index, durationBeat: 1, pitches: [pitch],
+    part: 'RH', voice: 1, dynamicTarget: null, optional: false,
+  })) as ScoreEvent[]
+
+  it('stays corrected when the follower advances past the fixed note', () => {
+    const live = tracker(TWINKLE)
+    live.observe({ pitches: [72], atMs: 0, followerIndex: 0 })
+    live.observe({ pitches: [72], atMs: 625, followerIndex: 1 })
+    // A wrong note where the first G belongs, then the player fixes it.
+    expect(live.observe({ pitches: [66], atMs: 1_250, followerIndex: 2 }).status)
+      .toBe('different')
+    expect(live.observe({ pitches: [79], atMs: 1_500, followerIndex: 2 }).status)
+      .toBe('corrected')
+    // The worker then settles that same note on the next G. It is still a fix.
+    expect(live.syncPosition(3).status).toBe('corrected')
+    expect(live.state.played.map((item) => item.pitch)).toEqual([79])
+  })
+})

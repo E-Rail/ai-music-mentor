@@ -145,6 +145,8 @@ export default function App() {
   const [microphoneError, setMicrophoneError] = useState<string | null>(null)
   const [microphoneDevices, setMicrophoneDevices] = useState<InputDeviceDescriptor[]>([])
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState('')
+  const [micSensitivity, setMicSensitivity] = useState(0.5)
+  const [micSensitivityPinned, setMicSensitivityPinned] = useState(false)
   const [microphonePreview, setMicrophonePreview] = useState<MicrophonePreview>({
     levelDb: -60, waveform: [], pitchHz: null, noiseFloorDb: null,
     analysisGainDb: 0, signalToNoiseDb: null,
@@ -161,6 +163,7 @@ export default function App() {
   // the live panel can never disagree about where the player is.
   const liveRef = useRef(new LivePerformanceTracker())
   const followerIndexRef = useRef<number | null>(null)
+  const followerExpectedRef = useRef<number | null>(null)
   const microphoneConnectRequestRef = useRef(0)
   const sessionStartInFlightRef = useRef(false)
   const submissionInFlightRef = useRef(false)
@@ -280,6 +283,7 @@ export default function App() {
     beatsPerMeasure: number, bpm: number, source: 'web-midi' | 'microphone',
   ) => {
     followerIndexRef.current = null
+    followerExpectedRef.current = null
     setLiveTrace([])
     setLiveFeedback(liveRef.current.begin({
       events: scoreEvents, rangeStart: start, rangeEnd: end,
@@ -296,7 +300,10 @@ export default function App() {
     pitches: number[], atMs: number, followerIndex?: number | null,
   ) => {
     if (!recordingRef.current) return
-    publishLiveState(liveRef.current.observe({ pitches, atMs, followerIndex }))
+    publishLiveState(liveRef.current.observe({
+      pitches, atMs, followerIndex,
+      expectedIndex: followerExpectedRef.current,
+    }))
   }
 
   /**
@@ -306,11 +313,13 @@ export default function App() {
    */
   const applyFollowerPosition = (position: FollowerPosition) => {
     followerIndexRef.current = position.onsetIdx
+    followerExpectedRef.current = position.expectedIdx
     if (!recordingRef.current) return
     if (position.bpm > 0 && !position.frozen && position.confidence >= 0.5) {
       liveRef.current.observeTempo(position.bpm)
     }
-    publishLiveState(liveRef.current.syncPosition(position.onsetIdx))
+    publishLiveState(liveRef.current.syncPosition(
+      position.onsetIdx, position.expectedIdx))
   }
 
   // The meter is cosmetic. Notes arrive separately, from the detector's own
@@ -445,7 +454,15 @@ export default function App() {
       }
     }
     microphone.onPreview = updateMicrophonePreview
-    microphone.onDetectedNote = (note) => observeLiveInput([note.pitch], note.atMs)
+    microphone.onDetectedNote = (note) => {
+      // Every pitch heard at the attack, so a two-hand chord reads as one.
+      observeLiveInput(note.pitches, note.atMs)
+      // The detector re-tunes itself to the room; show what it settled on.
+      setMicSensitivity((previous) => {
+        const actual = microphone.detectionSensitivity
+        return Math.abs(actual - previous) > 0.01 ? actual : previous
+      })
+    }
     microphone.onTranscriptionProgress = setTranscriptionProgress
     microphone.onDeviceLost = () => {
       recordingRef.current = false
@@ -1781,6 +1798,21 @@ export default function App() {
               )}
             </section>
           )}
+          {meta && scoreId && (
+            <section className="score-preview" aria-label={t('scorePreview')}>
+              <div className="score-preview-heading">
+                <span className="eyebrow">{t('scorePreview')}</span>
+                <small>{tf('scoreMeta', {
+                  measures: meta.measureCount, tempo: meta.tempo,
+                  meter: meta.timeSignature,
+                })}</small>
+              </div>
+              <div className="score-stage">
+                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)}
+                             beatsPerMeasure={meta.beatsPerMeasure} height={200} />
+              </div>
+            </section>
+          )}
           {meta && (
             <>
               <h3>{t('practiceRange')}</h3>
@@ -1896,6 +1928,13 @@ export default function App() {
               }}
               onInstrumentChange={setInstrument}
               onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
+              sensitivity={micSensitivity}
+              sensitivityPinned={micSensitivityPinned}
+              onSensitivityChange={(value) => {
+                setMicSensitivity(value)
+                setMicSensitivityPinned(true)
+                microphoneRef.current?.setDetectionSensitivity(value)
+              }}
             />
           )}
 
@@ -1942,6 +1981,13 @@ export default function App() {
                     }}
                     onInstrumentChange={setInstrument}
                     onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
+                    sensitivity={micSensitivity}
+                    sensitivityPinned={micSensitivityPinned}
+                    onSensitivityChange={(value) => {
+                      setMicSensitivity(value)
+                      setMicSensitivityPinned(true)
+                      microphoneRef.current?.setDetectionSensitivity(value)
+                    }}
                   />
                   <LivePanel state={liveFeedback} trace={liveTrace} />
                 </aside>

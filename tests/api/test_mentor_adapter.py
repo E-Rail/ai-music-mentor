@@ -118,7 +118,11 @@ def test_openrouter_requires_parameter_capable_routes(monkeypatch):
     outcome = adapter.respond(_report())
 
     assert outcome.provider == "openrouter.ai"
-    assert captured["provider"] == {"require_parameters": True}
+    # Structured output narrows routing to capable hosts, and among those the
+    # request asks for the one that starts answering soonest.
+    assert captured["provider"] == {
+        "allow_fallbacks": True, "require_parameters": True,
+    }
     assert captured["reasoning"] == {"effort": "low", "exclude": True}
 
 
@@ -317,3 +321,34 @@ def test_ai_exercise_planner_returns_grounded_parameters(monkeypatch):
     assert outcome.response.strategy == "slow_ladder"
     assert captured["response_format"]["json_schema"]["name"] == "exercise_planner_response"
     assert "控制在五分钟" in captured["messages"][-1]["content"]
+
+
+def test_provider_preferences_ask_for_a_fast_host():
+    """Time-to-first-token, not throughput, is what the interface waits on."""
+    from app import config
+    from app.services.mentor import adapter
+
+    order, sort = config.MENTOR_PROVIDER_ORDER, config.MENTOR_PROVIDER_SORT
+    mode = config.MENTOR_RESPONSE_MODE
+    try:
+        config.MENTOR_PROVIDER_ORDER = []
+        config.MENTOR_PROVIDER_SORT = ""
+        config.MENTOR_RESPONSE_MODE = "json_object"
+        # No override by default: OpenRouter's own balancing beat a generic sort.
+        assert adapter._provider_preferences() == {"allow_fallbacks": True}
+
+        config.MENTOR_PROVIDER_SORT = "latency"
+        assert adapter._provider_preferences() == {
+            "allow_fallbacks": True, "sort": "latency",
+        }
+
+        # A pinned host wins over the sort, and structured output narrows it.
+        config.MENTOR_PROVIDER_ORDER = ["baidu"]
+        config.MENTOR_RESPONSE_MODE = "json_schema"
+        assert adapter._provider_preferences() == {
+            "allow_fallbacks": True, "order": ["baidu"], "require_parameters": True,
+        }
+    finally:
+        config.MENTOR_PROVIDER_ORDER = order
+        config.MENTOR_PROVIDER_SORT = sort
+        config.MENTOR_RESPONSE_MODE = mode

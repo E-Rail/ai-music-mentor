@@ -34,6 +34,7 @@ export function MicrophonePanel({
   state, devices, selectedDeviceId, instrument, preview, progress, busy,
   errorDetail, previewMode, onConnect, onCancelConnect, onSelectDevice,
   onInstrumentChange, onCancelTranscription,
+  sensitivity, sensitivityPinned, onSensitivityChange,
 }: {
   state: MicrophoneState
   devices: InputDeviceDescriptor[]
@@ -49,6 +50,9 @@ export function MicrophonePanel({
   onSelectDevice: (deviceId: string) => void
   onInstrumentChange: (instrument: InstrumentProfile) => void
   onCancelTranscription: () => void
+  sensitivity: number
+  sensitivityPinned: boolean
+  onSensitivityChange: (value: number) => void
 }) {
   const points = preview.waveform.length
     ? preview.waveform.map((value, index) =>
@@ -111,6 +115,18 @@ export function MicrophonePanel({
           </section>
         </div>
         <div className="mic-monitor-column">
+          <label className="mic-sensitivity">
+            <span className="mic-sensitivity-heading">
+              <strong>{t('microphoneSensitivity')}</strong>
+              <small>{sensitivityPinned
+                ? tf('microphoneSensitivityManual', { value: Math.round(sensitivity * 100) })
+                : t('microphoneSensitivityAuto')}</small>
+            </span>
+            <input type="range" min={0} max={100} step={5}
+                   value={Math.round(sensitivity * 100)}
+                   onChange={(event) => onSensitivityChange(Number(event.target.value) / 100)} />
+            <small className="mic-sensitivity-hint">{t('microphoneSensitivityHint')}</small>
+          </label>
           <div className="mic-monitor-heading">
             <strong>{t('microphoneMonitor')}</strong>
             <span>{previewMode === 'worklet' ? 'AudioWorklet' : previewMode === 'analyser' ? '兼容模式' : '—'}</span>

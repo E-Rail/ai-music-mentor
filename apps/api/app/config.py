@@ -28,7 +28,23 @@ MENTOR_RESPONSE_MODE = os.environ.get("MENTOR_RESPONSE_MODE", "json_object")
 MENTOR_REASONING_EFFORT = os.environ.get("MENTOR_REASONING_EFFORT", "low").lower()
 MENTOR_TIMEOUT_SECONDS = float(os.environ.get("MENTOR_TIMEOUT_SECONDS", "40"))
 MENTOR_CONNECT_TIMEOUT_SECONDS = float(os.environ.get(
-    "MENTOR_CONNECT_TIMEOUT_SECONDS", "5"))
+    "MENTOR_CONNECT_TIMEOUT_SECONDS", "8"))
+# OpenRouter routes one model across many hosts whose time-to-first-token
+# differs by tens of seconds. What the interface waits on is the first token,
+# not tokens per second, so latency is the default ordering. Pin a host with
+# MENTOR_PROVIDER_ORDER (comma separated, e.g. "baidu") when one is known good.
+MENTOR_PROVIDER_ORDER = [
+    slug.strip() for slug in os.environ.get("MENTOR_PROVIDER_ORDER", "").split(",")
+    if slug.strip()
+]
+# Empty by default. Measured on this project, asking OpenRouter to sort by
+# latency routed to hosts that answered more slowly and returned output the
+# schema rejected — worse than its own default balancing. Pin a host you have
+# actually measured instead of asking for a generic "fast" one.
+MENTOR_PROVIDER_SORT = os.environ.get("MENTOR_PROVIDER_SORT", "").strip()
+# Keep fallbacks on: a pinned host that is down must not end the session.
+MENTOR_PROVIDER_ALLOW_FALLBACKS = os.environ.get(
+    "MENTOR_PROVIDER_ALLOW_FALLBACKS", "true").lower() not in {"0", "false", "no"}
 MENTOR_READ_TIMEOUT_SECONDS = float(os.environ.get(
     "MENTOR_READ_TIMEOUT_SECONDS", str(MENTOR_TIMEOUT_SECONDS)))
 MENTOR_MAX_OUTPUT_TOKENS = int(os.environ.get("MENTOR_MAX_OUTPUT_TOKENS", "1600"))

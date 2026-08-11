@@ -349,20 +349,25 @@ export function ScoreViewer(props: Props) {
         )
       })}
 
-      {/* 跟谱光标 */}
+      {/* 跟谱光标：颜色跟随当前这个音对不对，位置一直往前走。 */}
       {sheetSize && props.cursor && (() => {
         const p = posOf(props.cursor.measure, props.cursor.beat, null, true)
         if (!p) return null
         const lowConf = (props.cursor.confidence ?? 1) < 0.5 || props.cursor.frozen
+        const status = props.liveFeedback?.status ?? 'idle'
         return (
-          <div style={{
-            position: 'absolute', left: p.left, top: p.top, height: p.height,
-            width: 3, background: CURSOR_COLOR, borderRadius: 2, zIndex: 4,
-            opacity: lowConf ? 0.35 : 0.9, transition: 'left 120ms linear',
-          }}>
+          <div
+            className={`score-cursor ${status}`}
+            data-testid="score-cursor"
+            data-status={status}
+            style={{ left: p.left, top: p.top, height: p.height }}
+          >
+            {status === 'corrected' && (
+              <span className="cursor-tag corrected">{t('liveStatusCorrected')}</span>
+            )}
             {/* Sits below the system so it cannot cover the played note or
                 the written-note ghost, which are the point of this overlay. */}
-            {lowConf && (
+            {lowConf && status !== 'corrected' && (
               <span className="cursor-relocking">{t('relocking')}…</span>
             )}
           </div>

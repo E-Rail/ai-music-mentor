@@ -18,7 +18,13 @@ import {
   type LivePositionStrategy, type LiveTarget,
 } from './liveTargets'
 
-export type LiveMatchStatus = 'idle' | 'waiting' | 'match' | 'partial' | 'different'
+/**
+ * `corrected` is a match that arrived after a wrong attempt at the same place.
+ * It is neither a clean hit nor an outstanding mistake, and a student watching
+ * the cursor deserves to see the difference.
+ */
+export type LiveMatchStatus =
+  | 'idle' | 'waiting' | 'match' | 'partial' | 'different' | 'corrected'
 
 /** How many played notes the live trace keeps on screen. */
 export const TRACE_LIMIT = 24
@@ -98,8 +104,10 @@ export interface LiveSessionOptions {
 export interface LiveObservation {
   pitches: number[]
   atMs: number
-  /** Score-follower onset index; only consulted by the `follower` strategy. */
+  /** Last onset the follower matched; only used by the `follower` strategy. */
   followerIndex?: number | null
+  /** Onset the follower expects next; where an unmatched note belongs. */
+  expectedIndex?: number | null
 }
 
 /**
@@ -121,6 +129,33 @@ export class LivePerformanceTracker {
   private currentBeat: number | null = null
   /** Trace entries belonging to the current note, so a correction reaches them. */
   private currentTraceIds: string[] = []
+  /** Score position the player is currently attempting, and how it has gone. */
+  private attemptKey: string | null = null
+  private missedHereAlready = false
+  /** Whether the note currently on screen was a fix, not a clean hit. */
+  private currentIsCorrection = false
+
+  /**
+   * Upgrade a clean match to `corrected` when this position was got wrong first.
+   * Fixing your own mistake is a different event from never making one, and the
+   * student is the one who should be told which happened.
+   */
+  private withCorrection(
+    status: LiveMatchStatus, target: LiveTarget | null,
+  ): LiveMatchStatus {
+    const key = target
+      ? `${target.measureNo}:${target.onsetBeat}` : null
+    if (key !== this.attemptKey) {
+      this.attemptKey = key
+      this.missedHereAlready = false
+    }
+    if (status === 'different' || status === 'partial') {
+      this.missedHereAlready = true
+      return status
+    }
+    if (status === 'match' && this.missedHereAlready) return 'corrected'
+    return status
+  }
 
   /**
    * Timing is only claimed when there is a position worth measuring against.
@@ -147,6 +182,9 @@ export class LivePerformanceTracker {
     this.previousBeat = null
     this.currentBeat = null
     this.currentTraceIds = []
+    this.attemptKey = null
+    this.missedHereAlready = false
+    this.currentIsCorrection = false
     this.source = options.source
     // Only USB MIDI reports true onsets; a microphone preview is a smoothed
     // dominant pitch and cannot drive a beam search.
@@ -167,6 +205,9 @@ export class LivePerformanceTracker {
     this.previousBeat = null
     this.currentBeat = null
     this.currentTraceIds = []
+    this.attemptKey = null
+    this.missedHereAlready = false
+    this.currentIsCorrection = false
     this.current = idleLiveState(this.source)
   }
 
@@ -186,6 +227,7 @@ export class LivePerformanceTracker {
     const index = firstNote ? 0 : resolveTargetIndex({
       targets: this.targets, strategy: this.strategy, clock: this.clock,
       atMs: input.atMs, followerIndex: input.followerIndex,
+      expectedIndex: input.expectedIndex, played,
     })
     const target = this.targets[index] ?? null
     const beat = target
@@ -195,8 +237,10 @@ export class LivePerformanceTracker {
     this.currentBeat = beat
     const timing = this.trust(this.clock.register(input.atMs, beat), beat)
 
-    const { pitches, missing, status } = classifyPlayedPitches(
+    const { pitches, missing, status: raw } = classifyPlayedPitches(
       played, target?.pitches ?? [])
+    const status = this.withCorrection(raw, target)
+    this.currentIsCorrection = status === 'corrected'
 
     this.current = {
       status, source: this.source, played: pitches, playedAtMs: input.atMs,
@@ -231,10 +275,17 @@ export class LivePerformanceTracker {
    * corrected onset keeps the panel and the staff consistent without inventing
    * input the player never produced.
    */
-  syncPosition(followerIndex: number): LivePerformanceState {
+  syncPosition(followerIndex: number, expectedIndex?: number | null): LivePerformanceState {
     if (!this.targets.length) return this.current
-    const index = Math.min(
-      Math.max(Math.round(followerIndex), 0), this.targets.length - 1)
+    // Resolve with the same rule as a fresh observation: an unmatched note
+    // belongs where the player was due to play, not at the last note they got
+    // right. Snapping back to the match is what hid corrections.
+    const index = resolveTargetIndex({
+      targets: this.targets, strategy: this.strategy, clock: this.clock,
+      atMs: this.current.playedAtMs ?? 0,
+      followerIndex, expectedIndex,
+      played: this.current.played.map((item) => item.pitch),
+    })
     const target = this.targets[index]
     if (!target || target === this.current.target) return this.current
     if (!this.current.played.length || this.current.playedAtMs === null) {
@@ -243,8 +294,14 @@ export class LivePerformanceTracker {
     }
     const beat = relativeBeatOf(target, this.targets, this.clock.beatsPerMeasure)
     this.currentBeat = beat
-    const { pitches, missing, status } = classifyPlayedPitches(
+    const { pitches, missing, status: raw } = classifyPlayedPitches(
       this.current.played.map((item) => item.pitch), target.pitches)
+    // The follower moves on once the fix lands. A correction is a fact about
+    // the note the player just played, so it survives that move.
+    const settled = this.withCorrection(raw, target)
+    const status = this.currentIsCorrection && settled === 'match'
+      ? 'corrected' : settled
+    this.currentIsCorrection = status === 'corrected'
     // Re-judge, never re-register: the clock has already seen this note, and
     // anchoring it a second time would move the player's own start line.
     const timing = this.current.timing?.reference === 'anchor'

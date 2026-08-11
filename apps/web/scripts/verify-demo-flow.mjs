@@ -181,11 +181,12 @@ await check('AI mentor finishes thinking and answers', async () => {
   if (!reportReady) throw new Error('skipped: no report')
   const box = page.locator('.mentor-box').first()
   if (!(await box.count())) throw new Error('mentor panel missing')
-  // Wait past the "thinking" state; a loading message is not an answer.
+  // Wait for the summary itself. Absence of the spinner is not an answer — the
+  // request may simply not have started yet.
   await page.waitForFunction(() => {
-    const node = document.querySelector('.mentor-box')
-    return !!node && !node.querySelector('.mentor-loading')
-  }, { timeout: 120_000 })
+    const node = document.querySelector('.mentor-box .summary')
+    return !!node && (node.textContent || '').trim().length > 10
+  }, { timeout: 150_000 })
   const summary = await box.locator('.summary').innerText()
   const provider = await box.locator('.mentor-meta').innerText().catch(() => '')
   if (summary.trim().length < 10) throw new Error('mentor produced no summary')

@@ -414,6 +414,28 @@ input[type=checkbox] { accent-color: var(--brass); }
   left: auto; right: calc(100% + 6px); color: var(--brass-ink);
 }
 
+/* The cursor never stops for a mistake. It reports what just happened and
+   keeps travelling, so a wrong note is information rather than a dead end. */
+.score-cursor {
+  position: absolute; z-index: 4;
+  width: 3px; border-radius: 2px;
+  background: var(--brass-ink);
+  transition: left 120ms linear, background-color .18s ease;
+}
+.score-cursor.match { background: #3f7a33; }
+.score-cursor.corrected { background: var(--brass-ink); }
+.score-cursor.partial { background: var(--brass-ink); }
+.score-cursor.different { background: var(--felt-ink); }
+.score-cursor.idle, .score-cursor.waiting { background: rgba(23, 21, 28, .35); }
+
+.cursor-tag {
+  position: absolute; top: -19px; left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 6px; border-radius: 3px;
+  color: var(--paper); background: var(--brass-ink);
+  font-size: 9.5px; font-weight: 700; white-space: nowrap;
+}
+
 .cursor-relocking {
   position: absolute; top: calc(100% + 3px); left: 50%;
   transform: translateX(-50%);
@@ -909,3 +931,24 @@ input[type=checkbox] { accent-color: var(--brass); }
     transition-duration: .01ms !important;
   }
 }
+
+/* Score preview on the song list: the demo opens on the music, not on a form. */
+.score-preview { margin: 22px 0 8px; }
+.score-preview-heading {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 9px;
+}
+.score-preview-heading small { color: var(--chalk-faint); font-family: var(--font-num); font-size: 11px; }
+.score-preview .score-stage { max-height: 320px; overflow: hidden; }
+
+/* Detection sensitivity: auto-tuned from the room, adjustable when the room
+   turns out different from what the noise check heard. */
+.mic-sensitivity { display: block; margin-bottom: 12px; }
+.mic-sensitivity-heading {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; margin-bottom: 5px;
+}
+.mic-sensitivity-heading strong { font-size: 11px; }
+.mic-sensitivity-heading small { color: var(--brass); font-family: var(--font-num); font-size: 9.5px; }
+.mic-sensitivity input[type=range] { width: 100%; }
+.mic-sensitivity-hint { display: block; margin-top: 4px; color: var(--chalk-faint); font-size: 9.5px; line-height: 1.5; }

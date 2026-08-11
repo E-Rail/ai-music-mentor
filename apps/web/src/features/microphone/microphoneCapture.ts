@@ -374,6 +374,16 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     })
   }
 
+  /** Detection sensitivity, 0–1. Auto-tuned from the room unless pinned. */
+  get detectionSensitivity(): number {
+    return this.liveDetector?.sensitivity ?? 0.5
+  }
+
+  /** Hold a chosen sensitivity, overriding what the room suggested. */
+  setDetectionSensitivity(value: number): void {
+    this.liveDetector?.pinSensitivity(value)
+  }
+
   /** The live detector, built on first use once the sample rate is known. */
   private detector(sampleRate: number): LiveNoteDetector {
     if (!this.liveDetector || this.detectorSampleRate !== sampleRate) {

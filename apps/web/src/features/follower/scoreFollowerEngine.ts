@@ -12,7 +12,14 @@ export interface ScoreFollowerGroup {
 }
 
 export interface ScoreFollowerPosition {
+  /** Last onset the performance actually matched. */
   onsetIdx: number
+  /**
+   * Onset the player is due to play next. A wrong note belongs *here*, not at
+   * the last note they got right — otherwise a mistake is reported against the
+   * previous position and fixing it cannot be recognised as a fix.
+   */
+  expectedIdx: number
   onsetId: string
   measureNo: number
   onsetBeat: number
@@ -217,6 +224,7 @@ export class ScoreFollowerEngine {
     this.lastPosition = { idx: positionIndex, bpm: smoothedBpm, confidence }
     return {
       onsetIdx: positionIndex,
+      expectedIdx: Math.min(Math.max(best.k, 0), this.onsets.length - 1),
       onsetId: onset.onsetId,
       measureNo: onset.measureNo,
       onsetBeat: onset.onsetBeat,

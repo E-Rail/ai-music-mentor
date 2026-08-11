@@ -86,8 +86,12 @@ export interface ResolvePositionInput {
   strategy: LivePositionStrategy
   clock: PerformanceClock
   atMs: number
-  /** Score-follower result, used when the strategy is `follower`. */
+  /** Last onset the follower matched. */
   followerIndex?: number | null
+  /** Onset the follower expects next; where an unmatched note belongs. */
+  expectedIndex?: number | null
+  /** Pitches just played, used to choose between the two. */
+  played?: number[]
 }
 
 /**
@@ -100,11 +104,29 @@ export interface ResolvePositionInput {
  * the cursor, the staff marker and the feedback card from drifting apart.
  */
 export function resolveTargetIndex(input: ResolvePositionInput): number {
-  const { targets, strategy, clock, atMs, followerIndex } = input
+  const { targets, strategy, clock, atMs, followerIndex, expectedIndex, played } = input
   if (!targets.length) return 0
-  if (strategy === 'follower' && followerIndex != null &&
-      Number.isFinite(followerIndex)) {
-    return Math.min(Math.max(Math.round(followerIndex), 0), targets.length - 1)
+  const clamp = (value: number) =>
+    Math.min(Math.max(Math.round(value), 0), targets.length - 1)
+
+  if (strategy === 'follower') {
+    const matched = followerIndex != null && Number.isFinite(followerIndex)
+      ? clamp(followerIndex) : null
+    const expected = expectedIndex != null && Number.isFinite(expectedIndex)
+      ? clamp(expectedIndex) : null
+    if (expected !== null && played?.length) {
+      // A note that fits where the player is due to play belongs there. One
+      // that fits nowhere is a mistake *at* that position, not at the last one
+      // they got right — which is what makes fixing it recognisable as a fix.
+      const here = new Set(targets[expected].pitches)
+      if (played.some((pitch) => here.has(pitch))) return expected
+      const atMatched = matched === null
+        ? null : new Set(targets[matched].pitches)
+      if (atMatched && played.some((pitch) => atMatched.has(pitch))) return matched!
+      return expected
+    }
+    if (matched !== null) return matched
+    if (expected !== null) return expected
   }
   if (!clock.started) return 0
   return targetIndexAtElapsedBeats(

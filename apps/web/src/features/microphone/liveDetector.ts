@@ -22,9 +22,10 @@
  * One FFT per frame serves both the flux and the autocorrelation (via
  * Wiener–Khinchin), which is what keeps this cheap enough to run live.
  *
- * Polyphony is deliberately out of scope here: at an onset the detector reports
- * the strongest pitch. Chords are resolved after the take by Basic Pitch, which
- * remains the only thing that feeds scoring.
+ * At an onset it also reports the other pitches sounding with it, so a two-hand
+ * chord reads as a chord rather than as whichever note happened to be loudest.
+ * That is an estimate, not a verdict: Basic Pitch still transcribes the take
+ * after you stop, and remains the only thing that feeds scoring.
  */
 
 /** Analysis window. 2048 samples is ~43 ms at 48 kHz. */
@@ -72,14 +73,97 @@ export interface LiveDetectorOptions {
 }
 
 export interface DetectedNote {
-  /** MIDI note number. */
+  /** The strongest pitch, as a MIDI note number. */
   pitch: number
+  /**
+   * Every pitch heard at this attack, lowest first — both hands of a chord.
+   * Always contains `pitch`.
+   */
+  pitches: number[]
   frequencyHz: number
   atMs: number
   /** NSDF peak height, 0–1. How periodic the frame was. */
   clarity: number
   /** How far the onset stood above the adaptive threshold. */
   fluxRatio: number
+}
+
+/** Most simultaneous notes reported from one attack. */
+const MAX_POLYPHONY = 4
+/** Harmonics summed when scoring a candidate fundamental. */
+const HARMONICS = 6
+
+/**
+ * Which notes are sounding, from the spectrum already computed for this frame.
+ *
+ * Scores every semitone in range by the energy on its harmonic series, takes
+ * the winner, removes that series, and repeats. It is a fraction of the cost of
+ * a neural pass — Basic Pitch needs a fixed two-second window per inference,
+ * which cannot run at every note attack — and it is enough to tell a two-hand
+ * chord from a single melody note while playing. Scoring still comes from Basic
+ * Pitch after the take, where accuracy matters and latency does not.
+ */
+export function detectPolyphony(
+  magnitude: Float32Array, binHz: number,
+  minPitchHz: number, maxPitchHz: number,
+): number[] {
+  const residual = Float32Array.from(magnitude)
+  const lowest = Math.max(0, Math.ceil(frequencyToMidi(minPitchHz)))
+  const highest = Math.min(127, Math.floor(frequencyToMidi(maxPitchHz)))
+  const found: number[] = []
+  let bestOverall = 0
+
+  const scoreOf = (midi: number): number => {
+    const fundamental = 440 * 2 ** ((midi - 69) / 12)
+    let score = 0
+    for (let harmonic = 1; harmonic <= HARMONICS; harmonic += 1) {
+      const bin = Math.round((fundamental * harmonic) / binHz)
+      if (bin <= 0 || bin >= residual.length) break
+      // Take the strongest of the three bins around the harmonic so a slightly
+      // sharp or flat instrument is not penalised.
+      const local = Math.max(residual[bin - 1] ?? 0, residual[bin], residual[bin + 1] ?? 0)
+      score += local / harmonic
+    }
+    return score
+  }
+
+  for (let round = 0; round < MAX_POLYPHONY; round += 1) {
+    let bestMidi = -1
+    let bestScore = 0
+    for (let midi = lowest; midi <= highest; midi += 1) {
+      const score = scoreOf(midi)
+      if (score > bestScore) {
+        bestScore = score
+        bestMidi = midi
+      }
+    }
+    if (bestMidi < 0) break
+    if (round === 0) bestOverall = bestScore
+    // A second voice has to be a real presence, not a leftover sideband.
+    else if (bestScore < bestOverall * 0.42) break
+    found.push(bestMidi)
+
+    // Subtract only what this note can explain, never the whole bin. An octave
+    // above shares its fundamental with this note's 2nd harmonic, so wiping the
+    // series would erase the very evidence that the octave is being played —
+    // which is exactly the left-hand/right-hand case in the demo songs.
+    const fundamental = 440 * 2 ** ((bestMidi - 69) / 12)
+    const rootBin = Math.round(fundamental / binHz)
+    const rootAmplitude = rootBin > 0 && rootBin < residual.length
+      ? Math.max(residual[rootBin - 1] ?? 0, residual[rootBin],
+        residual[rootBin + 1] ?? 0)
+      : 0
+    for (let harmonic = 1; harmonic <= HARMONICS; harmonic += 1) {
+      const centre = Math.round((fundamental * harmonic) / binHz)
+      const explained = rootAmplitude / harmonic
+      for (let bin = centre - 1; bin <= centre + 1; bin += 1) {
+        if (bin > 0 && bin < residual.length) {
+          residual[bin] = Math.max(0, residual[bin] - explained)
+        }
+      }
+    }
+  }
+  return [...new Set(found)].sort((left, right) => left - right)
 }
 
 const DEFAULTS = {
@@ -170,6 +254,13 @@ export class LiveNoteDetector {
   /** An attack that has been seen but not yet named. */
   private pendingOnsetMs: number | null = null
   private pendingRatio = 0
+  private sensitivityValue = 0.5
+  private riseThreshold = ONSET_RISE
+  private gateMultiplier = 2.2
+  private recentRms: number[] = []
+  /** Gated spectrum of the current frame, reused for polyphony. */
+  private gated: Float32Array
+  private autoTuned = false
 
   /** Seed the running spectrum without treating the change as an attack. */
   private primeFrom(magnitude: Float32Array): void {
@@ -184,9 +275,54 @@ export class LiveNoteDetector {
     this.options = { ...DEFAULTS, ...options }
     this.noiseSum = new Float32Array(this.bins)
     this.previousMagnitude = new Float32Array(this.bins)
+    this.gated = new Float32Array(this.bins)
   }
 
   get noiseProfileReady(): boolean { return this.noiseProfile !== null }
+
+  /**
+   * How hard the detector is listening, 0 (only obvious notes) to 1 (faint
+   * ones too). Derived from the room by default; a room that turns out louder
+   * than the noise check suggested can be answered without re-measuring it.
+   */
+  get sensitivity(): number { return this.sensitivityValue }
+
+  set sensitivity(value: number) {
+    const next = Math.min(1, Math.max(0, value))
+    this.sensitivityValue = next
+    // Listening harder means demanding less new energy and accepting a less
+    // periodic frame; both scale together so one control stays predictable.
+    this.options.fluxSensitivity = 2.4 - next * 1.1
+    this.riseThreshold = 0.40 - next * 0.22
+    this.options.clarityThreshold = 0.82 - next * 0.20
+    this.gateMultiplier = 3.2 - next * 1.6
+  }
+
+  /**
+   * Re-read the room from the take so far and adjust. Called while recording,
+   * so a hall that fills with people after the noise check does not silently
+   * stop the detector from hearing anything.
+   */
+  private adaptToRoom(frameRms: number): void {
+    this.recentRms.push(frameRms)
+    if (this.recentRms.length < 240) return          // ~2.5 s of audio
+    this.recentRms.shift()
+    if (this.autoTuned) return
+    const sorted = [...this.recentRms].sort((left, right) => left - right)
+    const floor = sorted[Math.floor(sorted.length * 0.2)]
+    const peak = sorted[Math.floor(sorted.length * 0.95)]
+    const headroom = peak / Math.max(1e-6, floor)
+    // A wide gap means the notes stand well clear of the room and the detector
+    // can afford to be strict; a narrow one means it must lean in.
+    this.sensitivity = headroom > 12 ? 0.35 : headroom > 5 ? 0.6 : 0.85
+    this.autoTuned = true
+  }
+
+  /** Stop adapting and hold whatever the presenter chose. */
+  pinSensitivity(value: number): void {
+    this.sensitivity = value
+    this.autoTuned = true
+  }
 
   reset(): void {
     this.previousMagnitude = new Float32Array(this.bins)
@@ -197,6 +333,7 @@ export class LiveNoteDetector {
     this.belowGate = true
     this.pendingOnsetMs = null
     this.pendingRatio = 0
+    this.recentRms = []
   }
 
   /** Forget the room as well as the take. */
@@ -346,8 +483,10 @@ export class LiveNoteDetector {
 
     // Is anything sounding at all? Compared against the room when one was
     // learned, so a loud hall does not permanently look like playing.
-    const gate = Math.max(ABSOLUTE_RMS_FLOOR, this.noiseRms * 2.2)
-    if (this.windowedRms() < gate) {
+    const frameRms = this.windowedRms()
+    this.adaptToRoom(frameRms)
+    const gate = Math.max(ABSOLUTE_RMS_FLOOR, this.noiseRms * this.gateMultiplier)
+    if (frameRms < gate) {
       this.peakEnergy = 0
       this.pendingOnsetMs = null
       this.armed = true
@@ -374,6 +513,7 @@ export class LiveNoteDetector {
       const step = gated - this.previousMagnitude[bin]
       if (step > 0) flux += step
       energy += gated
+      this.gated[bin] = gated
       this.previousMagnitude[bin] = gated
     }
     if (energy <= 1e-9) {
@@ -390,7 +530,7 @@ export class LiveNoteDetector {
     const adaptive = median(this.fluxHistory) * this.options.fluxSensitivity
     this.fluxHistory.push(rise)
     if (this.fluxHistory.length > FLUX_HISTORY) this.fluxHistory.shift()
-    const threshold = Math.max(ONSET_RISE, adaptive)
+    const threshold = Math.max(this.riseThreshold, adaptive)
 
     // An attack already seen is still waiting to be named.
     if (this.pendingOnsetMs !== null) {
@@ -429,8 +569,15 @@ export class LiveNoteDetector {
     const midi = frequencyToMidi(pitch.hz)
     this.pendingOnsetMs = null
     if (midi < 0 || midi > 127) return null
+    const binHz = this.options.sampleRate / FFT_SIZE
+    const chord = detectPolyphony(
+      this.gated, binHz, this.options.minPitchHz, this.options.maxPitchHz)
+    // The NSDF pitch is the one the ear leads on; keep it even if the harmonic
+    // search missed it, and present the rest as the other voices.
+    const pitches = [...new Set([midi, ...chord])].sort((a, b) => a - b)
     return {
       pitch: midi,
+      pitches,
       frequencyHz: pitch.hz,
       atMs: onsetMs,
       clarity: pitch.clarity,

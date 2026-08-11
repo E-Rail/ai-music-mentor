@@ -237,6 +237,28 @@ def _ground_response(response: MentorResponse, diagnosis: dict) -> MentorRespons
     })
 
 
+# Last upstream host reported by OpenRouter, for latency triage.
+_LAST_SERVED_BY: list[str | None] = [None]
+
+
+def _provider_preferences() -> dict:
+    """Ask OpenRouter for a host that starts answering quickly.
+
+    The same model is served by many providers, and the slow ones spend most of
+    a minute before the first token. The interface is waiting on that first
+    token, so ordering by latency is what the student actually feels.
+    """
+    preferences: dict = {"allow_fallbacks": config.MENTOR_PROVIDER_ALLOW_FALLBACKS}
+    if config.MENTOR_PROVIDER_ORDER:
+        preferences["order"] = config.MENTOR_PROVIDER_ORDER
+    elif config.MENTOR_PROVIDER_SORT:
+        preferences["sort"] = config.MENTOR_PROVIDER_SORT
+    if config.MENTOR_RESPONSE_MODE == "json_schema":
+        # Only route to hosts that actually implement structured output.
+        preferences["require_parameters"] = True
+    return preferences
+
+
 def _request_structured(messages: list[dict[str, str]],
                         response_model: type[BaseModel],
                         schema_name: str) -> BaseModel:
@@ -254,8 +276,7 @@ def _request_structured(messages: list[dict[str, str]],
                      if config.MENTOR_REASONING_EFFORT == "none"
                      else {"effort": config.MENTOR_REASONING_EFFORT, "exclude": True})
         request_body["reasoning"] = reasoning
-        if config.MENTOR_RESPONSE_MODE == "json_schema":
-            request_body["provider"] = {"require_parameters": True}
+        request_body["provider"] = _provider_preferences()
     timeout = httpx.Timeout(
         connect=config.MENTOR_CONNECT_TIMEOUT_SECONDS,
         read=config.MENTOR_READ_TIMEOUT_SECONDS,
@@ -271,8 +292,18 @@ def _request_structured(messages: list[dict[str, str]],
         )
         response.raise_for_status()
         payload = response.json()
+    # OpenRouter names the host that actually served this call. Recording it is
+    # what lets a slow one be identified and pinned by slug rather than guessed.
+    served_by = payload.get("provider")
+    if served_by:
+        _LAST_SERVED_BY[0] = str(served_by)
     content = payload["choices"][0]["message"].get("content")
     return response_model.model_validate(_extract_json(content))
+
+
+def served_by() -> str | None:
+    """Which upstream host answered the most recent structured request."""
+    return _LAST_SERVED_BY[0]
 
 
 def _bounded_history(history: list[MentorChatTurn]) -> list[dict[str, str]]:
@@ -331,6 +362,7 @@ def respond(report: DiagnosisReport, question: str = "",
             latency = round((time.perf_counter() - started) * 1000)
             logger.info(json.dumps({
                 "event": "mentor_response", "provider": _provider_name(),
+                "servedBy": served_by(),
                 "model": config.MENTOR_MODEL, "responseMode": config.MENTOR_RESPONSE_MODE,
                 "latencyMs": latency, "attempt": attempt + 1,
             }, ensure_ascii=False))
@@ -419,6 +451,7 @@ def chat(report: DiagnosisReport, message: str,
             latency = round((time.perf_counter() - started) * 1000)
             logger.info(json.dumps({
                 "event": "mentor_chat_response", "provider": _provider_name(),
+                "servedBy": served_by(),
                 "model": config.MENTOR_MODEL, "responseMode": config.MENTOR_RESPONSE_MODE,
                 "latencyMs": latency, "attempt": attempt + 1,
             }, ensure_ascii=False))
@@ -607,6 +640,7 @@ def plan_exercise(report: DiagnosisReport, user_note: str,
             latency = round((time.perf_counter() - started) * 1000)
             logger.info(json.dumps({
                 "event": "exercise_plan_response", "provider": _provider_name(),
+                "servedBy": served_by(),
                 "model": config.MENTOR_MODEL, "responseMode": config.MENTOR_RESPONSE_MODE,
                 "latencyMs": latency, "attempt": attempt + 1,
             }, ensure_ascii=False))

@@ -5,6 +5,8 @@ import { t } from '../../i18n/messages'
 export interface FollowerPosition {
   /** Index into the onset list the follower was initialised with. */
   onsetIdx: number
+  /** The onset the player is due to play next. */
+  expectedIdx: number
   onsetId: string
   measureNo: number
   onsetBeat: number

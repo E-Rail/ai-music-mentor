@@ -14,6 +14,7 @@ const STATUS_TEXT = {
   match: 'liveStatusMatch',
   partial: 'liveStatusPartial',
   different: 'liveStatusDifferent',
+  corrected: 'liveStatusCorrected',
 } as const
 
 /**

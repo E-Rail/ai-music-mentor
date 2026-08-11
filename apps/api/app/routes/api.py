@@ -15,6 +15,7 @@ from app import config, storage
 from app.db import repositories
 from app.schemas.models import (AccompanimentCreate, ApiError, DiagnosisReport,
                                 EventBatchCreate, ExerciseCreate, MentorRequest,
+                                InputSource, MentorChatRequest, MentorChatTurn,
                                 PerformanceEvent, ScoreBundle,
                                 ScoreNormalization, ScoreNormalizationPatch,
                                 SessionCreate, SessionFinish)
@@ -88,6 +89,18 @@ def _uploaded_midi_path(session_id: str, reference: str) -> Path:
     return path
 
 
+def _assert_event_id_integrity(existing: list[dict], incoming: list[PerformanceEvent]) -> None:
+    """A stable event ID is an immutable evidence key across every batch."""
+    known = {str(event["id"]): event for event in existing}
+    for event in incoming:
+        payload = event.model_dump()
+        prior = known.get(event.id)
+        if prior is not None and prior != payload:
+            raise _err(409, "EVENT_ID_CONFLICT",
+                       f"演奏事件 {event.id} 的内容与已保存批次不一致")
+        known[event.id] = payload
+
+
 def _score_payload(score_id: str, data: dict, request: Request | None = None) -> dict:
     bundle = ScoreBundle.model_validate(data["bundle"])
     prefix = _api_prefix(request)
@@ -102,12 +115,15 @@ def _score_payload(score_id: str, data: dict, request: Request | None = None) ->
         "confidence": data.get("confidence", 1.0),
         "normalization": data.get("normalization", {}),
         "sourceReferences": data.get("sourceReferences", []),
+        "sourceName": data.get("sourceName"),
+        "libraryCategory": _library_category(data),
         "generated": bool(data.get("generated", False)),
         "parentScoreId": data.get("parentScoreId"),
         "rootScoreId": data.get("rootScoreId") or score_id,
         "lineageDepth": int(data.get("lineageDepth", 0)),
         "sourceExerciseId": data.get("sourceExerciseId"),
         "sourceReportId": data.get("sourceReportId"),
+        "instrument": data.get("instrument"),
         "renderUrl": f"{prefix}/scores/{score_id}/render.musicxml",
         "timelineUrl": (f"{prefix}/scores/{score_id}/timeline.midi"
                         if (data.get("sourceType") == "midi" or
@@ -117,14 +133,46 @@ def _score_payload(score_id: str, data: dict, request: Request | None = None) ->
 
 # ---------------------------------------------------------------- scores / import
 
+_LEGACY_INTERNAL_SOURCE_NAMES = {"piece.mxl", "take.mid", "practice.mid"}
+
+
+def _library_category(record: dict) -> str:
+    """Return stable library provenance, with a narrow legacy cleanup shim.
+
+    Older API tests imported their fixtures into the desktop database before
+    provenance was recorded. Keep those records recoverable by ID while hiding
+    their known placeholder names from the user's score library.
+
+    The shim can only reach records written before ``libraryCategory`` existed:
+    every ingestion path now stores one, and a stored value returns above. A
+    user who genuinely uploads a file called ``piece.mxl`` is therefore never
+    caught by the placeholder-name match.
+    """
+    category = record.get("libraryCategory")
+    if category in {"demo", "uploaded", "generated", "internal"}:
+        return category
+    if record.get("builtin"):
+        return "demo"
+    if record.get("generated") or record.get("sourceExerciseId"):
+        return "generated"
+    source_name = str(record.get("sourceName") or "").lower()
+    if source_name in _LEGACY_INTERNAL_SOURCE_NAMES:
+        return "internal"
+    return "uploaded"
+
 @router.get("/scores")
 def list_scores():
     scores = []
     for record in storage.list_kind("score"):
+        category = _library_category(record)
+        if category == "internal":
+            continue
         meta = record["bundle"]["meta"]
         scores.append({
             **meta,
             "builtin": record.get("builtin", False),
+            "sourceName": record.get("sourceName"),
+            "libraryCategory": category,
             "sourceType": record.get("sourceType", "musicxml"),
             "displayMode": record.get("displayMode", "exact_notation"),
             "warnings": record.get("warnings", []),
@@ -137,11 +185,37 @@ def list_scores():
     return {"scores": scores}
 
 
+@router.delete("/scores/generated")
+def clear_generated_scores():
+    """Remove generated practice scores from the visible local library.
+
+    Reports and exercise downloads may still reference these immutable scores,
+    so this is an archive operation rather than a cascading database delete.
+    Direct recovery by ID therefore remains possible while the score picker is
+    immediately cleared.
+    """
+    cleared_ids: list[str] = []
+    for record in storage.list_kind("score"):
+        if _library_category(record) != "generated":
+            continue
+        score_id = str(record.get("bundle", {}).get("meta", {}).get("scoreId") or "")
+        if not score_id:
+            continue
+        storage.put("score", score_id, {
+            **record,
+            "libraryCategory": "internal",
+            "archivedFromLibraryAt": _now(),
+        })
+        cleared_ids.append(score_id)
+    return {"clearedCount": len(cleared_ids), "scoreIds": cleared_ids}
+
+
 @router.post("/scores/import", status_code=201)
 async def import_score(request: Request, file: UploadFile = File(...)):
     content = await file.read(config.MAX_SCORE_BYTES + 1)
     try:
-        normalized = ingest_score(file.filename or "score", content)
+        normalized = ingest_score(
+            file.filename or "score", content, library_category="uploaded")
     except ScoreImportError as exc:
         raise _err(400, getattr(exc, "code", "SCORE_UNSUPPORTED"), str(exc)) from exc
     data = storage.get("score", normalized.scoreId)
@@ -204,10 +278,18 @@ def create_session(req: SessionCreate):
     session_id = _new_id("sess")
     count_in_beats = req.countInBeats or max(1, round(bundle.meta.beatsPerMeasure))
     count_in_bpm = req.countInBpm or bundle.meta.tempo
+    inferred_source = req.inputSource
+    if inferred_source is None:
+        inferred_source = (InputSource.midi_upload if req.device in {"midi-file", "midi-upload"}
+                           else InputSource.microphone if req.device == "microphone"
+                           else InputSource.web_midi)
+    instrument = req.instrument or "piano"
     storage.put("session", session_id, {
         "id": session_id, "sessionId": session_id, "profileId": config.LOCAL_PROFILE_ID,
         "scoreId": req.scoreId, "rangeStart": range_start, "rangeEnd": range_end,
-        "device": req.device, "startedAt": _now(), "status": "recording",
+        "device": req.device, "inputSource": inferred_source.value,
+        "instrument": instrument.value if hasattr(instrument, "value") else instrument,
+        "startedAt": _now(), "status": "recording",
         "countIn": {"beats": count_in_beats, "bpm": count_in_bpm},
     })
     return {"sessionId": session_id,
@@ -221,7 +303,9 @@ def persist_event_batch(session_id: str, req: EventBatchCreate):
         raise _err(404, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在")
     if session.get("status") not in {"recording", "device_lost", "failed"}:
         raise _err(409, "SESSION_CLOSED", "该会话已提交，不能追加演奏事件")
-    existing_ids = {event["id"] for event in repositories.get_session_events(session_id)}
+    existing_events = repositories.get_session_events(session_id)
+    _assert_event_id_integrity(existing_events, req.events)
+    existing_ids = {event["id"] for event in existing_events}
     incoming_ids = {event.id for event in req.events}
     if len(existing_ids | incoming_ids) > config.MAX_PERFORMANCE_EVENTS:
         raise _err(400, "TOO_MANY_EVENTS", "演奏事件数量超过上限，请缩短练习范围")
@@ -266,10 +350,18 @@ async def session_events_ws(ws: WebSocket, session_id: str):
     if not session:
         await ws.close(code=4404)
         return
+    if session.get("status") not in {"recording", "device_lost", "failed"}:
+        await ws.close(code=4409)
+        return
     sequence = 0
     try:
         while True:
             message = await ws.receive_json()
+            current = storage.get("session", session_id)
+            if not current or current.get("status") not in {
+                    "recording", "device_lost", "failed"}:
+                await ws.close(code=4409)
+                return
             raw = message.get("events", []) if isinstance(message, dict) else []
             try:
                 events = [PerformanceEvent.model_validate(event) for event in raw]
@@ -279,7 +371,13 @@ async def session_events_ws(ws: WebSocket, session_id: str):
                 await ws.send_json({"error": {"code": "EVENT_INVALID",
                                                "message": "MIDI 事件字段不合法"}})
                 continue
-            existing_ids = {event["id"] for event in repositories.get_session_events(session_id)}
+            existing_events = repositories.get_session_events(session_id)
+            try:
+                _assert_event_id_integrity(existing_events, events)
+            except HTTPException as exc:
+                await ws.send_json({"error": exc.detail})
+                continue
+            existing_ids = {event["id"] for event in existing_events}
             if len(existing_ids | {event.id for event in events}) > config.MAX_PERFORMANCE_EVENTS:
                 await ws.send_json({"error": {"code": "TOO_MANY_EVENTS",
                                                "message": "演奏事件数量超过上限"}})
@@ -340,9 +438,11 @@ def finish_session(session_id: str, req: SessionFinish):
                 "reportId": session["reportId"]}
     if session.get("jobId"):
         existing = repositories.get_job(session["jobId"])
-        if existing:
+        if existing and existing.get("status") != "failed":
             return {"analysisJobId": existing["analysisJobId"],
                     "reportId": existing.get("reportId"), "status": existing["status"]}
+    if session.get("status") not in {"recording", "device_lost", "failed"}:
+        raise _err(409, "SESSION_CLOSED", "该会话已关闭，不能提交分析")
     events = list(req.events)
     if not events and req.uploadedMidiRef:
         path = _uploaded_midi_path(session_id, req.uploadedMidiRef)
@@ -351,6 +451,8 @@ def finish_session(session_id: str, req: SessionFinish):
         except Exception as exc:
             raise _err(400, "MIDI_FILE_INVALID", "无法解析该 MIDI 文件，请重新导出后上传") from exc
     if events:
+        _assert_event_id_integrity(
+            repositories.get_session_events(session_id), events)
         repositories.append_event_batch(
             session_id, f"finish-{session_id}", 2_147_483_647,
             [event.model_dump() for event in events],
@@ -358,14 +460,22 @@ def finish_session(session_id: str, req: SessionFinish):
     persisted = repositories.get_session_events(session_id)
     if len(persisted) > config.MAX_PERFORMANCE_EVENTS:
         raise _err(400, "TOO_MANY_EVENTS", "演奏事件数量超过上限，请缩短练习范围")
-    if not persisted:
+    quality_only_microphone_take = (
+        session.get("inputSource") == InputSource.microphone.value
+        and req.captureMeta is not None
+    )
+    if not persisted and not quality_only_microphone_take:
         raise _err(400, "NO_PERFORMANCE_EVENTS", "没有演奏事件，请重录")
+    if req.captureMeta is not None:
+        session["captureMeta"] = req.captureMeta.model_dump()
+        storage.put("session", session_id, session)
     job = analysis_jobs.create_or_get_job(session_id)
     job_id = job.get("analysisJobId") or job.get("id")
     analysis_jobs.enqueue(job_id)
+    current_job = repositories.get_job(job_id) or job
     return JSONResponse(status_code=202, content={
-        "analysisJobId": job_id, "reportId": job.get("reportId"),
-        "status": job.get("status", "queued"),
+        "analysisJobId": job_id, "reportId": current_job.get("reportId"),
+        "status": current_job.get("status", "queued"),
     })
 
 
@@ -395,6 +505,7 @@ def _public_exercise(exercise_id: str, exercise: dict, request: Request) -> dict
         for key in (
             "aiPlan", "plannerProvider", "plannerModel", "plannerLatencyMs",
             "plannerFallbackReason", "algorithmVersion", "lineageDepth",
+            "variationIndex", "musicalFingerprint", "cadencePlan",
         )
         if key in exercise
     }
@@ -419,13 +530,45 @@ def create_exercise(req: ExerciseCreate, request: Request):
         raise _err(404, "REPORT_NOT_FOUND", f"报告 {req.reportId} 不存在")
     report = DiagnosisReport.model_validate(report_data)
     bundle = _load_bundle(report.scoreId)
+    parent_data = storage.get("score", report.scoreId)
+    if not parent_data:
+        raise _err(404, "SCORE_NOT_FOUND", f"曲目 {report.scoreId} 不存在")
+    root_score_id = parent_data.get("rootScoreId") or report.scoreId
+    lineage_scores = [
+        record for record in storage.list_kind("score")
+        if bool(record.get("generated")) and
+        (record.get("rootScoreId") or
+         record.get("bundle", {}).get("meta", {}).get("scoreId")) == root_score_id
+    ]
+    recent_exercises: list[dict] = []
+    for record in reversed(lineage_scores):
+        source_exercise_id = record.get("sourceExerciseId")
+        saved_exercise = (storage.get("exercise", source_exercise_id)
+                          if source_exercise_id else None)
+        if saved_exercise:
+            recent_exercises.append(saved_exercise)
+        if len(recent_exercises) >= 6:
+            break
+    recent_plans = [{
+        "strategy": item.get("ruleId"),
+        "sourceMeasures": item.get("sourceMeasures", []),
+        "tempoRatio": item.get("params", {}).get("tempoRatio"),
+        "title": item.get("aiPlan", {}).get("title", ""),
+        "rationale": item.get("aiPlan", {}).get("rationale", "")[:300],
+    } for item in recent_exercises]
+    prior_fingerprints = {
+        str(item.get("musicalFingerprint")) for item in recent_exercises
+        if item.get("musicalFingerprint")
+    }
+    variation_index = len(lineage_scores)
     # errorIds is part of the public request rather than nested params; merge it
     # before either AI planning or deterministic generation.
     params = req.params.model_copy(update={"errorIds": req.errorIds})
     planner_outcome = None
     if req.aiAssist:
         planner_outcome = mentor_adapter.plan_exercise(
-            report, req.generationNote, req.errorIds, params, bundle.meta.parts)
+            report, req.generationNote, req.errorIds, params, bundle.meta.parts,
+            recent_plans)
         plan = planner_outcome.response
         params = params.model_copy(update={
             "strategy": plan.strategy, "errorIds": plan.errorIds,
@@ -447,7 +590,13 @@ def create_exercise(req: ExerciseCreate, request: Request):
     elif params.strategy == "auto":
         params = params.model_copy(update={"strategy": suggest_strategy(report)})
     with tempfile.TemporaryDirectory(prefix="music-mentor-exercise-") as temp_dir:
-        exercise = generate_exercise(report, bundle, params, Path(temp_dir))
+        exercise = generate_exercise(
+            report, bundle, params, Path(temp_dir), variation_index)
+        for offset in range(1, 6):
+            if exercise.musicalFingerprint not in prior_fingerprints:
+                break
+            exercise = generate_exercise(
+                report, bundle, params, Path(temp_dir), variation_index + offset)
         xml_content = Path(exercise.musicXmlPath).read_bytes()
         midi_content = Path(exercise.midiPath).read_bytes()
         practice_score_id = f"practice_{exercise.exerciseId}"
@@ -456,6 +605,7 @@ def create_exercise(req: ExerciseCreate, request: Request):
         ingest_score(
             f"{practice_score_id}.musicxml", xml_content,
             score_id=practice_score_id,
+            library_category="generated",
         )
         midi_artifact = local_file_store.put(
             kind="score-timeline", content=midi_content,
@@ -464,11 +614,9 @@ def create_exercise(req: ExerciseCreate, request: Request):
         )
 
     practice_data = storage.get("score", practice_score_id)
-    parent_data = storage.get("score", report.scoreId)
     if not practice_data or not parent_data:
         raise _err(500, "EXERCISE_SCORE_FAILED", "生成练习无法注册为可分析曲目")
     lineage_depth = int(parent_data.get("lineageDepth", 0)) + 1
-    root_score_id = parent_data.get("rootScoreId") or report.scoreId
     timeline_reference = {
         "artifactId": midi_artifact.artifact_id, "kind": "score-timeline",
         "sha256": midi_artifact.sha256, "originalName": midi_artifact.original_name,
@@ -481,6 +629,7 @@ def create_exercise(req: ExerciseCreate, request: Request):
         "lineageDepth": lineage_depth,
         "sourceExerciseId": exercise.exerciseId,
         "sourceReportId": req.reportId,
+        "instrument": report.inputQuality.instrument.value,
         "timelineArtifactId": midi_artifact.artifact_id,
         "sourceReferences": [*practice_data.get("sourceReferences", []), timeline_reference],
     }
@@ -592,6 +741,106 @@ def mentor_respond(req: MentorRequest):
     }
 
 
+@router.post("/mentor/chat")
+def mentor_chat(req: MentorChatRequest):
+    report_data = storage.get("report", req.reportId)
+    if not report_data:
+        raise _err(404, "REPORT_NOT_FOUND", f"报告 {req.reportId} 不存在")
+    report = DiagnosisReport.model_validate(report_data)
+    session = storage.get("session", report.sessionId) or {}
+    score = storage.get("score", report.scoreId) or {}
+    score_meta = score.get("bundle", {}).get("meta", {})
+    comparison = repositories.latest_comparison_for_report(report.reportId)
+    root_score_id = score.get("rootScoreId") or report.scoreId
+    memory_scope = f"score:{root_score_id}"
+    memory = repositories.get_mentor_memory(memory_scope)
+    remembered_history = [
+        MentorChatTurn(
+            role=turn["role"],
+            content=str(turn["content"])[:2_000],
+        )
+        for turn in memory["turns"]
+        if turn.get("role") in {"user", "assistant"} and turn.get("content")
+    ]
+    request_history = list(req.history)
+    overlap = 0
+    for size in range(min(len(remembered_history), len(request_history)), 0, -1):
+        remembered_tail = [(turn.role, turn.content) for turn in remembered_history[-size:]]
+        request_head = [(turn.role, turn.content) for turn in request_history[:size]]
+        if remembered_tail == request_head:
+            overlap = size
+            break
+    combined_history = [*remembered_history, *request_history[overlap:]][-12:]
+    practice_context = {
+        "scoreTitle": score_meta.get("title", report.scoreId),
+        "instrument": session.get(
+            "instrument", report.inputQuality.instrument.value),
+        "inputSource": session.get(
+            "inputSource", report.inputQuality.source.value),
+        "currentRound": int(score.get("lineageDepth", 0)) + 1,
+        "selectedErrorId": req.errorId,
+        "rootScoreId": root_score_id,
+        "recentComparison": comparison,
+        "mentorMemory": {
+            "enabled": True,
+            "rememberedTurnCount": memory["rememberedTurnCount"],
+            "scope": "this score and its generated exercise rounds",
+        },
+    }
+    outcome = mentor_adapter.chat(
+        report, req.message, req.errorId, combined_history, practice_context)
+    updated_memory = repositories.append_mentor_memory(
+        memory_scope, req.reportId, req.message, outcome.response.answer,
+        outcome.response.intent,
+    )
+    repositories.save_mentor_interaction({
+        "reportId": req.reportId, "provider": outcome.provider,
+        "model": outcome.model,
+        "promptVersion": mentor_adapter.CHAT_PROMPT_VERSION,
+        "responseMode": outcome.response_mode, "latencyMs": outcome.latency_ms,
+        "fallbackReason": outcome.fallback_reason,
+        "payload": {
+            "kind": "chat", "selectedErrorId": req.errorId,
+            "historyCount": len(combined_history),
+            "rememberedTurnCount": updated_memory["rememberedTurnCount"],
+            "intent": outcome.response.intent,
+        },
+    })
+    return {
+        "provider": outcome.provider, "model": outcome.model,
+        "promptVersion": mentor_adapter.CHAT_PROMPT_VERSION,
+        "responseMode": outcome.response_mode, "latencyMs": outcome.latency_ms,
+        "fallbackReason": outcome.fallback_reason, "reportId": req.reportId,
+        "memory": {
+            "enabled": True, "scopeId": memory_scope,
+            "rememberedTurnCount": updated_memory["rememberedTurnCount"],
+            "updatedAt": updated_memory["updatedAt"],
+        },
+        **outcome.response.model_dump(),
+    }
+
+
+def _memory_scope_for_report(report_id: str) -> str:
+    report_data = storage.get("report", report_id)
+    if not report_data:
+        raise _err(404, "REPORT_NOT_FOUND", f"报告 {report_id} 不存在")
+    report = DiagnosisReport.model_validate(report_data)
+    score = storage.get("score", report.scoreId) or {}
+    return f"score:{score.get('rootScoreId') or report.scoreId}"
+
+
+@router.get("/mentor/memory")
+def mentor_memory(reportId: str):
+    memory = repositories.get_mentor_memory(_memory_scope_for_report(reportId))
+    return {key: value for key, value in memory.items() if key != "turns"}
+
+
+@router.delete("/mentor/memory", status_code=204)
+def forget_mentor_memory(reportId: str):
+    repositories.clear_mentor_memory(_memory_scope_for_report(reportId))
+    return Response(status_code=204)
+
+
 @router.get("/comparisons")
 def compare_sessions(baselineId: str, retryId: str):
     baseline = storage.get("report", baselineId)
@@ -628,4 +877,7 @@ def register_builtin_scores() -> None:
         xml_path = config.FIXTURES_DIR / item["musicxml"]
         if not xml_path.exists():
             continue
-        ingest_score(xml_path.name, xml_path.read_bytes(), score_id=score_id, builtin=True)
+        ingest_score(
+            xml_path.name, xml_path.read_bytes(), score_id=score_id,
+            builtin=True, library_category="demo",
+        )

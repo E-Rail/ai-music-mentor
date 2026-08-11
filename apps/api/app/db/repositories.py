@@ -15,6 +15,7 @@ from app.db.models import (AnalysisJobRecord, ArtifactRecord, ComparisonRecord,
                            DiagnosisReportRecord, EventBatchRecord,
                            ExerciseRecord, GeneratedItemRecord,
                            LocalProfileRecord, MentorInteractionRecord,
+                           MentorMemoryRecord,
                            PracticeSessionRecord, ScoreRecord)
 from app.db.session import session_scope
 
@@ -197,6 +198,9 @@ def save_job(job_id: str, data: dict[str, Any]) -> None:
         row.error_code = data.get("errorCode", row.error_code)
         row.error_message = data.get("errorMessage", row.error_message)
         row.attempts = data.get("attempts", row.attempts)
+        if row.status == "queued":
+            row.started_at = None
+            row.completed_at = None
         if row.status == "running" and row.started_at is None:
             row.started_at = _utcnow()
         if row.status in {"completed", "failed"}:
@@ -211,7 +215,8 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return {
             "id": row.id, "analysisJobId": row.id, "sessionId": row.session_id,
             "status": row.status, "progress": row.progress, "reportId": row.report_id,
-            "errorCode": row.error_code, "errorMessage": row.error_message,
+            "errorCode": row.error_code if row.status == "failed" else None,
+            "errorMessage": row.error_message if row.status == "failed" else None,
             "attempts": row.attempts, "createdAt": _iso(row.created_at),
             "startedAt": _iso(row.started_at), "completedAt": _iso(row.completed_at),
         }
@@ -312,6 +317,18 @@ def save_comparison(data: dict[str, Any]) -> None:
                                     retry_report_id=retry, payload=data))
 
 
+def latest_comparison_for_report(report_id: str) -> dict[str, Any] | None:
+    """Return the bounded comparison whose retry side is the current report."""
+    with session_scope() as db:
+        row = db.scalar(
+            select(ComparisonRecord)
+            .where(ComparisonRecord.retry_report_id == report_id)
+            .order_by(ComparisonRecord.created_at.desc())
+            .limit(1)
+        )
+        return dict(row.payload) if row else None
+
+
 def save_mentor_interaction(data: dict[str, Any]) -> None:
     with session_scope() as db:
         db.add(MentorInteractionRecord(
@@ -320,6 +337,78 @@ def save_mentor_interaction(data: dict[str, Any]) -> None:
             prompt_version=data["promptVersion"], response_mode=data["responseMode"],
             latency_ms=data["latencyMs"], fallback_reason=data.get("fallbackReason"),
             payload=data.get("payload", {}),
+        ))
+
+
+_MENTOR_MEMORY_MAX_TURNS = 20
+_MENTOR_MEMORY_MAX_CHARACTERS = 12_000
+
+
+def _public_mentor_memory(row: MentorMemoryRecord | None,
+                          scope_id: str) -> dict[str, Any]:
+    turns = list(row.turns or []) if row else []
+    return {
+        "enabled": True,
+        "scopeId": scope_id,
+        "rememberedTurnCount": len(turns),
+        "turns": turns,
+        "updatedAt": _iso(row.updated_at) if row else None,
+    }
+
+
+def get_mentor_memory(scope_id: str) -> dict[str, Any]:
+    """Load local-only, score-lineage memory for the single v1 profile."""
+    with session_scope() as db:
+        row = db.scalar(select(MentorMemoryRecord).where(
+            MentorMemoryRecord.profile_id == config.LOCAL_PROFILE_ID,
+            MentorMemoryRecord.scope_id == scope_id,
+        ))
+        return _public_mentor_memory(row, scope_id)
+
+
+def append_mentor_memory(scope_id: str, report_id: str,
+                         user_message: str, assistant_message: str,
+                         intent: str) -> dict[str, Any]:
+    """Append one exchange and trim old text before it can grow unbounded."""
+    additions = [
+        {"role": "user", "content": user_message.strip()[:2_000],
+         "reportId": report_id},
+        {"role": "assistant", "content": assistant_message.strip()[:4_000],
+         "reportId": report_id, "intent": intent},
+    ]
+    with session_scope() as db:
+        row = db.scalar(select(MentorMemoryRecord).where(
+            MentorMemoryRecord.profile_id == config.LOCAL_PROFILE_ID,
+            MentorMemoryRecord.scope_id == scope_id,
+        ))
+        if row is None:
+            row = MentorMemoryRecord(
+                id=f"memory_{uuid.uuid4().hex[:12]}",
+                profile_id=config.LOCAL_PROFILE_ID,
+                scope_id=scope_id,
+                turns=[],
+            )
+            db.add(row)
+        turns = [turn for turn in list(row.turns or [])
+                 if turn.get("role") in {"user", "assistant"}
+                 and isinstance(turn.get("content"), str)]
+        turns.extend(turn for turn in additions if turn["content"])
+        turns = turns[-_MENTOR_MEMORY_MAX_TURNS:]
+        while (len(turns) > 2 and
+               sum(len(str(turn.get("content", ""))) for turn in turns)
+               > _MENTOR_MEMORY_MAX_CHARACTERS):
+            turns.pop(0)
+        row.turns = turns
+        row.updated_at = _utcnow()
+        db.flush()
+        return _public_mentor_memory(row, scope_id)
+
+
+def clear_mentor_memory(scope_id: str) -> None:
+    with session_scope() as db:
+        db.execute(delete(MentorMemoryRecord).where(
+            MentorMemoryRecord.profile_id == config.LOCAL_PROFILE_ID,
+            MentorMemoryRecord.scope_id == scope_id,
         ))
 
 

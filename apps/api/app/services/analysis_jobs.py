@@ -59,6 +59,13 @@ def enqueue(job_id: str) -> None:
         existing = _futures.get(job_id)
         if existing and not existing.done():
             return
+        job = repositories.get_job(job_id)
+        if job and job.get("status") == "failed":
+            repositories.save_job(job_id, {
+                **job, "sessionId": job["sessionId"], "status": "queued",
+                "progress": 0, "reportId": None,
+                "errorCode": None, "errorMessage": None,
+            })
         if _executor is None:
             _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis-worker")
         _futures[job_id] = _executor.submit(_run_job, job_id)
@@ -71,6 +78,7 @@ def _run_job(job_id: str) -> None:
     session_id = job["sessionId"]
     repositories.save_job(job_id, {
         **job, "sessionId": session_id, "status": "running", "progress": 10,
+        "errorCode": None, "errorMessage": None,
         "attempts": int(job.get("attempts") or 0) + 1,
     })
     logger.info(json.dumps({"event": "analysis_job_started", "jobId": job_id,
@@ -84,13 +92,16 @@ def _run_job(job_id: str) -> None:
             raise RuntimeError("SCORE_NOT_FOUND")
         raw_events = repositories.get_session_events(session_id)
         events = [PerformanceEvent.model_validate(event) for event in raw_events]
-        if not events:
+        if not events and session.get("inputSource") != "microphone":
             raise RuntimeError("NO_PERFORMANCE_EVENTS")
         report_id = f"rep_{uuid.uuid4().hex[:12]}"
         report = run_analysis(
             ScoreBundle.model_validate(score["bundle"]), events, report_id, session_id,
             range_start=session["rangeStart"], range_end=session["rangeEnd"],
             created_at=_now(),
+            input_source=session.get("inputSource", "web-midi"),
+            instrument=session.get("instrument", "piano"),
+            capture_meta=session.get("captureMeta"),
         )
         event_digest = hashlib.sha256(json.dumps(
             raw_events, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
@@ -106,6 +117,7 @@ def _run_job(job_id: str) -> None:
         repositories.save_job(job_id, {
             "sessionId": session_id, "status": "completed", "progress": 100,
             "reportId": report_id, "attempts": int(job.get("attempts") or 0) + 1,
+            "errorCode": None, "errorMessage": None,
         })
         session["status"] = "completed"
         session["reportId"] = report_id

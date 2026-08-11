@@ -10,17 +10,24 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import mido
+import pytest
+from starlette.websockets import WebSocketDisconnect
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "apps" / "api"))
 
 from app.main import app  # noqa: E402
 from app import config  # noqa: E402
+from app.db import repositories  # noqa: E402
 from app.schemas.models import ExercisePlannerResponse  # noqa: E402
+from app.schemas.models import PerformanceEvent  # noqa: E402
 from app.services.importers.midi import MidiScoreImporter  # noqa: E402
 from app.services.mentor import adapter as mentor_adapter  # noqa: E402
 from app.services.mentor.adapter import ExercisePlanOutcome  # noqa: E402
 from app.services.midi_io import load_midi_events  # noqa: E402
+from app.services.score_import import parse_musicxml  # noqa: E402
+from app.services.diagnosis.pipeline import run_analysis  # noqa: E402
+from app.services.score_ingestion import ingest_score  # noqa: E402
 
 FIXTURES = ROOT / "packages" / "score-fixtures"
 
@@ -49,6 +56,8 @@ def test_musicxml_mxl_and_midi_share_normalized_contract():
         assert exact.status_code == 201, exact.text
         assert exact.json()["sourceType"] == "mxl"
         assert exact.json()["displayMode"] == "exact_notation"
+        assert exact.json()["libraryCategory"] == "uploaded"
+        assert exact.json()["sourceName"] == "piece.mxl"
 
         simplified = client.post("/api/v1/scores/import", files={
             "file": ("take.mid", midi, "audio/midi"),
@@ -60,6 +69,7 @@ def test_musicxml_mxl_and_midi_share_normalized_contract():
         assert body["timelineUrl"].endswith("timeline.midi")
         assert body["normalization"]["tempo"] > 0
         assert body["warnings"]
+        assert body["libraryCategory"] == "uploaded"
 
         confirmed = client.patch(
             f"/api/v1/scores/{body['scoreId']}/normalization",
@@ -68,6 +78,24 @@ def test_musicxml_mxl_and_midi_share_normalized_contract():
         assert confirmed.status_code == 200, confirmed.text
         assert confirmed.json()["normalization"]["confirmed"] is True
         assert client.get(confirmed.json()["renderUrl"]).status_code == 200
+
+
+def test_score_library_separates_user_demo_generated_and_internal_records():
+    xml = (FIXTURES / "scores" / "melody.musicxml").read_bytes()
+    internal_id = f"internal_{uuid.uuid4().hex[:8]}"
+    with TestClient(app) as client:
+        ingest_score("internal-fixture.musicxml", xml, score_id=internal_id)
+        uploaded = client.post("/api/v1/scores/import", files={
+            "file": ("My piece.musicxml", xml, "application/vnd.recordare.musicxml"),
+        })
+        assert uploaded.status_code == 201, uploaded.text
+
+        scores = client.get("/api/v1/scores").json()["scores"]
+        by_id = {score["scoreId"]: score for score in scores}
+        assert by_id["melody"]["libraryCategory"] == "demo"
+        assert by_id[uploaded.json()["scoreId"]]["libraryCategory"] == "uploaded"
+        assert by_id[uploaded.json()["scoreId"]]["sourceName"] == "My piece.musicxml"
+        assert internal_id not in by_id
 
 
 def test_mxl_path_traversal_is_rejected_before_storage():
@@ -95,8 +123,67 @@ def test_clean_two_track_midi_infers_hands_and_defaults_metadata():
 
     assert set(result.normalized.normalization.trackMapping.values()) == {"LH", "RH"}
     assert result.normalized.bundle.meta.tempo == 120
+    assert sorted(event.dynamicTarget for event in result.normalized.bundle.events) == [70, 80]
     assert result.normalized.bundle.meta.timeSignature == "4/4"
     assert any("120 BPM" in warning for warning in result.normalized.warnings)
+
+
+def test_musicxml_half_note_meter_and_expanded_repeats_have_linear_unique_timeline():
+    xml = b'''<?xml version="1.0"?>
+    <score-partwise version="3.1">
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1">
+        <measure number="1">
+          <attributes><divisions>1</divisions><time><beats>2</beats><beat-type>2</beat-type></time></attributes>
+          <barline location="left"><repeat direction="forward"/></barline>
+          <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>
+        </measure>
+        <measure number="2">
+          <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>
+          <barline location="right"><repeat direction="backward"/></barline>
+        </measure>
+      </part>
+    </score-partwise>'''
+
+    bundle = parse_musicxml(xml, "repeat_half_note")
+
+    assert bundle.meta.timeSignature == "2/2"
+    assert bundle.meta.beatsPerMeasure == 4
+    assert bundle.meta.measureCount == 4
+    assert [event.measureNo for event in bundle.events] == [1, 2, 3, 4]
+    assert [event.pitches for event in bundle.events] == [[60], [62], [60], [62]]
+    assert len({event.eventId for event in bundle.events}) == 4
+
+
+def test_musicxml_meter_change_preserves_absolute_timeline_for_analysis():
+    xml = b'''<?xml version="1.0"?>
+    <score-partwise version="3.1">
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1">
+        <measure number="1"><attributes><divisions>1</divisions><time><beats>3</beats><beat-type>4</beat-type></time></attributes>
+          <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+          <note><rest/><duration>2</duration><type>half</type></note></measure>
+        <measure number="2"><attributes><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+          <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+          <note><rest/><duration>1</duration><type>quarter</type></note></measure>
+        <measure number="3"><note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+          <note><rest/><duration>1</duration><type>quarter</type></note></measure>
+      </part>
+    </score-partwise>'''
+    bundle = parse_musicxml(xml, "changing_meter")
+
+    assert [event.absoluteBeat for event in bundle.events] == [0, 3, 5]
+    performance = [PerformanceEvent(
+        id=f"played-{index}", tOnMs=beat * 625, tOffMs=beat * 625 + 300,
+        pitch=event.pitches[0], velocity=72, source="web-midi",
+    ) for index, (event, beat) in enumerate(zip(bundle.events, [0, 3, 5]))]
+    report = run_analysis(
+        bundle, performance, "rep_meter", "sess_meter", range_start=1, range_end=3)
+
+    assert report.metrics.pitchScore == 100
+    assert not [error for error in report.errors if error.type.value in {
+        "wrong_pitch", "missed_note", "extra_note", "early_late",
+    }]
 
 
 def test_pdf_slot_and_oversized_upload_fail_clearly(monkeypatch):
@@ -135,6 +222,16 @@ def test_event_batches_are_idempotent_and_finish_returns_persistent_job(monkeypa
         conflict = client.post(f"/api/v1/sessions/{session_id}/event-batches", json=changed)
         assert conflict.status_code == 409
 
+        conflicting_event_id = client.post(
+            f"/api/v1/sessions/{session_id}/event-batches",
+            json={
+                "batchId": f"different-batch-{suffix}", "sequence": 2,
+                "events": [{**events[0], "velocity": 2}],
+            },
+        )
+        assert conflicting_event_id.status_code == 409
+        assert conflicting_event_id.json()["detail"]["code"] == "EVENT_ID_CONFLICT"
+
         finish = client.post(f"/api/v1/sessions/{session_id}/finish", json={"events": []})
         assert finish.status_code == 202
         repeated_finish = client.post(f"/api/v1/sessions/{session_id}/finish", json={"events": []})
@@ -148,12 +245,14 @@ def test_event_batches_are_idempotent_and_finish_returns_persistent_job(monkeypa
         assert job["status"] == "completed", job
         assert client.get(f"/api/v1/reports/{job['reportId']}").status_code == 200
 
-        def fake_plan(_report, note, selected_error_ids, current, score_parts):
+        def fake_plan(_report, note, selected_error_ids, current, score_parts,
+                      recent_plans=None):
             assert note == "控制在五分钟"
             # Regression: top-level errorIds must reach the planner params.
             assert current.errorIds == ["client-selected-error"]
             assert selected_error_ids == ["client-selected-error"]
             assert score_parts
+            assert isinstance(recent_plans, list)
             return ExercisePlanOutcome(
                 response=ExercisePlannerResponse(
                     title="五分钟节拍练习", strategy="beat_skeleton", errorIds=[],
@@ -173,20 +272,27 @@ def test_event_batches_are_idempotent_and_finish_returns_persistent_job(monkeypa
         assert generated.status_code == 201, generated.text
         assert generated.json()["plannerProvider"] == "fake-ai"
         assert generated.json()["aiPlan"]["strategy"] == "beat_skeleton"
+        assert set(generated.json()["cadencePlan"]) == {
+            "half", "deceptive", "plagal", "authentic",
+        }
         restored = client.get(
             f"/api/v1/exercises/{generated.json()['exerciseId']}")
         assert restored.status_code == 200, restored.text
         assert restored.json()["musicXmlUrl"] == generated.json()["musicXmlUrl"]
         assert restored.json()["aiPlan"] == generated.json()["aiPlan"]
+        assert restored.json()["cadencePlan"] == generated.json()["cadencePlan"]
 
         practice_score_id = generated.json()["practiceScoreId"]
         practice = client.get(f"/api/v1/scores/{practice_score_id}")
         assert practice.status_code == 200, practice.text
         practice_body = practice.json()
         assert practice_body["generated"] is True
+        assert practice_body["libraryCategory"] == "generated"
         assert practice_body["parentScoreId"] == "melody"
         assert practice_body["rootScoreId"] == "melody"
         assert practice_body["lineageDepth"] == 1
+        assert practice_body["metadata"]["measureCount"] >= 5
+        assert generated.json()["musicalFingerprint"]
         assert practice_body["timelineUrl"]
         assert client.get(practice_body["renderUrl"]).status_code == 200
         assert client.get(practice_body["timelineUrl"]).status_code == 200
@@ -247,3 +353,70 @@ def test_event_batches_are_idempotent_and_finish_returns_persistent_job(monkeypa
         assert next_score["parentScoreId"] == practice_score_id
         assert next_score["rootScoreId"] == "melody"
         assert next_score["lineageDepth"] == 2
+        assert (next_exercise.json()["musicalFingerprint"] !=
+                generated.json()["musicalFingerprint"])
+
+        cleared = client.delete("/api/v1/scores/generated")
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["clearedCount"] >= 2
+        visible_ids = {item["scoreId"] for item in
+                       client.get("/api/v1/scores").json()["scores"]}
+        assert practice_score_id not in visible_ids
+        # Archiving the library entry never breaks an immutable old report.
+        assert client.get(f"/api/v1/scores/{practice_score_id}").status_code == 200
+
+
+def test_discarded_session_rejects_http_finish_and_websocket_events():
+    event = load_midi_events(str(FIXTURES / "midi" / "melody__standard.mid"))[0]
+    with TestClient(app) as client:
+        session = client.post("/api/v1/sessions", json={
+            "scoreId": "melody", "rangeStart": 1, "rangeEnd": 1,
+            "device": "mock-midi",
+        }).json()
+        session_id = session["sessionId"]
+        assert client.delete(f"/api/v1/sessions/{session_id}").status_code == 204
+
+        finish = client.post(
+            f"/api/v1/sessions/{session_id}/finish",
+            json={"events": [event.model_dump()]},
+        )
+        assert finish.status_code == 409
+        assert finish.json()["detail"]["code"] == "SESSION_CLOSED"
+
+        with pytest.raises(WebSocketDisconnect) as closed:
+            with client.websocket_connect(
+                    f"/api/v1/ws/sessions/{session_id}/events") as websocket:
+                websocket.receive_json()
+        assert closed.value.code == 4409
+
+
+def test_failed_analysis_retry_is_queued_and_clears_stale_error():
+    events = [event.model_dump() for event in load_midi_events(
+        str(FIXTURES / "midi" / "melody__standard.mid"))]
+    with TestClient(app) as client:
+        created = client.post("/api/v1/sessions", json={
+            "scoreId": "melody", "rangeStart": 1, "rangeEnd": 8,
+            "device": "mock-midi",
+        })
+        assert created.status_code == 201, created.text
+        session_id = created.json()["sessionId"]
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
+        repositories.save_job(job_id, {
+            "sessionId": session_id, "status": "failed", "progress": 100,
+            "errorCode": "ALIGNMENT_LOW_CONFIDENCE",
+            "errorMessage": "stale failure", "attempts": 1,
+        })
+
+        retried = client.post(
+            f"/api/v1/sessions/{session_id}/finish", json={"events": events})
+        assert retried.status_code == 202, retried.text
+        assert retried.json()["status"] != "failed"
+
+        for _ in range(100):
+            job = client.get(f"/api/v1/analysis/{job_id}").json()
+            if job["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.03)
+        assert job["status"] == "completed", job
+        assert job["errorCode"] is None
+        assert job["errorMessage"] is None

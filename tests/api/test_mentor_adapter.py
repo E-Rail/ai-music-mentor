@@ -50,6 +50,17 @@ def _valid_content() -> str:
     }, ensure_ascii=False)
 
 
+def _valid_chat_content() -> str:
+    return json.dumps({
+        "answer": "先直接回答：这是一次节奏定位问题。",
+        "intent": "diagnosis", "evidenceIds": ["ev_timing"],
+        "professionalGuidance": ["先把相邻两拍均分。"],
+        "actions": [{"type": "generate_exercise", "label": "生成节奏练习",
+                     "errorId": "err_timing"}],
+        "uncertainty": "没有视频证据。", "followUpQuestion": None,
+    }, ensure_ascii=False)
+
+
 def _patch_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
     original = httpx.Client
@@ -213,6 +224,70 @@ def test_chat_history_is_bounded_and_sent_in_order(monkeypatch):
         "system", "user", "assistant", "user",
     ]
     assert messages[-1]["content"] == "继续怎么练？"
+
+
+def test_dedicated_chat_answers_current_message_and_uses_v4_prompt(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": _valid_chat_content()}}],
+        })
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.chat(
+        _error_report(), "No, I asked how syncopation works.",
+        selected_error_id="err_timing", practice_context={
+            "instrument": "piano",
+            "recentComparison": {"metricDelta": {"rhythmScore": 4}},
+        },
+    )
+
+    assert outcome.response.answer.startswith("先直接回答")
+    assert outcome.response.evidenceIds == ["ev_timing"]
+    assert captured["messages"][-1]["content"] == "No, I asked how syncopation works."
+    system = captured["messages"][0]["content"]
+    assert "Answer the user's current message directly" in system
+    assert "Respect corrections" in system
+    assert '"recentComparison"' in system
+    assert '"rhythmScore": 4' in system
+
+
+def test_chat_retries_503_once_then_succeeds(monkeypatch):
+    calls = 0
+
+    def handler(_request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, json={"error": "busy"})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": _valid_chat_content()}}],
+        })
+
+    _configure(monkeypatch, "json_object")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.chat(_error_report(), "为什么这里晚了？", "err_timing")
+    assert calls == 2
+    assert outcome.provider == "fake-provider.test"
+
+
+def test_chat_rejects_invented_evidence(monkeypatch):
+    content = json.loads(_valid_chat_content())
+    content["evidenceIds"] = ["ev_invented"]
+
+    def handler(_request: httpx.Request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(content)}}],
+        })
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.chat(_error_report(), "解释一下", "err_timing")
+    assert outcome.provider == "rules-fallback"
+    assert outcome.response.intent == "clarification"
 
 
 def test_ai_exercise_planner_returns_grounded_parameters(monkeypatch):

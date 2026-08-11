@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from app import config, storage
 from app.db import repositories
@@ -17,9 +18,13 @@ def _new_score_id() -> str:
     return f"score_{uuid.uuid4().hex[:12]}"
 
 
+LibraryCategory = Literal["demo", "uploaded", "generated", "internal"]
+
+
 def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
                  normalization: ScoreNormalization | None = None,
-                 builtin: bool = False) -> NormalizedScore:
+                 builtin: bool = False,
+                 library_category: LibraryCategory = "internal") -> NormalizedScore:
     if not content:
         raise ScoreImportError("文件为空")
     if len(content) > config.MAX_SCORE_BYTES:
@@ -46,6 +51,7 @@ def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
     normalized = result.normalized.model_copy(update={"sourceReferences": references})
     data = {
         "bundle": normalized.bundle.model_dump(), "builtin": builtin,
+        "libraryCategory": "demo" if builtin else library_category,
         "profileId": config.LOCAL_PROFILE_ID,
         "sourceType": normalized.sourceType.value,
         "sourceName": Path(filename).name,

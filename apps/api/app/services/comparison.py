@@ -62,7 +62,13 @@ def compare_reports(baseline: dict[str, Any], retry: dict[str, Any],
 
     improved = sum(1 for key in SCORE_KEYS if delta[key] > 0)
     timing_improved = delta["timingMaeMs"] < 0
-    if target_changed and retry.get("errors"):
+    retry_quality = (retry.get("inputQuality") or {}).get("status")
+    if retry_quality == "insufficient":
+        suggestion = (
+            "本轮录音已接收，但输入证据不足，无法与上一轮进行可靠的分数比较。"
+            "你可以保留这次结果并询问导师，或调整麦克风距离后再试。"
+        )
+    elif target_changed and retry.get("errors"):
         suggestion = (
             f"本轮生成曲仍检测到 {len(retry.get('errors', []))} 个问题。"
             "下一份 AI 方案将只依据本轮证据继续调整。"

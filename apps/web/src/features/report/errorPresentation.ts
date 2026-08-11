@@ -20,3 +20,5 @@ export function errorDetailForDisplay(error: ErrorEvent, evidences: Evidence[]):
 
   return ''
 }
+
+export { errorColor } from './errorPalette'

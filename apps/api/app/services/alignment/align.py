@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from app.schemas.models import (AlignmentPair, AlignOp, PerformanceGroup)
-from app.services.alignment.onset import ScoreOnset
+from app.services.alignment.onset import ScoreOnset, score_onset_beat
 from app.services.alignment.tempo import TempoMap
 
 DELETE_COST = 1.0
@@ -43,8 +43,16 @@ def global_align(onsets: list[ScoreOnset],
                  groups: list[PerformanceGroup],
                  tempo_map: TempoMap,
                  beats_per_measure: float,
-                 bpm: float) -> list[AlignmentPair]:
-    """onset 层 DP 对齐（AlignmentPair.scoreEventId 存放 onsetId）。"""
+                 bpm: float,
+                 *,
+                 gate_beats: float | None = 1.2,
+                 onset_weight: float = ONSET_W) -> list[AlignmentPair]:
+    """Onset-level dynamic alignment.
+
+    ``gate_beats=None`` is used only by the coarse sequence pass. It lets the
+    path step across a burst of wrong or accidental notes before a reliable
+    tempo map exists. The refined pass restores a strict temporal gate.
+    """
     N, M = len(onsets), len(groups)
     if N == 0 or M == 0:
         pairs = [AlignmentPair(scoreEventId=o.onsetId, performanceId=None,
@@ -57,9 +65,9 @@ def global_align(onsets: list[ScoreOnset],
         return pairs
 
     beat_ms = 60000.0 / bpm
-    abs_beats = [(o.measureNo - 1) * beats_per_measure + o.onsetBeat for o in onsets]
+    abs_beats = [score_onset_beat(o, beats_per_measure) for o in onsets]
     expected_ms = [tempo_map.expected_ms(b) for b in abs_beats]
-    gate_ms = 1.2 * beat_ms   # 超过 1.2 拍残差禁止匹配
+    gate_ms = gate_beats * beat_ms if gate_beats is not None else None
 
     # pairCost 矩阵（inf = 禁止）
     INF = float("inf")
@@ -69,12 +77,13 @@ def global_align(onsets: list[ScoreOnset],
     for i in range(N):
         for j in range(M):
             resid = groups[j].tOnMs - expected_ms[i]
-            if abs(resid) > gate_ms:
+            if gate_ms is not None and abs(resid) > gate_ms:
                 continue
             dist = pitch_set_distance(onsets[i].pitches, groups[j].pitches)
             pdist[i][j] = dist
             presid[i][j] = resid
-            pcost[i][j] = PITCH_W * dist + ONSET_W * _norm_residual(resid, beat_ms)
+            pcost[i][j] = (PITCH_W * dist
+                           + onset_weight * _norm_residual(resid, beat_ms))
 
     # DP
     D = [[0.0] * (M + 1) for _ in range(N + 1)]
@@ -152,6 +161,29 @@ def collect_matched_beats(pairs: list[AlignmentPair],
             if p.operation == AlignOp.substitute and \
                     pitch_set_distance(so.pitches, g.pitches) > 0.34:
                 continue
-            beat = (so.measureNo - 1) * beats_per_measure + so.onsetBeat
+            beat = score_onset_beat(so, beats_per_measure)
             out.append((beat, g.tOnMs))
+    return sorted(out)
+
+
+def collect_paired_beats(pairs: list[AlignmentPair],
+                         onset_index: dict[str, ScoreOnset],
+                         group_index: dict[str, PerformanceGroup],
+                         beats_per_measure: float) -> list[tuple[float, float]]:
+    """Collect monotonic timing points from both matches and substitutions.
+
+    A wrong pitch is still strong timing evidence. Keeping it out of pitch
+    anchors is correct; keeping it out of *all* alignment evidence caused the
+    old all-or-nothing failure when a player made several pitch mistakes.
+    """
+    out: list[tuple[float, float]] = []
+    for pair in pairs:
+        if pair.operation not in (AlignOp.match, AlignOp.substitute):
+            continue
+        onset = onset_index.get(pair.scoreEventId or "")
+        group = group_index.get(pair.performanceId or "")
+        if not onset or not group:
+            continue
+        beat = score_onset_beat(onset, beats_per_measure)
+        out.append((beat, group.tOnMs))
     return sorted(out)

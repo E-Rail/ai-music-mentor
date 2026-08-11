@@ -165,8 +165,10 @@ class MidiScoreImporter(ScoreImporter):
                 measure += 1
                 in_measure = 0.0
             key = (part, measure, in_measure)
-            item = grouped.setdefault(key, {"pitches": [], "duration": 0.0})
+            item = grouped.setdefault(
+                key, {"pitches": [], "velocities": [], "duration": 0.0})
             item["pitches"].append(note.pitch)  # type: ignore[union-attr]
+            item["velocities"].append(note.velocity)  # type: ignore[union-attr]
             item["duration"] = max(float(item["duration"]), duration)
             last_beat = max(last_beat, onset + duration)
         if not grouped:
@@ -192,10 +194,11 @@ class MidiScoreImporter(ScoreImporter):
             events.append(ScoreEvent(
                 eventId=f"{score_id}:{part}:m{measure}:b{str(onset).replace('.', '_')}:"
                         f"{counters[(part, measure)]}",
-                measureNo=measure, onsetBeat=onset,
+                measureNo=measure, onsetBeat=onset, absoluteBeat=onset,
                 durationBeat=min(float(item["duration"]), measure_beats - onset),
                 pitches=sorted(set(item["pitches"])),  # type: ignore[arg-type]
                 part=part, voice=1,
+                dynamicTarget=round(statistics.median(item["velocities"])),  # type: ignore[arg-type]
             ))
         bundle = ScoreBundle(meta=ScoreMeta(
             scoreId=score_id, title=Path(filename).stem or "MIDI 乐曲",

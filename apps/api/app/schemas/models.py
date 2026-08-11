@@ -10,8 +10,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ALGORITHM_VERSION = "1.0.0"
-DEFAULT_THRESHOLD_PROFILE = "default-v1"
+ALGORITHM_VERSION = "1.2.0"
+DEFAULT_THRESHOLD_PROFILE = "default-v3-velocity"
 
 
 class ScoreSourceType(str, Enum):
@@ -24,6 +24,18 @@ class ScoreSourceType(str, Enum):
 class ScoreDisplayMode(str, Enum):
     exact_notation = "exact_notation"
     simplified_quantized_staff = "simplified_quantized_staff"
+
+
+class InputSource(str, Enum):
+    web_midi = "web-midi"
+    microphone = "microphone"
+    midi_upload = "midi-upload"
+
+
+class InstrumentProfile(str, Enum):
+    piano = "piano"
+    guitar = "guitar"
+    violin = "violin"
 
 
 class SourceReference(BaseModel):
@@ -41,6 +53,7 @@ class ScoreEvent(BaseModel):
     eventId: str
     measureNo: int
     onsetBeat: float            # 绝对拍点（反复记号已展开）
+    absoluteBeat: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     durationBeat: float
     pitches: list[int]          # 和弦音共享 onsetBeat，合并为一个事件
     part: str = "RH"            # RH / LH
@@ -60,6 +73,11 @@ class ScoreMeta(BaseModel):
     parts: list[str] = Field(default_factory=list)
     tempoMap: list[dict[str, Any]] = Field(default_factory=list)
     meterMap: list[dict[str, Any]] = Field(default_factory=list)
+    writtenToSoundingSemitones: int = Field(default=0, ge=-48, le=48)
+    # True only when the source carried written dynamic markings (p, mf, f…).
+    # A MIDI file's note velocities are a recording of how someone played, not
+    # an instruction on the page, so they must never be graded as one.
+    hasNotatedDynamics: bool = False
     scoreHash: str = ""
     builtin: bool = False
 
@@ -101,6 +119,9 @@ class PerformanceEvent(BaseModel):
     source: str = Field(default="web-midi", min_length=1, max_length=32)
     pedalDown: bool = False
     receivedTimeMs: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    transcriptionConfidence: Optional[float] = Field(default=None, ge=0, le=1)
+    pitchBendCents: Optional[float] = Field(default=None, ge=-1200, le=1200,
+                                                    allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_note_interval(self) -> "PerformanceEvent":
@@ -166,6 +187,7 @@ class Evidence(BaseModel):
     expected: str = ""
     actual: str = ""
     deltaMs: Optional[float] = None
+    deltaVelocity: Optional[float] = None
 
 
 class ErrorEvent(BaseModel):
@@ -198,6 +220,43 @@ class Metrics(BaseModel):
     expectedCount: int = 0
 
 
+class CaptureMeta(BaseModel):
+    """Non-audio metadata produced by local microphone transcription."""
+    model_config = ConfigDict(extra="forbid")
+    transcriptionEngine: str = Field(default="", max_length=80)
+    transcriptionVersion: str = Field(default="", max_length=40)
+    thresholdProfile: str = Field(default="", max_length=80)
+    audioDurationSeconds: float = Field(default=0, ge=0, le=90.5,
+                                        allow_inf_nan=False)
+    inferenceLatencyMs: float = Field(default=0, ge=0, allow_inf_nan=False)
+    acceptedNoteCount: int = Field(default=0, ge=0, le=50_000)
+    rejectedNoteCount: int = Field(default=0, ge=0, le=50_000)
+    noiseFloorDb: Optional[float] = Field(default=None, ge=-160, le=20,
+                                          allow_inf_nan=False)
+    meanConfidence: Optional[float] = Field(default=None, ge=0, le=1)
+    inputGainDb: Optional[float] = Field(default=None, ge=0, le=36,
+                                         allow_inf_nan=False)
+    rawPeakDb: Optional[float] = Field(default=None, ge=-160, le=20,
+                                       allow_inf_nan=False)
+    normalizedPeakDb: Optional[float] = Field(default=None, ge=-160, le=20,
+                                              allow_inf_nan=False)
+    signalToNoiseDb: Optional[float] = Field(default=None, ge=0, le=120,
+                                             allow_inf_nan=False)
+    lowVolumeRecovered: bool = False
+
+
+class InputQuality(BaseModel):
+    source: InputSource = InputSource.web_midi
+    instrument: InstrumentProfile = InstrumentProfile.piano
+    status: Literal["high", "medium", "low", "insufficient"] = "high"
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    acceptedNoteCount: int = Field(default=0, ge=0)
+    rejectedNoteCount: int = Field(default=0, ge=0)
+    noiseFloorDb: Optional[float] = Field(default=None, ge=-160, le=20)
+    transcriptionEngine: str = ""
+    transcriptionVersion: str = ""
+
+
 class DiagnosisReport(BaseModel):
     reportId: str
     sessionId: str
@@ -211,6 +270,8 @@ class DiagnosisReport(BaseModel):
     thresholdProfile: str = DEFAULT_THRESHOLD_PROFILE
     scoreHash: str = ""
     sourceReferences: list[SourceReference] = Field(default_factory=list)
+    inputQuality: InputQuality = Field(default_factory=InputQuality)
+    warnings: list[str] = Field(default_factory=list)
     createdAt: str = ""
 
 
@@ -238,6 +299,11 @@ class Exercise(BaseModel):
     midiPath: str = ""
     successCriterion: str = "连续两次 pitchScore ≥ 95 且 timing MAE ≤ 120 ms"
     tempoPlan: list[float] = Field(default_factory=list)
+    variationIndex: int = Field(default=0, ge=0)
+    musicalFingerprint: str = ""
+    cadencePlan: list[Literal[
+        "half", "deceptive", "plagal", "authentic",
+    ]] = Field(default_factory=list)
 
 
 class MentorEvidence(BaseModel):
@@ -279,6 +345,28 @@ class MentorChatTurn(BaseModel):
     content: str = Field(min_length=1, max_length=2_000)
 
 
+class MentorChatAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["generate_exercise", "select_error", "retry", "none"]
+    label: str = Field(min_length=1, max_length=160)
+    errorId: Optional[str] = Field(default=None, max_length=128)
+
+
+class MentorChatResponse(BaseModel):
+    """A conversational answer; unlike MentorResponse it need not restate a report."""
+    model_config = ConfigDict(extra="forbid")
+    answer: str = Field(min_length=1, max_length=4_000)
+    intent: Literal[
+        "diagnosis", "technique", "theory", "repertoire", "practice_plan",
+        "clarification", "other_music",
+    ]
+    evidenceIds: list[str] = Field(default_factory=list, max_length=12)
+    professionalGuidance: list[str] = Field(default_factory=list, max_length=8)
+    actions: list[MentorChatAction] = Field(default_factory=list, max_length=4)
+    uncertainty: str = Field(default="", max_length=1_000)
+    followUpQuestion: Optional[str] = Field(default=None, max_length=500)
+
+
 class ExercisePlannerResponse(BaseModel):
     """AI may choose bounded parameters; deterministic code still builds the score."""
     model_config = ConfigDict(extra="forbid")
@@ -312,6 +400,8 @@ class PracticeSession(BaseModel):
     rangeStart: int
     rangeEnd: int
     device: str
+    inputSource: InputSource = InputSource.web_midi
+    instrument: InstrumentProfile = InstrumentProfile.piano
     status: Literal[
         "created", "recording", "device_lost", "queued", "analyzing",
         "completed", "failed", "discarded", "abandoned",
@@ -339,6 +429,8 @@ class SessionCreate(BaseModel):
     rangeStart: int = Field(default=1, ge=1)
     rangeEnd: int = Field(default=0, ge=0)  # 0 = 到结尾
     device: str = "web-midi"
+    inputSource: Optional[InputSource] = None
+    instrument: Optional[InstrumentProfile] = None
     countInBeats: Optional[int] = Field(default=None, ge=1, le=12)
     countInBpm: Optional[float] = Field(default=None, ge=20, le=300)
 
@@ -352,6 +444,7 @@ class SessionCreate(BaseModel):
 class SessionFinish(BaseModel):
     events: list[PerformanceEvent] = Field(default_factory=list, max_length=50_000)
     uploadedMidiRef: Optional[str] = None
+    captureMeta: Optional[CaptureMeta] = None
 
 
 class EventBatchCreate(BaseModel):
@@ -380,6 +473,13 @@ class MentorRequest(BaseModel):
     reportId: str
     errorId: Optional[str] = None
     question: str = Field(default="", max_length=2_000)
+    history: list[MentorChatTurn] = Field(default_factory=list, max_length=12)
+
+
+class MentorChatRequest(BaseModel):
+    reportId: str
+    errorId: Optional[str] = None
+    message: str = Field(min_length=1, max_length=2_000)
     history: list[MentorChatTurn] = Field(default_factory=list, max_length=12)
 
 

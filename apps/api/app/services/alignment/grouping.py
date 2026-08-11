@@ -17,7 +17,10 @@ def group_chord_onsets(events: list[PerformanceEvent],
     onsets = sorted(events, key=lambda e: (e.tOnMs, e.pitch))
     groups: list[list[PerformanceEvent]] = []
     for ev in onsets:
-        if groups and ev.tOnMs - groups[-1][-1].tOnMs <= window_ms:
+        # The chord window is anchored to the first onset. Comparing against the
+        # previous note creates a chain where 0/60/120 ms incorrectly becomes
+        # one chord even though the final note is outside a 70 ms window.
+        if groups and ev.tOnMs - groups[-1][0].tOnMs <= window_ms:
             groups[-1].append(ev)
         else:
             groups.append([ev])

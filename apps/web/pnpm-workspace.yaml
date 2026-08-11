@@ -3,5 +3,6 @@ onlyBuiltDependencies:
 ignoredBuiltDependencies:
   - gl
 allowBuilds:
+  core-js: false
   esbuild: true
   gl: false

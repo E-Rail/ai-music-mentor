@@ -18,6 +18,21 @@ describe('practice workflow guards', () => {
     expect(state.lastRejection).toBe('CAPTURE_ACTIVE')
   })
 
+  it('does not abandon a session while count-in or analysis is in progress', () => {
+    const counting: WorkflowState = { ...initialWorkflowState, phase: 'count_in' }
+    const countInNavigation = workflowReducer(
+      counting, { type: 'NAVIGATE', phase: 'import' })
+    expect(countInNavigation.phase).toBe('count_in')
+    expect(countInNavigation.lastRejection).toBe('TRANSITION_IN_PROGRESS')
+
+    const analyzing: WorkflowState = {
+      ...initialWorkflowState, phase: 'analysis', submittedCapture: 'baseline',
+    }
+    const scoreSelection = workflowReducer(analyzing, { type: 'SCORE_SELECTED' })
+    expect(scoreSelection.phase).toBe('analysis')
+    expect(scoreSelection.lastRejection).toBe('TRANSITION_IN_PROGRESS')
+  })
+
   it('preserves capture state on device loss and analysis failure', () => {
     let state: WorkflowState = { ...initialWorkflowState, phase: 'count_in' }
     state = workflowReducer(state, { type: 'CAPTURE_STARTED', kind: 'baseline' })
@@ -35,5 +50,22 @@ describe('practice workflow guards', () => {
     state = workflowReducer(state, { type: 'CAPTURE_STARTED', kind: 'retry' })
     state = workflowReducer(state, { type: 'RETRY_STARTED' })
     expect(state.lastRejection).toBe('CAPTURE_ALREADY_ACTIVE')
+  })
+
+  it('starts a clean workflow when another score is selected', () => {
+    const stale: WorkflowState = {
+      ...initialWorkflowState,
+      phase: 'exercise',
+      submittedCapture: 'retry',
+      capturePreserved: true,
+      deviceConnected: true,
+      lastRejection: 'OLD_ERROR',
+    }
+    const state = workflowReducer(stale, { type: 'SCORE_SELECTED' })
+    expect(state).toEqual({
+      ...initialWorkflowState,
+      phase: 'review',
+      deviceConnected: true,
+    })
   })
 })

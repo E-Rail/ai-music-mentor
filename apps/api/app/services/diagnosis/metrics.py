@@ -13,7 +13,7 @@ import statistics
 
 from app.schemas.models import (AlignmentPair, AlignOp, Metrics,
                                 PerformanceGroup)
-from app.services.alignment.onset import ScoreOnset
+from app.services.alignment.onset import ScoreOnset, score_onset_beat
 
 
 def calculate_metrics(pairs: list[AlignmentPair],
@@ -61,11 +61,29 @@ def calculate_metrics(pairs: list[AlignmentPair],
     avg_bpm, cv = _tempo_stats(matched, onset_index, group_index, beats_per_measure)
     fluency_score = 100.0 * max(0.0, 1.0 - cv / 0.15)
     fluency_score = max(0.0, fluency_score - 4.0 * (n_extra + n_missed) - 2.0 * n_wrong)
-    dynamics_score = 100.0
+    velocity_deltas: list[float] = []
+    if has_dynamics:
+        for pair in matched:
+            if pair.operation != AlignOp.match:
+                continue
+            onset = onset_index.get(pair.scoreEventId or "")
+            group = group_index.get(pair.performanceId or "")
+            if not onset or not group or not group.velocities:
+                continue
+            targets = [member.dynamicTarget for member in onset.members
+                       if member.dynamicTarget is not None]
+            actual_values = [value for value in group.velocities if value > 0]
+            if targets and actual_values:
+                velocity_deltas.append(abs(
+                    statistics.median(actual_values) - statistics.median(targets)))
+    velocity_mae = statistics.mean(velocity_deltas) if velocity_deltas else 0.0
+    dynamics_score = (100.0 * max(0.0, 1.0 - velocity_mae / 45.0)
+                      if has_dynamics and velocity_deltas else 100.0)
 
     pitch_score = round(min(100.0, max(0.0, pitch_score)), 1)
     rhythm_score = round(min(100.0, max(0.0, rhythm_score)), 1)
     fluency_score = round(min(100.0, max(0.0, fluency_score)), 1)
+    dynamics_score = round(min(100.0, max(0.0, dynamics_score)), 1)
 
     if has_dynamics:
         overall = (0.45 * pitch_score + 0.35 * rhythm_score
@@ -92,7 +110,7 @@ def _tempo_stats(matched: list[AlignmentPair],
         o = onset_index.get(p.scoreEventId or "")
         g = group_index.get(p.performanceId or "")
         if o and g:
-            beat = (o.measureNo - 1) * beats_per_measure + o.onsetBeat
+            beat = score_onset_beat(o, beats_per_measure)
             pts.append((beat, g.tOnMs))
     pts.sort()
     bpms = []

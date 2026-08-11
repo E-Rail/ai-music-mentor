@@ -19,7 +19,7 @@ import statistics
 
 from app.schemas.models import (AlignmentPair, AlignOp, ErrorEvent, ErrorType,
                                 Evidence, PerformanceGroup, Severity)
-from app.services.alignment.onset import ScoreOnset
+from app.services.alignment.onset import ScoreOnset, score_onset_beat
 from app.services.alignment.tempo import TempoMap, local_bpm_series
 from app.services.diagnosis.confidence import confidence
 
@@ -43,12 +43,14 @@ class _Ctx:
 
     def add_evidence(self, measure: int, beat: float, fact: str,
                      expected: str = "", actual: str = "",
-                     delta_ms: float | None = None) -> str:
+                     delta_ms: float | None = None,
+                     delta_velocity: float | None = None) -> str:
         self._ev_n += 1
         ev_id = f"ev_{self._ev_n:04d}"
         self.evidences.append(Evidence(id=ev_id, fact=fact, measureNo=measure,
                                        beat=beat, expected=expected,
-                                       actual=actual, deltaMs=delta_ms))
+                                       actual=actual, deltaMs=delta_ms,
+                                       deltaVelocity=delta_velocity))
         return ev_id
 
     def add_error(self, err_type: ErrorType, measure: int, beat: float,
@@ -71,7 +73,11 @@ def classify_errors(pairs: list[AlignmentPair],
                     tempo_map: TempoMap,
                     beats_per_measure: float,
                     bpm: float,
-                    group_pitch_onsets: dict[str, dict[int, float]] | None = None
+                    group_pitch_onsets: dict[str, dict[int, float]] | None = None,
+                    include_duration_errors: bool = True,
+                    duration_tolerance: float = .35,
+                    include_dynamics_errors: bool = True,
+                    has_notated_dynamics: bool = False,
                     ) -> tuple[list[ErrorEvent], list[Evidence]]:
     ctx = _Ctx()
     beat_ms = 60000.0 / bpm
@@ -87,7 +93,7 @@ def classify_errors(pairs: list[AlignmentPair],
     matched_onsets: list[tuple[ScoreOnset, PerformanceGroup, AlignmentPair]] = []
 
     def onset_beat_abs(o: ScoreOnset) -> float:
-        return (o.measureNo - 1) * beats_per_measure + o.onsetBeat
+        return score_onset_beat(o, beats_per_measure)
 
     # ---- 组分裂重分配 ----
     # 演奏组被 70ms 和弦窗口合并时，可能同时覆盖两个相邻 onset
@@ -202,7 +208,8 @@ def classify_errors(pairs: list[AlignmentPair],
             if absorbed and not missing and not extra:
                 flagged_timing = _maybe_timing(ctx, o, p, timing_threshold, adjusted)
                 if not flagged_timing:
-                    _maybe_duration(ctx, o, p)
+                    if include_duration_errors:
+                        _maybe_duration(ctx, o, p, duration_tolerance)
                 continue
 
         # ---------- 音高类错误 ----------
@@ -249,7 +256,8 @@ def classify_errors(pairs: list[AlignmentPair],
         # ---------- 时间与时值 ----------
         flagged_timing = _maybe_timing(ctx, o, p, timing_threshold, adjusted)
         if not flagged_timing:
-            _maybe_duration(ctx, o, p)
+            if include_duration_errors:
+                _maybe_duration(ctx, o, p, duration_tolerance)
 
     # ---------- 未吸收的 Insert → 多音 ----------
     for ins in inserts:
@@ -271,6 +279,14 @@ def classify_errors(pairs: list[AlignmentPair],
     # ---------- 速度不稳 ----------
     _tempo_instability(ctx, matched_onsets, onset_beat_abs, bpm)
 
+    # ---------- 力度 ----------
+    # Velocity is evaluated only after alignment, so one hard/soft or accidental
+    # press remains attached to its local score position and cannot shift the
+    # surrounding note sequence.
+    if include_dynamics_errors:
+        _dynamics_anomalies(ctx, matched_onsets,
+                            has_notated_dynamics=has_notated_dynamics)
+
     # ---------- 回填跨重复一致性 ----------
     type_counts: dict[ErrorType, int] = {}
     for e in ctx.errors:
@@ -279,6 +295,91 @@ def classify_errors(pairs: list[AlignmentPair],
         e.confidence = confidence(e.type, len(e.evidenceIds),
                                   type_counts.get(e.type, 1))
     return ctx.errors, ctx.evidences
+
+
+def _median_velocity(group: PerformanceGroup) -> float | None:
+    values = [value for value in group.velocities if value > 0]
+    return statistics.median(values) if values else None
+
+
+def _dynamics_anomalies(
+        ctx: _Ctx,
+        matched_onsets: list[tuple[ScoreOnset, PerformanceGroup, AlignmentPair]],
+        target_tolerance: float = 18.0,
+        outlier_floor: float = 22.0,
+        has_notated_dynamics: bool = False) -> None:
+    """Compare velocity against the page, or failing that against this take.
+
+    ``dynamicTarget`` carries two different things depending on the source: a
+    written p/mf/f from MusicXML, and a recorded note velocity from a MIDI
+    import. Only the first is an instruction the player can be held to — a MIDI
+    file's velocities describe how one person happened to play it, so grading
+    against them flagged every note of a flawless take.
+    """
+    reliable: list[tuple[ScoreOnset, PerformanceGroup, float, float | None]] = []
+    for onset, group, pair in matched_onsets:
+        # Do not mix a pitch substitution into a velocity judgement.
+        if pair.operation != AlignOp.match or set(onset.pitches) != set(group.pitches):
+            continue
+        actual = _median_velocity(group)
+        if actual is None:
+            continue
+        targets = [member.dynamicTarget for member in onset.members
+                   if member.dynamicTarget is not None]
+        target = statistics.median(targets) if targets else None
+        reliable.append((onset, group, actual, target))
+
+    explicit = [item for item in reliable if item[3] is not None] \
+        if has_notated_dynamics else []
+    if explicit:
+        for onset, _group, actual, target_value in explicit:
+            target = float(target_value or 0)
+            delta = actual - target
+            if abs(delta) < target_tolerance:
+                continue
+            direction = "偏强" if delta > 0 else "偏弱"
+            severity = Severity.high if abs(delta) >= 30 else Severity.medium
+            evidence_id = ctx.add_evidence(
+                onset.measureNo, onset.onsetBeat,
+                f"力度目标 {target:.0f}，实际中位力度 {actual:.0f}（{delta:+.0f}，{direction}）",
+                expected=f"MIDI velocity {target:.0f}",
+                actual=f"MIDI velocity {actual:.0f}",
+                delta_velocity=round(delta, 1),
+            )
+            ctx.add_error(
+                ErrorType.dynamics_anomaly, onset.measureNo, onset.onsetBeat,
+                [member.eventId for member in onset.members], severity,
+                [evidence_id], f"力度{direction} {abs(delta):.0f}",
+            )
+        return
+
+    # With no explicit score dynamic, report only isolated, very large attacks
+    # relative to this same take. This is labelled as consistency evidence—not
+    # as an invented notation target.
+    if len(reliable) < 8:
+        return
+    velocities = [item[2] for item in reliable]
+    centre = statistics.median(velocities)
+    mad = statistics.median(abs(value - centre) for value in velocities)
+    threshold = max(outlier_floor, 4.0 * mad + 8.0)
+    for onset, _group, actual, _target in reliable:
+        delta = actual - centre
+        if abs(delta) < threshold:
+            continue
+        direction = "突然偏强" if delta > 0 else "突然偏弱"
+        evidence_id = ctx.add_evidence(
+            onset.measureNo, onset.onsetBeat,
+            f"乐谱无明确力度标记；本次演奏中位力度 {centre:.0f}，"
+            f"此音 {actual:.0f}（{delta:+.0f}，{direction}）",
+            expected=f"相邻演奏中位 velocity {centre:.0f}",
+            actual=f"MIDI velocity {actual:.0f}",
+            delta_velocity=round(delta, 1),
+        )
+        ctx.add_error(
+            ErrorType.dynamics_anomaly, onset.measureNo, onset.onsetBeat,
+            [member.eventId for member in onset.members], Severity.low,
+            [evidence_id], f"相对本轮力度{direction} {abs(delta):.0f}",
+        )
 
 
 def _maybe_timing(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
@@ -299,9 +400,10 @@ def _maybe_timing(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
     return True
 
 
-def _maybe_duration(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair) -> None:
+def _maybe_duration(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
+                    tolerance: float = .35) -> None:
     ratio = p.durationRatio
-    if abs(ratio - 1.0) <= 0.35:
+    if abs(ratio - 1.0) <= tolerance:
         return
     ev_id = ctx.add_evidence(
         o.measureNo, o.onsetBeat,
@@ -342,6 +444,7 @@ def _tempo_instability(ctx: _Ctx,
     m_end = max(m for _, _, m in beats_ms)
     loc_measure = m_start
     if cv > 0.08 or slowdown > 0.12 or overall_dev > 0.10 or seg_dev > 0.12:
+        detail = f"第 {m_start}–{m_end} 小节"
         if slowdown > 0.12:
             fact = (f"第 {m_start}–{m_end} 小节速度由约 {first_third:.0f} BPM "
                     f"降至 {last_third:.0f} BPM（连续减速 {slowdown * 100:.0f}%）")
@@ -353,9 +456,14 @@ def _tempo_instability(ctx: _Ctx,
                     f"相对整体 {med_bpm:.0f} BPM 偏离 {seg_dev * 100:.0f}%")
             loc_measure = seg_measure
         elif overall_dev > 0.10:
-            direction = "低于" if mean_bpm < bpm else "高于"
-            fact = (f"整体速度约 {mean_bpm:.0f} BPM，{direction}乐谱标记 "
-                    f"{bpm:.0f} BPM（偏差 {overall_dev * 100:.0f}%）")
+            direction = "慢" if mean_bpm < bpm else "快"
+            fact = (f"整体速度约 {mean_bpm:.0f} BPM，比乐谱标记 "
+                    f"{bpm:.0f} BPM {direction} {overall_dev * 100:.0f}%")
+            # A steady take at a slower tempo is a tempo *choice*, not shaky
+            # playing — and it is exactly what the slow-practice exercises ask
+            # for. Say which one it is instead of calling both "unstable".
+            detail = (f"整体比标记速度{direction} {overall_dev * 100:.0f}%"
+                      f"（第 {m_start}–{m_end} 小节；本次拍点本身是稳的）")
         else:
             fact = (f"4 拍滑窗 BPM 变异系数 {cv * 100:.1f}%（>8%），"
                     f"区间 {min(bpms):.0f}–{max(bpms):.0f} BPM")
@@ -363,7 +471,7 @@ def _tempo_instability(ctx: _Ctx,
                                  expected=f"{bpm:.0f} BPM 稳定",
                                  actual=f"{min(bpms):.0f}–{max(bpms):.0f} BPM")
         ctx.add_error(ErrorType.tempo_instability, loc_measure, 0.0, [],
-                      Severity.medium, [ev_id], f"第 {m_start}–{m_end} 小节")
+                      Severity.medium, [ev_id], detail)
 
 
 def _nearest_score_position(g: PerformanceGroup,
@@ -373,7 +481,7 @@ def _nearest_score_position(g: PerformanceGroup,
     best = (1, 0.0)
     best_d = float("inf")
     for o in onset_index.values():
-        beat = (o.measureNo - 1) * beats_per_measure + o.onsetBeat
+        beat = score_onset_beat(o, beats_per_measure)
         d = abs(tempo_map.expected_ms(beat) - g.tOnMs)
         if d < best_d:
             best_d = d
@@ -393,7 +501,7 @@ def _adjusted_residuals(pairs: list[AlignmentPair],
         o = onset_index.get(p.scoreEventId or "")
         if not o:
             continue
-        beat = (o.measureNo - 1) * beats_per_measure + o.onsetBeat
+        beat = score_onset_beat(o, beats_per_measure)
         pts.append((beat, o.onsetId, p.onsetResidualMs))
     pts.sort()
     out: dict[str, float] = {}

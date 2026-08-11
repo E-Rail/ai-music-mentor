@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "notice": "Dataset audio stays outside Git. Populate localPath and sha256 only on the evaluation machine.",
+  "onsetToleranceMs": 100,
+  "noiseAugmentationDb": 20,
+  "subsets": [
+    {
+      "dataset": "MAESTRO",
+      "instrument": "piano",
+      "source": "https://magenta.withgoogle.com/datasets/maestro",
+      "localPath": null,
+      "sha256": null,
+      "minimumF1": 0.75
+    },
+    {
+      "dataset": "GuitarSet",
+      "instrument": "guitar",
+      "source": "https://github.com/marl/GuitarSet",
+      "localPath": null,
+      "sha256": null,
+      "minimumF1": 0.65
+    },
+    {
+      "dataset": "URMP isolated violin",
+      "instrument": "violin",
+      "source": "https://labsites.rochester.edu/air/projects/URMP/URMP_doc.pdf",
+      "localPath": null,
+      "sha256": null,
+      "minimumF1": 0.70
+    }
+  ]
+}

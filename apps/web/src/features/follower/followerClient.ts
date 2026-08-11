@@ -3,6 +3,8 @@
 import { t } from '../../i18n/messages'
 
 export interface FollowerPosition {
+  /** Index into the onset list the follower was initialised with. */
+  onsetIdx: number
   onsetId: string
   measureNo: number
   onsetBeat: number
@@ -15,6 +17,7 @@ export interface FollowerOnset {
   onsetId: string
   measureNo: number
   onsetBeat: number
+  absoluteBeat?: number | null
   pitches: number[]
 }
 

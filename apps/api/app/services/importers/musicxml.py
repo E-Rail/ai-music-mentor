@@ -99,7 +99,9 @@ class MusicXmlImporter(ScoreImporter):
             sourceType=ScoreSourceType.mxl if is_mxl else ScoreSourceType.musicxml,
             displayMode=ScoreDisplayMode.exact_notation,
             bundle=bundle,
-            warnings=[], confidence=1.0, normalization=resolved,
+            warnings=(["乐谱包含移调标记；麦克风分析会按书写音高对齐。"]
+                      if bundle.meta.writtenToSoundingSemitones else []),
+            confidence=1.0, normalization=resolved,
         )
         return ImportResult(
             normalized=normalized, source_bytes=content,

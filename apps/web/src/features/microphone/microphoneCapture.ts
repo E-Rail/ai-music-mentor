@@ -2,6 +2,7 @@ import type {
   InputDeviceDescriptor, PerformanceCaptureResult, PerformanceInputAdapter,
 } from '../input/PerformanceInputAdapter'
 import type { InstrumentProfile } from '../../types'
+import { LiveNoteDetector, type DetectedNote } from './liveDetector'
 import { transcribeAudio } from './transcription'
 import { enhancePreviewFrame } from './audioEnhancement'
 
@@ -39,6 +40,9 @@ const DB_NAME = 'ai-music-mentor-audio'
 const STORE_NAME = 'takes'
 const MAX_TAKE_MS = 90_000
 const PERMISSION_TIMEOUT_MS = 30_000
+/** The worklet now posts every 512 samples for onset timing; the visible
+ *  meter does not need 90 repaints a second. */
+const PREVIEW_EVERY_N_FRAMES = 8
 
 type MicrophoneConnectionError = Error & { code?: string }
 
@@ -184,6 +188,11 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
   private maxTimer: number | null = null
   private noiseSamples: number[] = []
   private noiseFloorDb: number | null = null
+  private liveDetector: LiveNoteDetector | null = null
+  private detectorSampleRate = 0
+  private previewThrottle = 0
+  /** Fires once per detected note attack while recording. */
+  onDetectedNote: ((note: DetectedNote) => void) | null = null
   private transcriptionAbort: AbortController | null = null
   private discarding = false
   private connectionAttempt = 0
@@ -245,7 +254,10 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
         audio: {
           deviceId: exactDeviceId ? { exact: exactDeviceId } : undefined,
           echoCancellation: { ideal: false }, noiseSuppression: { ideal: false },
-          autoGainControl: { ideal: true },
+          // Automatic gain control pumps on music and keeps moving the floor
+          // the room profile was learned against, so detection is done on a
+          // stable signal and levels are normalised in software instead.
+          autoGainControl: { ideal: false },
           channelCount: 1,
         },
         video: false,
@@ -334,7 +346,21 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     let squareSum = 0
     for (const value of samples) squareSum += value * value
     const levelDb = 20 * Math.log10(Math.max(1e-6, Math.sqrt(squareSum / samples.length)))
-    if (this.state === 'noise-check') this.noiseSamples.push(levelDb)
+
+    // The room is learned from raw samples: the profile has to describe the
+    // microphone's actual noise, not a gain-corrected version of it.
+    if (this.state === 'noise-check') {
+      this.noiseSamples.push(levelDb)
+      this.detector(sampleRate).learnNoiseFrame(samples)
+    } else if (this.state === 'recording') {
+      const note = this.detector(sampleRate).process(samples, performance.now())
+      if (note) this.onDetectedNote?.(note)
+    }
+
+    // The visible meter keeps its own gentle normalisation so the waveform
+    // stays readable; it has never fed detection and still does not.
+    this.previewThrottle += 1
+    if (this.previewThrottle % PREVIEW_EVERY_N_FRAMES !== 0) return
     const enhanced = enhancePreviewFrame(
       samples, levelDb, this.noiseFloorDb, this.previewGainDb)
     this.previewGainDb = enhanced.gainDb
@@ -346,6 +372,15 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
       analysisGainDb: enhanced.gainDb,
       signalToNoiseDb: enhanced.signalToNoiseDb,
     })
+  }
+
+  /** The live detector, built on first use once the sample rate is known. */
+  private detector(sampleRate: number): LiveNoteDetector {
+    if (!this.liveDetector || this.detectorSampleRate !== sampleRate) {
+      this.liveDetector = new LiveNoteDetector({ sampleRate })
+      this.detectorSampleRate = sampleRate
+    }
+    return this.liveDetector
   }
 
   private async startPreview(resumeResult: Promise<Error | null> | null): Promise<void> {
@@ -409,6 +444,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     const sorted = [...this.noiseSamples].sort((a, b) => a - b)
     this.noiseFloorDb = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null
     this.previewGainDb = 0
+    this.liveDetector?.sealNoiseProfile()
     this.setState('ready')
   }
 
@@ -417,6 +453,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     const mimeType = [
       'audio/webm;codecs=opus', 'audio/webm', 'audio/mp4',
     ].find((type) => MediaRecorder.isTypeSupported(type))
+    this.liveDetector?.reset()
     this.sessionId = sessionId
     this.instrument = instrument
     this.chunks = []

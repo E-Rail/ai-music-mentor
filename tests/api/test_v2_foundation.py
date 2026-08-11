@@ -420,3 +420,41 @@ def test_failed_analysis_retry_is_queued_and_clears_stale_error():
         assert job["status"] == "completed", job
         assert job["errorCode"] is None
         assert job["errorMessage"] is None
+
+
+def test_movement_title_only_score_keeps_its_name():
+    """Most engraving software exports <movement-title> and no <work-title>.
+    Such a file used to show its internal ID in the library instead of its name."""
+    from app.services.score_import import parse_musicxml
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1"><movement-title>小星星</movement-title>
+<part-list><score-part id="P1"><part-name>Right Hand</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions>
+<key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time>
+<clef><sign>G</sign><line>2</line></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>
+</measure></part></score-partwise>"""
+
+    bundle = parse_musicxml(xml.encode(), "twinkle_star")
+    assert bundle.meta.title == "小星星"
+
+
+def test_demo_songs_import_with_their_printed_tempo():
+    """The four demo songs must arrive with the tempo written on the page."""
+    from pathlib import Path
+    from app.services.score_import import parse_musicxml
+
+    fixtures = Path(__file__).resolve().parents[2] / "packages" / "score-fixtures" / "scores"
+    expected = {
+        "twinkle_star": ("小星星", 92.0, 12),
+        "ode_to_joy": ("欢乐颂", 100.0, 8),
+        "two_tigers": ("两只老虎", 108.0, 8),
+        "jasmine_flower": ("茉莉花", 76.0, 8),
+    }
+    for score_id, (title, tempo, bars) in expected.items():
+        bundle = parse_musicxml((fixtures / f"{score_id}.musicxml").read_bytes(), score_id)
+        assert bundle.meta.title == title
+        assert bundle.meta.tempo == tempo
+        assert bundle.meta.measureCount == bars
+        assert {event.part for event in bundle.events} == {"RH", "LH"}

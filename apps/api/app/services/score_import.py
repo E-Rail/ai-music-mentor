@@ -127,9 +127,27 @@ def parse_musicxml(xml_bytes: bytes, score_id: str) -> ScoreBundle:
     return ScoreBundle(meta=meta, events=events)
 
 
+def _score_title(score: music21.stream.Score, score_id: str) -> str:
+    """Read the name a musician would call this piece.
+
+    MusicXML carries a title in two places and publishers use either. music21
+    maps ``<work-title>`` to ``title`` and ``<movement-title>`` to
+    ``movementName``, and a file with only the latter — which is what most
+    engraving software exports — used to fall through to the internal score ID,
+    so the library showed "twinkle_star" instead of 小星星.
+    """
+    metadata = score.metadata
+    for candidate in (getattr(metadata, "title", None),
+                      getattr(metadata, "movementName", None)):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return score_id
+
+
 def _extract_meta(score: music21.stream.Score, xml_bytes: bytes, score_id: str) -> ScoreMeta:
     md = score.metadata
-    title = (md.title if md and md.title else score_id) or score_id
+    title = _score_title(score, score_id)
     composer = (md.composer if md and md.composer else "") or ""
 
     tempos = score.recurse().getElementsByClass(music21.tempo.MetronomeMark)

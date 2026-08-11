@@ -161,7 +161,6 @@ export default function App() {
   // the live panel can never disagree about where the player is.
   const liveRef = useRef(new LivePerformanceTracker())
   const followerIndexRef = useRef<number | null>(null)
-  const lastMicrophoneHintAtRef = useRef(0)
   const microphoneConnectRequestRef = useRef(0)
   const sessionStartInFlightRef = useRef(false)
   const submissionInFlightRef = useRef(false)
@@ -280,7 +279,6 @@ export default function App() {
     scoreEvents: ScoreEvent[], start: number, end: number,
     beatsPerMeasure: number, bpm: number, source: 'web-midi' | 'microphone',
   ) => {
-    lastMicrophoneHintAtRef.current = 0
     followerIndexRef.current = null
     setLiveTrace([])
     setLiveFeedback(liveRef.current.begin({
@@ -315,14 +313,11 @@ export default function App() {
     publishLiveState(liveRef.current.syncPosition(position.onsetIdx))
   }
 
+  // The meter is cosmetic. Notes arrive separately, from the detector's own
+  // onset decisions, so a held note is one note rather than a pitch sample
+  // every 180 ms and room tone never registers as playing at all.
   const updateMicrophonePreview = (preview: MicrophonePreview) => {
     setMicrophonePreview(preview)
-    if (!recordingRef.current || !preview.pitchHz) return
-    const now = performance.now()
-    if (now - lastMicrophoneHintAtRef.current < 180) return
-    lastMicrophoneHintAtRef.current = now
-    const detectedPitch = Math.round(69 + 12 * Math.log2(preview.pitchHz / 440))
-    observeLiveInput([detectedPitch], now)
   }
 
   const loadMentor = async (activeReport: DiagnosisReport, prompt = '',
@@ -450,6 +445,7 @@ export default function App() {
       }
     }
     microphone.onPreview = updateMicrophonePreview
+    microphone.onDetectedNote = (note) => observeLiveInput([note.pitch], note.atMs)
     microphone.onTranscriptionProgress = setTranscriptionProgress
     microphone.onDeviceLost = () => {
       recordingRef.current = false

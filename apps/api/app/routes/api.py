@@ -864,20 +864,34 @@ def compare_sessions(baselineId: str, retryId: str):
 
 
 def register_builtin_scores() -> None:
-    """Register controlled offline fixtures through the same importer contract."""
+    """Register controlled offline fixtures through the same importer contract.
+
+    A builtin is re-ingested when its MusicXML no longer matches what was
+    stored. Without that, a fixture fixed after first launch — a corrected
+    title, a corrected tempo — stays wrong forever on any machine that had
+    already run the app, which is exactly the machine giving the demo.
+    """
     manifest = config.FIXTURES_DIR / "manifest.json"
     if not manifest.exists():
         return
+    import hashlib
     import json
 
     for item in json.loads(manifest.read_text()):
         score_id = item["scoreId"]
-        if storage.get("score", score_id):
-            continue
         xml_path = config.FIXTURES_DIR / item["musicxml"]
         if not xml_path.exists():
             continue
+        content = xml_path.read_bytes()
+        existing = storage.get("score", score_id)
+        if existing:
+            stored_hash = existing.get("bundle", {}).get("meta", {}).get("scoreHash")
+            unchanged = stored_hash == hashlib.sha256(content).hexdigest()[:16]
+            current_importer = (existing.get("importerVersion") ==
+                                config.SCORE_IMPORTER_VERSION)
+            if unchanged and current_importer:
+                continue
         ingest_score(
-            xml_path.name, xml_path.read_bytes(), score_id=score_id,
+            xml_path.name, content, score_id=score_id,
             builtin=True, library_category="demo",
         )

@@ -44,6 +44,9 @@ MAX_MEASURES = int(os.environ.get("MAX_MEASURES", "200"))
 ABANDONED_SESSION_HOURS = int(os.environ.get("ABANDONED_SESSION_HOURS", "24"))
 GENERATED_RETENTION_HOURS = int(os.environ.get("GENERATED_RETENTION_HOURS", str(7 * 24)))
 LOCAL_PROFILE_ID = "local"
+# Bump when the importer changes what it derives from the same file, so builtin
+# fixtures are re-ingested on machines that already ran an older build.
+SCORE_IMPORTER_VERSION = "2026.08.11-title-fallback"
 
 if MENTOR_RESPONSE_MODE not in {"json_schema", "json_object", "prompt_json"}:
     raise ValueError("MENTOR_RESPONSE_MODE must be json_schema, json_object, or prompt_json")

@@ -14,6 +14,28 @@ demo score, so a sample cannot drift away from the page it is meant to match.
 
 Regenerate: `.venv/bin/python packages/score-fixtures/generate_live_takes.py`
 
+## The same takes, as audio
+
+`render_audio_takes.py` renders each of these to a piano-like WAV under
+`apps/web/public/fixtures/audio/`, alongside an `index.json` naming every note
+and its onset. That is what lets the microphone path be scored: the reference is
+exact, because the audio was built from it.
+
+```
+.venv/bin/python packages/score-fixtures/render_audio_takes.py
+cd apps/web && node scripts/audit-transcription.mjs
+```
+
+The audit runs every engine over identical audio and reports note-onset
+precision, recall and F1 against the known notes. `MISSES=1` lists which notes
+each engine dropped and which it invented.
+
+The timbre is additive synthesis, not a recording — good enough to rank two
+engines fairly, since both hear the same file, but not a substitute for a real
+piano. Both engines under-detect *repeated* notes on this material more than
+they would on a real instrument, so read the columns against each other rather
+than as absolute accuracy.
+
 ## Playing one
 
 With the API on `:8000` and the web app on `:5173`:

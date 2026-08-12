@@ -20,6 +20,18 @@ The demo intentionally remains a single-user application. Its boundaries are sha
 
 `measureNo` is a position in the performance timeline and always counts 1, 2, 3…; it is what alignment, event IDs and the follower use. What the page prints can differ — a pickup bar is printed 0, so every printed number after it is one lower than its position. `ScoreMeta.measureLabels` carries the printed name of each bar, the browser publishes it once per score in `features/score/measureLabels`, and the same list is written into the MusicXML before it is engraved. The page and every sentence about it therefore agree by construction.
 
+## Hearing the take
+
+Two models transcribe microphone audio, and `features/microphone/transcriptionEngines` is the only place that knows there is more than one. It holds the table — which worker, at which sample rate, under which name, with how long that model may go quiet — and the one piece of plumbing that runs any of them. A new engine is a row plus a worker that speaks `features/microphone/engineProtocol`. Both workers return `PerformanceEvent[]` through the same cleanup, so nothing downstream can tell which one ran.
+
+**Piano goes to Onsets and Frames, everything else to Basic Pitch.** Basic Pitch is instrument-agnostic and its own paper prices that on piano: 70.9 note F1 on MAESTRO against 95.2 for the piano-specific model. For a piano tutor that is not a quality setting — it decides whether the notes a student is graded on are the notes they played. Magenta's TensorFlow.js port of Onsets and Frames keeps that accuracy in the browser, so the microphone path stays local, with no server, no PyTorch, and nothing fetched while a lesson is happening. Guitar and violin keep the generalist, which is genuinely better at them than a piano model would be.
+
+Measured against the rendered fixtures, where the notes are known exactly: Onsets and Frames scores F1 82.6% against Basic Pitch's 76.7%, and reported **no** note that was not played in 91 opportunities where Basic Pitch invented seven, all of them octave errors — a G6 for a G4. A tutor that hallucinates a note tells a student they made a mistake they did not make, which is worse than missing one.
+
+The audio is decoded and resampled on the main thread, at the rate each model was trained on — 16 kHz for Onsets and Frames, 22.05 kHz for Basic Pitch — because a worker has no `AudioContext`. Onsets and Frames runs one uninterruptible pass over the whole take with no way to hook its progress, so it is silent for roughly twice the duration of the audio on a real GPU; its silence budget is a property of the model and lives in its row. If it cannot start at all — no checkpoint, no WebGL — the take falls back to Basic Pitch rather than being lost, and the report records which engine actually ran.
+
+The two engines carry different TensorFlow.js majors (2.8.6 and 3.21.0). They never meet: each runs in its own worker, and a worker is its own realm, so the backend registries are separate by construction. `@magenta/music` itself is carried with a patch (`apps/web/patches`), because upstream builds an `OfflineAudioContext` at module scope — fatal on import inside a worker — and its ES modules assume webpack's CommonJS interop.
+
 ## Following the player
 
 `features/live/passageProgress` holds the whole rule, and both input sources use it.

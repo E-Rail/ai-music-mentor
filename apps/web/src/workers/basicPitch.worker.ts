@@ -7,19 +7,10 @@ import {
 import '@tensorflow/tfjs-backend-cpu'
 import { setWasmPaths } from '@tensorflow/tfjs-backend-wasm'
 import * as tf from '@tensorflow/tfjs-core'
-import type { InstrumentProfile, PerformanceEvent } from '../types'
+import type { PerformanceEvent } from '../types'
 import { cleanupTranscribedNotes } from '../features/microphone/noteCleanup'
 import { profileForNoise } from '../features/microphone/profiles'
-
-type RequestMessage = {
-  type: 'transcribe'
-  audio: Float32Array
-  instrument: InstrumentProfile
-  noiseFloorDb: number | null
-  onsetThreshold: number
-  frameThreshold: number
-  confidenceAdjustment: number
-}
+import type { TranscribeRequest } from '../features/microphone/engineProtocol'
 
 const workerScope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope
 
@@ -59,7 +50,7 @@ function meanPitchBend(note: NoteEventTime): number | null {
   return Math.round(mean * (100 / 3) * 10) / 10
 }
 
-workerScope.onmessage = async (message: MessageEvent<RequestMessage>) => {
+workerScope.onmessage = async (message: MessageEvent<TranscribeRequest>) => {
   if (message.data.type !== 'transcribe') return
   const started = performance.now()
   try {

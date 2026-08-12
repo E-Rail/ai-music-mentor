@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.12.1",
   "type": "module",
   "scripts": {
-    "copy:audio-assets": "node scripts/copy-basic-pitch-assets.mjs",
+    "copy:audio-assets": "node scripts/copy-audio-assets.mjs",
     "predev": "pnpm copy:audio-assets",
     "dev": "vite",
     "prebuild": "pnpm copy:audio-assets",
@@ -16,7 +16,9 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@magenta/music": "1.23.1",
     "@spotify/basic-pitch": "1.0.1",
+    "@tensorflow/tfjs": "2.8.6",
     "@tensorflow/tfjs-backend-cpu": "3.21.0",
     "@tensorflow/tfjs-backend-wasm": "3.21.0",
     "@tensorflow/tfjs-core": "3.21.0",

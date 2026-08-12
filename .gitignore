@@ -17,6 +17,10 @@ test-results/
 playwright-report/
 apps/web/public/models/basic-pitch/
 apps/web/public/models/tfjs-wasm/
+# 60 MB of Onsets and Frames weights, fetched once by copy-audio-assets.
+apps/web/public/models/onsets-frames/
+# Rendered from the MIDI fixtures by render_audio_takes.py.
+apps/web/public/fixtures/audio/
 
 # Local runtime data and secrets
 .env

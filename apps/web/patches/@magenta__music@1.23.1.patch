@@ -1,0 +1,56 @@
+diff --git a/esm/core/audio_utils.js b/esm/core/audio_utils.js
+index 9633fd9b815ea9620af45624ce28e92fe3d8afac..dad9e531f00866796f65747fb621a14c387b908a 100644
+--- a/esm/core/audio_utils.js
++++ b/esm/core/audio_utils.js
+@@ -1,15 +1,19 @@
+ import * as tf from '@tensorflow/tfjs';
+-import * as FFT from 'fft.js';
+-import * as ndarray from 'ndarray';
+-import * as resample from 'ndarray-resample';
++import FFT from 'fft.js';
++import ndarray from 'ndarray';
++import resample from 'ndarray-resample';
+ import { fetch, getOfflineAudioContext, isSafari } from '../core/compat/global';
+ import * as logging from './logging';
+ const SAMPLE_RATE = 16000;
+-const offlineCtx = getOfflineAudioContext(SAMPLE_RATE);
++let offlineCtxMemo = null;
++function offlineCtx() {
++    offlineCtxMemo = offlineCtxMemo || getOfflineAudioContext(SAMPLE_RATE);
++    return offlineCtxMemo;
++}
+ export async function loadAudioFromUrl(url) {
+     return fetch(url)
+         .then((body) => body.arrayBuffer())
+-        .then((buffer) => offlineCtx.decodeAudioData(buffer));
++        .then((buffer) => offlineCtx().decodeAudioData(buffer));
+ }
+ export async function loadAudioFromFile(blob) {
+     const fileReader = new FileReader();
+@@ -23,7 +27,7 @@ export async function loadAudioFromFile(blob) {
+         };
+         fileReader.readAsArrayBuffer(blob);
+     });
+-    return loadFile.then((arrayBuffer) => offlineCtx.decodeAudioData(arrayBuffer));
++    return loadFile.then((arrayBuffer) => offlineCtx().decodeAudioData(arrayBuffer));
+ }
+ export function melSpectrogram(y, params) {
+     if (!params.power) {
+diff --git a/esm/core/compat/global.js b/esm/core/compat/global.js
+index 69b301e3d62e7709b54b3dc4269681aa82a33304..b8ea9ccdc5e8fc77de22f3528ebd851c02b19889 100644
+--- a/esm/core/compat/global.js
++++ b/esm/core/compat/global.js
+@@ -1,6 +1,8 @@
+-const isNode = typeof global !== 'undefined' && typeof global.process !== 'undefined';
+-export const fetch = isNode ? require('node-fetch') : window.fetch.bind(window);
+-export const performance = isNode ? require('./performance_node') : window.performance;
+-export const navigator = isNode ? require('./navigator_node') : window.navigator;
++// Patched: upstream reads window.fetch / window.performance / window.navigator
++// at module scope, which is a ReferenceError in a Web Worker. Every one of
++// them exists on globalThis in both a window and a worker.
++const globalObject = globalThis;
++export const fetch = globalObject.fetch.bind(globalObject);
++export const performance = globalObject.performance;
++export const navigator = globalObject.navigator;
+ export { isSafari, getOfflineAudioContext } from './global_browser';
+-//# sourceMappingURL=global.js.map

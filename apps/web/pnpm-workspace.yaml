@@ -6,3 +6,6 @@ allowBuilds:
   core-js: false
   esbuild: true
   gl: false
+  protobufjs: set this to true or false
+patchedDependencies:
+  '@magenta/music@1.23.1': patches/@magenta__music@1.23.1.patch

@@ -8,7 +8,7 @@
   <identification>
     <creator type="composer">Ode to Joy · Beethoven</creator>
     <encoding>
-      <encoding-date>2026-08-11</encoding-date>
+      <encoding-date>2026-08-12</encoding-date>
       <software>music21 v.10.5.0</software>
       <supports element="beam" type="yes" />
       <supports element="stem" type="yes" />
@@ -22,35 +22,42 @@
     </scaling>
   </defaults>
   <part-list>
-    <score-part id="P3d4da5d1b6ab5cc2e79e093e61dd7fb7">
+    <part-group number="1" type="start">
+      <group-name>Piano</group-name>
+      <group-abbreviation>Pno</group-abbreviation>
+      <group-symbol>brace</group-symbol>
+      <group-barline>yes</group-barline>
+    </part-group>
+    <score-part id="Peae9d3aae3d6177154c6031267cf3a05">
       <part-name>Right Hand</part-name>
       <part-abbreviation>Pno</part-abbreviation>
-      <score-instrument id="I64aa001b38339180cec5919046547b10">
+      <score-instrument id="I5dd36a04b778e6ff5f1eed94573aeedf">
         <instrument-name>Piano</instrument-name>
         <instrument-abbreviation>Pno</instrument-abbreviation>
       </score-instrument>
-      <midi-instrument id="I64aa001b38339180cec5919046547b10">
+      <midi-instrument id="I5dd36a04b778e6ff5f1eed94573aeedf">
         <midi-channel>1</midi-channel>
         <midi-program>1</midi-program>
       </midi-instrument>
     </score-part>
-    <score-part id="P22f00d605fd95eff4d5b57b41d7c91a7">
+    <score-part id="Pd31eb9452f8758e16c8dd8cc41ea0cf1">
       <part-name>Left Hand</part-name>
       <part-abbreviation>Pno</part-abbreviation>
-      <score-instrument id="I00732fc78df57b549f3c3f0ae34b7cf4">
+      <score-instrument id="Ica871173df5e29c095caae168e49eab2">
         <instrument-name>Piano</instrument-name>
         <instrument-abbreviation>Pno</instrument-abbreviation>
       </score-instrument>
-      <midi-instrument id="I00732fc78df57b549f3c3f0ae34b7cf4">
+      <midi-instrument id="Ica871173df5e29c095caae168e49eab2">
         <midi-channel>2</midi-channel>
         <midi-program>1</midi-program>
       </midi-instrument>
     </score-part>
+    <part-group number="1" type="stop" />
   </part-list>
   <!--=========================== Part 1 ===========================-->
-  <part id="P3d4da5d1b6ab5cc2e79e093e61dd7fb7">
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+  <part id="Peae9d3aae3d6177154c6031267cf3a05">
+    <!--========================= Measure 1 ==========================-->
+    <measure implicit="no" number="1">
       <attributes>
         <divisions>10080</divisions>
         <key>
@@ -77,7 +84,7 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -85,7 +92,7 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -93,7 +100,7 @@
       <note>
         <pitch>
           <step>F</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -101,18 +108,18 @@
       <note>
         <pitch>
           <step>G</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 2 ==========================-->
+    <measure implicit="no" number="2">
       <note>
         <pitch>
           <step>G</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -120,7 +127,7 @@
       <note>
         <pitch>
           <step>F</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -128,7 +135,7 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -136,18 +143,18 @@
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 3 ==========================-->
+    <measure implicit="no" number="3">
       <note>
         <pitch>
           <step>C</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -155,7 +162,7 @@
       <note>
         <pitch>
           <step>C</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -163,7 +170,7 @@
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -171,18 +178,18 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 4 ==========================-->
+    <measure implicit="no" number="4">
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>15120</duration>
         <type>quarter</type>
@@ -191,7 +198,7 @@
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>5040</duration>
         <type>eighth</type>
@@ -199,18 +206,18 @@
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>20160</duration>
         <type>half</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 5 ==========================-->
+    <measure implicit="no" number="5">
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -218,7 +225,7 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -226,7 +233,7 @@
       <note>
         <pitch>
           <step>F</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -234,18 +241,18 @@
       <note>
         <pitch>
           <step>G</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 6 ==========================-->
+    <measure implicit="no" number="6">
       <note>
         <pitch>
           <step>G</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -253,7 +260,7 @@
       <note>
         <pitch>
           <step>F</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -261,7 +268,7 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -269,18 +276,18 @@
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 7 ==========================-->
+    <measure implicit="no" number="7">
       <note>
         <pitch>
           <step>C</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -288,7 +295,7 @@
       <note>
         <pitch>
           <step>C</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -296,7 +303,7 @@
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
@@ -304,18 +311,18 @@
       <note>
         <pitch>
           <step>E</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>10080</duration>
         <type>quarter</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 8 ==========================-->
+    <measure implicit="no" number="8">
       <note>
         <pitch>
           <step>D</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>15120</duration>
         <type>quarter</type>
@@ -324,7 +331,7 @@
       <note>
         <pitch>
           <step>C</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>5040</duration>
         <type>eighth</type>
@@ -332,7 +339,7 @@
       <note>
         <pitch>
           <step>C</step>
-          <octave>5</octave>
+          <octave>4</octave>
         </pitch>
         <duration>20160</duration>
         <type>half</type>
@@ -340,9 +347,9 @@
     </measure>
   </part>
   <!--=========================== Part 2 ===========================-->
-  <part id="P22f00d605fd95eff4d5b57b41d7c91a7">
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+  <part id="Pd31eb9452f8758e16c8dd8cc41ea0cf1">
+    <!--========================= Measure 1 ==========================-->
+    <measure implicit="no" number="1">
       <attributes>
         <divisions>10080</divisions>
         <key>
@@ -366,8 +373,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 2 ==========================-->
+    <measure implicit="no" number="2">
       <note>
         <pitch>
           <step>G</step>
@@ -377,8 +384,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 3 ==========================-->
+    <measure implicit="no" number="3">
       <note>
         <pitch>
           <step>C</step>
@@ -388,8 +395,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 4 ==========================-->
+    <measure implicit="no" number="4">
       <note>
         <pitch>
           <step>G</step>
@@ -399,8 +406,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 5 ==========================-->
+    <measure implicit="no" number="5">
       <note>
         <pitch>
           <step>C</step>
@@ -410,8 +417,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 6 ==========================-->
+    <measure implicit="no" number="6">
       <note>
         <pitch>
           <step>G</step>
@@ -421,8 +428,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 7 ==========================-->
+    <measure implicit="no" number="7">
       <note>
         <pitch>
           <step>C</step>
@@ -432,8 +439,8 @@
         <type>whole</type>
       </note>
     </measure>
-    <!--========================= Measure 0 ==========================-->
-    <measure implicit="no" number="0">
+    <!--========================= Measure 8 ==========================-->
+    <measure implicit="no" number="8">
       <note>
         <pitch>
           <step>C</step>

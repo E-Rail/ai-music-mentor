@@ -7,6 +7,7 @@ import { ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, t, tf } from '../../i18
 import { errorColor, errorDetailForDisplay } from './errorPresentation'
 import { MentorSummary } from '../mentor/MentorSummary'
 import { MentorChat, type MentorChatMessage } from '../mentor/MentorChat'
+import { measureLabel } from '../score/measureLabels'
 
 const ScoreViewer = lazy(() => import('../score/ScoreViewer').then((module) => ({
   default: module.ScoreViewer,
@@ -58,7 +59,7 @@ export function CoachReport({
           ? t('limitedMetricsTitle')
           : primary
           ? `${ERROR_TYPE_LABEL[primary.type] ?? primary.type} · ${tf('errorPosition', {
-              measure: primary.location.measure,
+              measure: measureLabel(primary.location.measure),
               beat: primary.location.beat + 1,
               severity: SEVERITY_LABEL[primary.severity],
             })}`
@@ -106,7 +107,7 @@ export function CoachReport({
                   </span>
                   <span className="desc">
                     {tf('errorPosition', {
-                      measure: error.location.measure,
+                      measure: measureLabel(error.location.measure),
                       beat: error.location.beat + 1,
                       severity: SEVERITY_LABEL[error.severity],
                     })}

@@ -1,5 +1,6 @@
 import type { MentorPlanItem, MentorResponse } from '../../types'
 import { t, tf } from '../../i18n/messages'
+import { measureLabel, measureLabelList } from '../score/measureLabels'
 
 type MentorSummaryProps = {
   response: MentorResponse | null
@@ -41,7 +42,7 @@ export function MentorSummary({ response, loading, onApplyPlan }: MentorSummaryP
             {response.evidence.map((evidence, index) => (
               <div className="mentor-evidence" key={`${evidence.measure}:${evidence.beat}:${index}`}>
                 <span>{tf('mentorEvidencePosition', {
-                  measure: evidence.measure, beat: evidence.beat + 1,
+                  measure: measureLabel(evidence.measure), beat: evidence.beat + 1,
                 })}</span>
                 {evidence.fact}
               </div>
@@ -68,7 +69,7 @@ export function MentorSummary({ response, loading, onApplyPlan }: MentorSummaryP
             {response.plan.map((plan, index) => (
               <article className="mentor-plan" key={`${plan.exerciseType}:${index}`}>
                 <strong>{plan.label || plan.exerciseType}</strong>
-                <span>{tf('mentorPlanMeasures', { measures: plan.measures.join('、') })}</span>
+                <span>{tf('mentorPlanMeasures', { measures: measureLabelList(plan.measures) })}</span>
                 {plan.tempo && <span>{tf('mentorPlanTempo', { tempo: plan.tempo })}</span>}
                 <span>{tf('mentorPlanRepetitions', { count: plan.repetitions })}</span>
                 <span>{tf('mentorSuccessCriterion', { criterion: plan.successCriterion })}</span>

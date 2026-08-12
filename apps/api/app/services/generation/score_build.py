@@ -44,6 +44,7 @@ def events_to_musicxml(events: list[ScoreEvent], meta: ScoreMeta,
     measures = sorted({e.measureNo for e in events})
     bpm_per_measure = meta.beatsPerMeasure
 
+    built: list[music21.stream.Part] = []
     selected_instrument = InstrumentProfile(instrument_profile)
     instrument_factory = {
         InstrumentProfile.piano: music21.instrument.Piano,
@@ -92,6 +93,14 @@ def events_to_musicxml(events: list[ScoreEvent], meta: ScoreMeta,
                     quarterLength=bpm_per_measure - cursor))
             p.append(m)
         score.insert(0, p)
+        built.append(p)
+    # Two staves of one keyboard are braced together. Without it every renderer
+    # draws them as two unrelated players, which is the opposite of what a
+    # two-hand exercise is teaching.
+    if selected_instrument == InstrumentProfile.piano and len(built) > 1:
+        score.insert(0, music21.layout.StaffGroup(
+            built, name="Piano", abbreviation="Pno",
+            symbol="brace", barTogether=True))
     score.write("musicxml", fp=str(out_path))
 
 

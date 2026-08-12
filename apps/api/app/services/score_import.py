@@ -185,9 +185,51 @@ def _extract_meta(score: music21.stream.Score, xml_bytes: bytes, score_id: str) 
         scoreId=score_id, title=title, composer=composer, tempo=bpm,
         timeSignature=ts_str, beatsPerMeasure=beats_per_measure,
         measureCount=measure_count, parts=parts,
+        measureLabels=measure_labels(score),
         tempoMap=tempo_map, meterMap=meter_map, scoreHash=score_hash,
         writtenToSoundingSemitones=_written_to_sounding_semitones(xml_bytes),
     )
+
+
+def measure_labels(score: music21.stream.Score) -> list[str]:
+    """What each bar is called on the page, indexed by its timeline position.
+
+    ``measureNo`` is a position in the performance timeline and always counts
+    1, 2, 3…, which is what alignment and event IDs need. It is not always what
+    the page prints. A piece that opens with a pickup bar numbers that bar 0, so
+    every printed number after it is one lower than its position, and telling a
+    student to fix "第 4 小节" sends them to the wrong bar.
+
+    The printed numbers are used whenever they are trustworthy — present, never
+    repeated, and never counting backwards. Otherwise the position is used,
+    because a page numbered 0, 0, 0… is worse than one numbered 1, 2, 3.
+    """
+    parts = list(score.parts)
+    if not parts:
+        return []
+    longest = max(parts, key=lambda part: len(
+        part.getElementsByClass(music21.stream.Measure)))
+    printed: list[str] = []
+    numbers: list[int] = []
+    for measure in longest.getElementsByClass(music21.stream.Measure):
+        number = int(measure.number or 0)
+        numbers.append(number)
+        printed.append(f"{number}{measure.numberSuffix or ''}")
+    positional = [str(index) for index in range(1, len(printed) + 1)]
+    if not printed:
+        return positional
+    # music21 reports an unnumbered bar and a bar genuinely printed "0" the same
+    # way, so the sequence has to say which this is. A pickup is a 0 followed by
+    # bar 1; a 0 anywhere else, or a lone 0, means the file was never numbered.
+    leading_zero_is_a_pickup = (
+        numbers[0] != 0 or (len(numbers) > 1 and numbers[1] == 1))
+    trustworthy = (
+        len(set(printed)) == len(printed)
+        and all(later >= earlier for earlier, later in zip(numbers, numbers[1:]))
+        and all(number > 0 for number in numbers[1:])
+        and leading_zero_is_a_pickup
+    )
+    return printed if trustworthy else positional
 
 
 def _linear_measure_number(measure: music21.stream.Measure | None) -> int:

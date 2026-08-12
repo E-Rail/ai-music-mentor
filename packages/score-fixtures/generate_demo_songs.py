@@ -6,6 +6,11 @@ Right hand carries the melody; the left hand is a sparse whole-note bass that
 keeps both staves in the demo without making the piece hard to play or hard for
 the microphone to follow.
 
+Every melody sits in the middle-C octave (C4–A4). That is the register a
+beginner is taught to read first: it lands inside the treble staff instead of
+floating above it on ledger lines, and it is the octave a listener recognises
+as the tune.
+
 Public domain, all of them:
   小星星   Ah! vous dirai-je, maman (French, 1761)
   欢乐颂   Beethoven, Symphony No. 9 (1824)
@@ -36,50 +41,50 @@ DQ = 1.5
 
 TWINKLE_RH: list[Note] = [
     # 1 1 5 5 | 6 6 5 - | 4 4 3 3 | 2 2 1 - |
-    ("C5", Q), ("C5", Q), ("G5", Q), ("G5", Q),
-    ("A5", Q), ("A5", Q), ("G5", H),
-    ("F5", Q), ("F5", Q), ("E5", Q), ("E5", Q),
-    ("D5", Q), ("D5", Q), ("C5", H),
+    ("C4", Q), ("C4", Q), ("G4", Q), ("G4", Q),
+    ("A4", Q), ("A4", Q), ("G4", H),
+    ("F4", Q), ("F4", Q), ("E4", Q), ("E4", Q),
+    ("D4", Q), ("D4", Q), ("C4", H),
     # 5 5 4 4 | 3 3 2 - | 5 5 4 4 | 3 3 2 - |
-    ("G5", Q), ("G5", Q), ("F5", Q), ("F5", Q),
-    ("E5", Q), ("E5", Q), ("D5", H),
-    ("G5", Q), ("G5", Q), ("F5", Q), ("F5", Q),
-    ("E5", Q), ("E5", Q), ("D5", H),
+    ("G4", Q), ("G4", Q), ("F4", Q), ("F4", Q),
+    ("E4", Q), ("E4", Q), ("D4", H),
+    ("G4", Q), ("G4", Q), ("F4", Q), ("F4", Q),
+    ("E4", Q), ("E4", Q), ("D4", H),
     # 1 1 5 5 | 6 6 5 - | 4 4 3 3 | 2 2 1 - |
-    ("C5", Q), ("C5", Q), ("G5", Q), ("G5", Q),
-    ("A5", Q), ("A5", Q), ("G5", H),
-    ("F5", Q), ("F5", Q), ("E5", Q), ("E5", Q),
-    ("D5", Q), ("D5", Q), ("C5", H),
+    ("C4", Q), ("C4", Q), ("G4", Q), ("G4", Q),
+    ("A4", Q), ("A4", Q), ("G4", H),
+    ("F4", Q), ("F4", Q), ("E4", Q), ("E4", Q),
+    ("D4", Q), ("D4", Q), ("C4", H),
 ]
 TWINKLE_LH = ["C3", "F3", "F3", "G3", "C3", "G3", "C3", "G3", "C3", "F3", "F3", "C3"]
 
 
 ODE_RH: list[Note] = [
     # 3 3 4 5 | 5 4 3 2 | 1 1 2 3 | 3. 2 2 - |
-    ("E5", Q), ("E5", Q), ("F5", Q), ("G5", Q),
-    ("G5", Q), ("F5", Q), ("E5", Q), ("D5", Q),
-    ("C5", Q), ("C5", Q), ("D5", Q), ("E5", Q),
-    ("E5", DQ), ("D5", E), ("D5", H),
+    ("E4", Q), ("E4", Q), ("F4", Q), ("G4", Q),
+    ("G4", Q), ("F4", Q), ("E4", Q), ("D4", Q),
+    ("C4", Q), ("C4", Q), ("D4", Q), ("E4", Q),
+    ("E4", DQ), ("D4", E), ("D4", H),
     # 3 3 4 5 | 5 4 3 2 | 1 1 2 3 | 2. 1 1 - |
-    ("E5", Q), ("E5", Q), ("F5", Q), ("G5", Q),
-    ("G5", Q), ("F5", Q), ("E5", Q), ("D5", Q),
-    ("C5", Q), ("C5", Q), ("D5", Q), ("E5", Q),
-    ("D5", DQ), ("C5", E), ("C5", H),
+    ("E4", Q), ("E4", Q), ("F4", Q), ("G4", Q),
+    ("G4", Q), ("F4", Q), ("E4", Q), ("D4", Q),
+    ("C4", Q), ("C4", Q), ("D4", Q), ("E4", Q),
+    ("D4", DQ), ("C4", E), ("C4", H),
 ]
 ODE_LH = ["C3", "G3", "C3", "G3", "C3", "G3", "C3", "C3"]
 
 
 FRERE_RH: list[Note] = [
     # 1 2 3 1 | 1 2 3 1 | 3 4 5 - | 3 4 5 - |
-    ("C5", Q), ("D5", Q), ("E5", Q), ("C5", Q),
-    ("C5", Q), ("D5", Q), ("E5", Q), ("C5", Q),
-    ("E5", Q), ("F5", Q), ("G5", H),
-    ("E5", Q), ("F5", Q), ("G5", H),
+    ("C4", Q), ("D4", Q), ("E4", Q), ("C4", Q),
+    ("C4", Q), ("D4", Q), ("E4", Q), ("C4", Q),
+    ("E4", Q), ("F4", Q), ("G4", H),
+    ("E4", Q), ("F4", Q), ("G4", H),
     # 5 6 5 4 3 1 | 5 6 5 4 3 1 | 1 5, 1 - | 1 5, 1 - |
-    ("G5", E), ("A5", E), ("G5", E), ("F5", E), ("E5", Q), ("C5", Q),
-    ("G5", E), ("A5", E), ("G5", E), ("F5", E), ("E5", Q), ("C5", Q),
-    ("C5", Q), ("G4", Q), ("C5", H),
-    ("C5", Q), ("G4", Q), ("C5", H),
+    ("G4", E), ("A4", E), ("G4", E), ("F4", E), ("E4", Q), ("C4", Q),
+    ("G4", E), ("A4", E), ("G4", E), ("F4", E), ("E4", Q), ("C4", Q),
+    ("C4", Q), ("G3", Q), ("C4", H),
+    ("C4", Q), ("G3", Q), ("C4", H),
 ]
 # Frère Jacques is a round over a tonic pedal.
 FRERE_LH = ["C3", "C3", "C3", "C3", "C3", "C3", "C3", "C3"]
@@ -88,16 +93,16 @@ FRERE_LH = ["C3", "C3", "C3", "C3", "C3", "C3", "C3", "C3"]
 JASMINE_RH: list[Note] = [
     # 好一朵美丽的茉莉花
     # 3 3 5 6 | 5 - 3 5 | 6 5 6 5 | 3 - - - |
-    ("E5", Q), ("E5", Q), ("G5", Q), ("A5", Q),
-    ("G5", H), ("E5", Q), ("G5", Q),
-    ("A5", Q), ("G5", Q), ("A5", Q), ("G5", Q),
-    ("E5", W),
+    ("E4", Q), ("E4", Q), ("G4", Q), ("A4", Q),
+    ("G4", H), ("E4", Q), ("G4", Q),
+    ("A4", Q), ("G4", Q), ("A4", Q), ("G4", Q),
+    ("E4", W),
     # 好一朵美丽的茉莉花
     # 3 3 5 6 | 5 - 3 5 | 6 5 6 5 | 3 - - - |
-    ("E5", Q), ("E5", Q), ("G5", Q), ("A5", Q),
-    ("G5", H), ("E5", Q), ("G5", Q),
-    ("A5", Q), ("G5", Q), ("A5", Q), ("G5", Q),
-    ("E5", W),
+    ("E4", Q), ("E4", Q), ("G4", Q), ("A4", Q),
+    ("G4", H), ("E4", Q), ("G4", Q),
+    ("A4", Q), ("G4", Q), ("A4", Q), ("G4", Q),
+    ("E4", W),
 ]
 JASMINE_LH = ["C3", "C3", "F3", "C3", "C3", "C3", "F3", "C3"]
 
@@ -136,10 +141,15 @@ SONGS = [
 
 def _fill_measures(part: music21.stream.Part, notes: list[Note],
                    beats_per_measure: float) -> int:
-    """Lay notes into 4/4 bars, asserting each bar is exactly full."""
-    measure = music21.stream.Measure()
-    filled = 0.0
+    """Lay notes into 4/4 bars, asserting each bar is exactly full.
+
+    Each bar is numbered as it is created. A hand-built ``Measure`` carries
+    number 0 unless it is told otherwise, and MusicXML keeps that number, so a
+    whole piece would print "0" over every system.
+    """
     count = 0
+    measure = music21.stream.Measure(number=count + 1)
+    filled = 0.0
     for step, length in notes:
         element = (music21.note.Rest(quarterLength=length) if step is None
                    else music21.note.Note(step, quarterLength=length))
@@ -149,9 +159,9 @@ def _fill_measures(part: music21.stream.Part, notes: list[Note],
             if abs(filled - beats_per_measure) > 1e-9:
                 raise ValueError(f"bar {count + 1} holds {filled} beats")
             part.append(measure)
-            measure = music21.stream.Measure()
-            filled = 0.0
             count += 1
+            measure = music21.stream.Measure(number=count + 1)
+            filled = 0.0
     if filled > 1e-9:
         raise ValueError(f"trailing partial bar of {filled} beats")
     return count
@@ -188,6 +198,11 @@ def build(song: dict) -> music21.stream.Score:
 
     score.insert(0, right)
     score.insert(0, left)
+    # Two piano staves are one instrument. Without a StaffGroup, MusicXML has no
+    # <part-group> and every renderer draws them as two unrelated players.
+    score.insert(0, music21.layout.StaffGroup(
+        [right, left], name="Piano", abbreviation="Pno",
+        symbol="brace", barTogether=True))
     return score
 
 

@@ -22,6 +22,8 @@ import {
   buildPitchScale, buildScoreLayout, locateScorePosition, staffForPitch,
   staffHintFromEventIds, type PitchScale, type ScoreMeasureLayout, type StaffHint,
 } from './scoreGeometry'
+import { measureLabel, renumberMeasures } from './measureLabels'
+import { ENGRAVING_OPTIONS, applyEngravingRules } from './engraving'
 
 interface Props {
   xmlUrl: string
@@ -84,16 +86,17 @@ export function ScoreViewer(props: Props) {
       setSheetSize(null)
       setNoteAnchors([])
       containerRef.current.innerHTML = ''
-      const osmd = new OpenSheetMusicDisplay(containerRef.current, {
-        autoResize: false, backend: 'svg', drawTitle: true, drawSubtitle: false,
-        drawComposer: false, pageBackgroundColor: 'white',
-      })
+      const osmd = new OpenSheetMusicDisplay(containerRef.current, ENGRAVING_OPTIONS)
+      applyEngravingRules(osmd)
       try {
         const response = await fetch(props.xmlUrl, { signal: controller.signal })
         if (!response.ok) throw new Error(tf('scoreLoadHttpFailed', { status: response.status }))
         const text = await response.text()
         if (cancelled) return
-        await osmd.load(text)
+        // The page prints the same bar numbers the app says out loud. A file
+        // that numbers every bar 0 would otherwise contradict every position in
+        // the report.
+        await osmd.load(renumberMeasures(text))
         if (cancelled) return
         osmd.render()
         if (cancelled) return
@@ -288,7 +291,7 @@ export function ScoreViewer(props: Props) {
                   style={{ left: columnX, top }}
                   aria-label={tf('livePlayedOnScore', {
                     note: noteName(item.pitch),
-                    measure: target?.measureNo ?? 0,
+                    measure: measureLabel(target?.measureNo ?? 0),
                     beat: (target?.onsetBeat ?? 0) + 1,
                   })}
                 >

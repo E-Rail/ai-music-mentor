@@ -47,8 +47,39 @@ MENTOR_PROVIDER_ALLOW_FALLBACKS = os.environ.get(
     "MENTOR_PROVIDER_ALLOW_FALLBACKS", "true").lower() not in {"0", "false", "no"}
 MENTOR_READ_TIMEOUT_SECONDS = float(os.environ.get(
     "MENTOR_READ_TIMEOUT_SECONDS", str(MENTOR_TIMEOUT_SECONDS)))
-MENTOR_MAX_OUTPUT_TOKENS = int(os.environ.get("MENTOR_MAX_OUTPUT_TOKENS", "1600"))
+MENTOR_MAX_OUTPUT_TOKENS = int(os.environ.get("MENTOR_MAX_OUTPUT_TOKENS", "4000"))
+# With reasoning on, a model's private deliberation is charged against the same
+# ceiling as its answer, so a long think returns half a JSON object. Measured
+# here: an exercise plan hit the 1600 ceiling, failed to parse, retried
+# identically, and cost 136 seconds before falling back. The adapter widens the
+# ceiling once when it sees a truncated answer; this is how far it may go.
+MENTOR_MAX_OUTPUT_TOKENS_CEILING = int(os.environ.get(
+    "MENTOR_MAX_OUTPUT_TOKENS_CEILING", "6000"))
 ANALYSIS_MAX_SECONDS = float(os.environ.get("ANALYSIS_MAX_SECONDS", "5"))
+
+# ---------------------------------------------------------------- reading a page
+# Turning a photographed or printed page into notes. This is the one job in the
+# app where a model reads the source material rather than explaining measured
+# facts, so it is configured separately from the mentor and can be pointed at a
+# different model without touching coaching. It reuses the mentor's credentials
+# because both speak the same OpenAI-compatible API.
+VISION_API_BASE = os.environ.get("VISION_API_BASE", MENTOR_API_BASE).rstrip("/")
+VISION_API_KEY = os.environ.get("VISION_API_KEY", MENTOR_API_KEY)
+VISION_MODEL = os.environ.get("VISION_MODEL", "xiaomi/mimo-v2.5")
+# Reading a page is slower than explaining a report, and it happens once per
+# import rather than once per take, so it is allowed to take longer.
+VISION_TIMEOUT_SECONDS = float(os.environ.get("VISION_TIMEOUT_SECONDS", "180"))
+VISION_CONNECT_TIMEOUT_SECONDS = float(os.environ.get(
+    "VISION_CONNECT_TIMEOUT_SECONDS", "10"))
+VISION_MAX_OUTPUT_TOKENS = int(os.environ.get("VISION_MAX_OUTPUT_TOKENS", "12000"))
+# One page is a demo; a whole sonata is not. Each extra page costs latency and
+# another chance for the read to fail, so the limit is small and explicit.
+VISION_MAX_PAGES = int(os.environ.get("VISION_MAX_PAGES", "2"))
+# Long edge in pixels. Engraved staff lines survive downscaling; a phone photo
+# at full size mostly costs upload time.
+VISION_PAGE_PIXELS = int(os.environ.get("VISION_PAGE_PIXELS", "1600"))
+MAX_SCORE_IMAGE_BYTES = int(os.environ.get(
+    "MAX_SCORE_IMAGE_BYTES", str(25 * 1024 * 1024)))
 
 MAX_SCORE_BYTES = int(os.environ.get("MAX_SCORE_BYTES", str(10 * 1024 * 1024)))
 MAX_MXL_EXPANDED_BYTES = int(os.environ.get("MAX_MXL_EXPANDED_BYTES", str(20 * 1024 * 1024)))
@@ -62,7 +93,7 @@ GENERATED_RETENTION_HOURS = int(os.environ.get("GENERATED_RETENTION_HOURS", str(
 LOCAL_PROFILE_ID = "local"
 # Bump when the importer changes what it derives from the same file, so builtin
 # fixtures are re-ingested on machines that already ran an older build.
-SCORE_IMPORTER_VERSION = "2026.08.11-title-fallback"
+SCORE_IMPORTER_VERSION = "2026.08.12-measure-labels"
 
 if MENTOR_RESPONSE_MODE not in {"json_schema", "json_object", "prompt_json"}:
     raise ValueError("MENTOR_RESPONSE_MODE must be json_schema, json_object, or prompt_json")

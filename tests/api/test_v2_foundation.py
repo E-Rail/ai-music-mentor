@@ -188,11 +188,14 @@ def test_musicxml_meter_change_preserves_absolute_timeline_for_analysis():
 
 def test_pdf_slot_and_oversized_upload_fail_clearly(monkeypatch):
     with TestClient(app) as client:
+        # A PDF now goes to the page reader. With no model configured the app
+        # must say exactly that, rather than failing as if the file were broken.
+        monkeypatch.setattr(config, "VISION_API_KEY", "")
         pdf = client.post("/api/v1/scores/import", files={
             "file": ("scan.pdf", b"%PDF-1.7\n", "application/pdf"),
         })
         assert pdf.status_code == 400
-        assert "下一里程碑" in pdf.json()["detail"]["message"]
+        assert "识谱模型" in pdf.json()["detail"]["message"]
 
         monkeypatch.setattr(config, "MAX_SCORE_BYTES", 8)
         oversized = client.post("/api/v1/scores/import", files={

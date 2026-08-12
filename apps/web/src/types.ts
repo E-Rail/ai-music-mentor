@@ -25,10 +25,13 @@ export interface ScoreMeta {
   tempoMap?: { measureNo?: number; onsetBeat?: number; absoluteBeat?: number; bpm: number }[]
   meterMap?: { measureNo?: number; onsetBeat?: number; absoluteBeat?: number; timeSignature: string }[]
   writtenToSoundingSemitones?: number
+  /** What each bar is called on the page: measureLabels[measureNo - 1]. */
+  measureLabels?: string[]
+  hasNotatedDynamics?: boolean
   scoreHash: string
 }
 
-export type ScoreSourceType = 'musicxml' | 'mxl' | 'midi'
+export type ScoreSourceType = 'musicxml' | 'mxl' | 'midi' | 'pdf' | 'image'
 export type ScoreDisplayMode = 'exact_notation' | 'simplified_quantized_staff'
 export type ScoreLibraryCategory = 'demo' | 'uploaded' | 'generated' | 'internal'
 export type InputSource = 'web-midi' | 'microphone' | 'midi-upload'

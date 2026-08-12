@@ -1,6 +1,7 @@
 import { t, tf } from '../../i18n/messages'
 import { LiveTrace } from './LiveTrace'
 import type { LivePerformanceState, LiveTraceNote } from './livePerformance'
+import { measureLabel } from '../score/measureLabels'
 
 const PITCH_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B']
 
@@ -62,7 +63,7 @@ export function LivePanel(
           <dt>{t('livePosition')}</dt>
           <dd className="numeric">{state.target
             ? tf('liveMeasureBeat', {
-              measure: state.target.measureNo,
+              measure: measureLabel(state.target.measureNo),
               beat: state.target.onsetBeat + 1,
             })
             : '—'}</dd>

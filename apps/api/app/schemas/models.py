@@ -19,6 +19,7 @@ class ScoreSourceType(str, Enum):
     mxl = "mxl"
     midi = "midi"
     pdf = "pdf"
+    image = "image"
 
 
 class ScoreDisplayMode(str, Enum):
@@ -78,6 +79,11 @@ class ScoreMeta(BaseModel):
     # A MIDI file's note velocities are a recording of how someone played, not
     # an instruction on the page, so they must never be graded as one.
     hasNotatedDynamics: bool = False
+    # What a musician calls each bar, in timeline order: measureLabels[n - 1] is
+    # the label for measureNo n. Usually "1", "2", "3"…, but a pickup bar is
+    # printed as 0 and every bar after it is one lower than its position. The
+    # app must say the number that is printed on the page the student is reading.
+    measureLabels: list[str] = Field(default_factory=list)
     scoreHash: str = ""
     builtin: bool = False
 

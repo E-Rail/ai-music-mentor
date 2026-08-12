@@ -78,6 +78,12 @@ def _configure(monkeypatch, mode: str):
     monkeypatch.setattr(config, "MENTOR_MODEL", "fake-model")
     monkeypatch.setattr(config, "MENTOR_RESPONSE_MODE", mode)
     monkeypatch.setattr(config, "MENTOR_REASONING_EFFORT", "low")
+    # Routing preferences come from the developer's own .env. Pinning them here
+    # keeps these assertions about the adapter rather than about the machine.
+    monkeypatch.setattr(config, "MENTOR_PROVIDER_ORDER", [])
+    monkeypatch.setattr(config, "MENTOR_PROVIDER_SORT", "")
+    monkeypatch.setattr(config, "MENTOR_PROVIDER_ALLOW_FALLBACKS", True)
+    monkeypatch.setattr(config, "MENTOR_MAX_OUTPUT_TOKENS", 1_600)
 
 
 def test_json_schema_mode_sends_schema_and_validates(monkeypatch):
@@ -124,6 +130,51 @@ def test_openrouter_requires_parameter_capable_routes(monkeypatch):
         "allow_fallbacks": True, "require_parameters": True,
     }
     assert captured["reasoning"] == {"effort": "low", "exclude": True}
+
+
+def test_a_truncated_answer_is_asked_again_with_more_room(monkeypatch):
+    """A model cut off mid-JSON gets a wider ceiling, not the same question."""
+    ceilings: list[int] = []
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        ceilings.append(body["max_tokens"])
+        if len(ceilings) == 1:
+            return httpx.Response(200, json={"choices": [
+                {"finish_reason": "length", "message": {"content": '{"summary": "半'}},
+            ]})
+        return httpx.Response(200, json={"choices": [
+            {"finish_reason": "stop", "message": {"content": _valid_content()}},
+        ]})
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.respond(_report())
+
+    assert ceilings == [1_600, 4_800]
+    assert outcome.provider == "fake-provider.test"
+    assert outcome.response.summary
+
+
+def test_a_truncation_that_survives_more_room_is_not_asked_a_third_time(monkeypatch):
+    """Widening is the only thing that could help; when it does not, stop."""
+    calls = 0
+
+    def handler(_request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [
+            {"finish_reason": "length", "message": {"content": "{"}},
+        ]})
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.respond(_report())
+
+    # One at the configured ceiling, one widened. Not four.
+    assert calls == 2
+    assert outcome.provider == "rules-fallback"
+    assert outcome.response.summary
 
 
 def test_json_object_mode_and_malformed_retry_fall_back(monkeypatch):

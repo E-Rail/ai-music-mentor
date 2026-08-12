@@ -1,10 +1,14 @@
-import { lazy, Suspense, useEffect, useReducer, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { api } from './api/client'
+import {
+  measureLabel, measureLabelList, setScoreMeasureLabels,
+} from './features/score/measureLabels'
 import type {
   CaptureMeta, ComparisonResult, DiagnosisReport, ErrorEvent, ExerciseResult,
   InputSource, InstrumentProfile, MentorChatResponse, MentorMemoryStatus,
   MentorPlanItem, MentorResponse,
   PerformanceEvent, ScoreDetail, ScoreEvent, ScoreMeta, ScoreNormalization,
+  ScoreSourceType,
 } from './types'
 import { MidiCapture } from './features/midi/midiCapture'
 import { MicrophoneCapture, type MicrophonePreview, type MicrophoneState } from './features/microphone/microphoneCapture'
@@ -99,6 +103,29 @@ const PHASE_TO_STEP: Record<WorkflowPhase, Step> = {
   retry: 'compare', comparison: 'compare',
 }
 
+/**
+ * How much of a new piece to practise first.
+ *
+ * Nobody learns a piece by playing all of it badly. A take is only useful
+ * feedback if the player can hold the passage together, so a long import opens
+ * on its first section and says so; a short one opens whole. The control is
+ * right there either way — this is a starting point, not a rule.
+ */
+const FIRST_PASSAGE_MEASURES = 16
+
+function openingRange(measureCount: number): { start: number; end: number } {
+  const total = Math.max(1, Math.floor(measureCount) || 1)
+  return { start: 1, end: Math.min(total, FIRST_PASSAGE_MEASURES) }
+}
+
+/** Files that have to be looked at rather than parsed. */
+const READ_FROM_PAGE_SUFFIXES = /\.(pdf|png|jpe?g|webp|heic|heif)$/i
+
+/** A score that a model read off a page, rather than one someone exported. */
+function isReadFromPage(detail: { sourceType: ScoreSourceType }): boolean {
+  return detail.sourceType === 'pdf' || detail.sourceType === 'image'
+}
+
 export default function App() {
   const [workflow, sendWorkflow] = useReducer(workflowReducer, initialWorkflowState)
   const step = PHASE_TO_STEP[workflow.phase]
@@ -106,7 +133,16 @@ export default function App() {
   const [scoreId, setScoreId] = useState<string | null>(null)
   const [scoreDetail, setScoreDetail] = useState<ScoreDetail | null>(null)
   const [normalization, setNormalization] = useState<ScoreNormalization | null>(null)
-  const [meta, setMeta] = useState<ScoreMeta | null>(null)
+  const [meta, setMetaState] = useState<ScoreMeta | null>(null)
+  /**
+   * Setting the open score also publishes how its bars are named, so the staff,
+   * the live cursor and every report say the same bar number. Going through one
+   * setter is what makes that true no matter which path loaded the score.
+   */
+  const setMeta = useCallback((next: ScoreMeta | null) => {
+    setScoreMeasureLabels(next?.measureLabels)
+    setMetaState(next)
+  }, [])
   const [events, setEvents] = useState<ScoreEvent[]>([])
   const [rangeStart, setRangeStart] = useState(1)
   const [rangeEnd, setRangeEnd] = useState(8)
@@ -723,8 +759,8 @@ export default function App() {
       resetPracticeBlock()
       setScoreId(id); setMeta(r.metadata); setEvents(r.scoreEvents)
       setScoreDetail(r); setNormalization(r.normalization)
-      setRangeEnd(r.metadata.measureCount)
-      setRangeStart(1)
+      const opening = openingRange(r.metadata.measureCount)
+      setRangeStart(opening.start); setRangeEnd(opening.end)
       sendWorkflow({ type: 'SCORE_SELECTED' })
     } catch (e) {
       if (requestId === scoreLoadRequestRef.current) {
@@ -737,6 +773,11 @@ export default function App() {
   const importScore = async (file: File) => {
     const requestId = ++scoreLoadRequestRef.current
     setLoading(true); setAlert(null)
+    // Reading a page takes tens of seconds, which is long enough that silence
+    // reads as a hang. Say what is happening before the wait, not after it.
+    if (READ_FROM_PAGE_SUFFIXES.test(file.name)) {
+      setAlert({ type: 'info', msg: t('uploadScoreReading') })
+    }
     try {
       const r = await api.importScore(file)
       if (requestId !== scoreLoadRequestRef.current) return
@@ -748,7 +789,8 @@ export default function App() {
       }])
       setScoreId(r.scoreId); setMeta(r.metadata); setEvents(r.scoreEvents)
       setScoreDetail(r); setNormalization(r.normalization)
-      setRangeStart(1); setRangeEnd(r.metadata.measureCount)
+      const opening = openingRange(r.metadata.measureCount)
+      setRangeStart(opening.start); setRangeEnd(opening.end)
       sendWorkflow({ type: 'SCORE_SELECTED' })
       setAlert({ type: 'success', msg: tf('scoreImported', { title: r.metadata.title }) })
     } catch (e) {
@@ -1167,7 +1209,9 @@ export default function App() {
       }
       setExerciseStage('generated')
       const strategyLabel = EXERCISE_STRATEGIES.find(([key]) => key === r.ruleId)?.[1] || r.ruleId
-      setAlert({ type: 'success', msg: tf('exerciseGenerated', { rule: strategyLabel, measures: r.sourceMeasures.join('-') }) })
+      setAlert({ type: 'success', msg: tf('exerciseGenerated', {
+        rule: strategyLabel, measures: measureLabelList(r.sourceMeasures, '-'),
+      }) })
     } catch (e) {
       if (requestId === exerciseRequestRef.current) {
         setAlert({ type: 'error', msg: tf('exerciseFailed', { detail: (e as Error).message }) })
@@ -1728,7 +1772,9 @@ export default function App() {
           )}
           <h3>{t('uploadScoreTitle')}</h3>
           <p className="dim">{t('uploadScoreHint')}</p>
-          <UploadZone onFile={importScore} accept=".musicxml,.xml,.mxl,.mid,.midi" disabled={loading} />
+          <UploadZone onFile={importScore}
+                      accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.webp"
+                      disabled={loading} />
           {scoreDetail && normalization && (
             <section className="import-review" aria-labelledby="import-review-title">
               <div className="review-heading">
@@ -1736,12 +1782,15 @@ export default function App() {
                   <h3 id="import-review-title">{t('importReview')}</h3>
                   <p className="dim">{t('importReviewHint')}</p>
                 </div>
-                <span className={`display-badge ${scoreDetail.sourceType === 'midi' ? 'simplified' : 'exact'}`}>
+                <span className={`display-badge ${
+                  scoreDetail.displayMode === 'exact_notation' ? 'exact' : 'simplified'}`}>
                   {scoreDetail.displayMode === 'exact_notation' ? t('exactNotation') : t('simplifiedNotation')}
                 </span>
               </div>
               {scoreDetail.displayMode === 'simplified_quantized_staff' && (
-                <div className="alert alert-info">{t('simplifiedNotice')}</div>
+                <div className="alert alert-info">
+                  {isReadFromPage(scoreDetail) ? t('readNotice') : t('simplifiedNotice')}
+                </div>
               )}
               {!!scoreDetail.warnings.length && (
                 <ul className="warning-list">
@@ -1816,6 +1865,10 @@ export default function App() {
           {meta && (
             <>
               <h3>{t('practiceRange')}</h3>
+              {meta.measureCount > rangeEnd && rangeStart === 1 &&
+               rangeEnd === openingRange(meta.measureCount).end && (
+                <p className="dim">{tf('practiceRangeShortened', { count: rangeEnd })}</p>
+              )}
               <div className="range-row">
                 <span>{t('rangePrefix')}</span>
                 <input aria-label={t('rangeStartAria')} type="number" min={1} max={meta.measureCount} value={rangeStart}
@@ -2076,7 +2129,8 @@ export default function App() {
                   {recording && <span className="rec-dot" />}
                   <span>{recording ? t('recording') : (hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('stopped'))}</span>
                   <span className="dim">{cursor ? tf('cursorPosition', {
-                    measure: cursor.measure, bpm: cursor.bpm ?? '—', state: cursor.frozen ? ` · ${t('relocking')}` : '',
+                    measure: measureLabel(cursor.measure), bpm: cursor.bpm ?? '—',
+                    state: cursor.frozen ? ` · ${t('relocking')}` : '',
                   }) : t('waitingForNotes')}</span>
                 </div>
                 <div className="flex">
@@ -2194,7 +2248,7 @@ export default function App() {
                   </span>
                   <div>
                     <strong>{tf('exerciseTargetPosition', {
-                      measure: selectedError.location.measure,
+                      measure: measureLabel(selectedError.location.measure),
                       beat: selectedError.location.beat + 1,
                     })}</strong>
                     <span>{errorDetailForDisplay(selectedError, report?.evidences ?? [])}</span>
@@ -2296,7 +2350,9 @@ export default function App() {
                   <div className="note-ack">{exercise.aiPlan.noteAcknowledgement}</div>
                 )}
                 <div className="plan-facts">
-                  <span>{tf('generatedMeasures', { measures: exercise.sourceMeasures.join('、') })}</span>
+                  <span>{tf('generatedMeasures', {
+                    measures: measureLabelList(exercise.sourceMeasures),
+                  })}</span>
                   <span>{tf('generatedStrategy', {
                     strategy: EXERCISE_STRATEGIES.find(([key]) => key === exercise.ruleId)?.[1] || exercise.ruleId,
                   })}</span>
@@ -2437,7 +2493,8 @@ export default function App() {
                         : (hasRetryRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('waitingToRecord')))}</span>
                 <span className="dim">{tf('accompanimentStatus', { bpm: retryTempo ?? '—' })}</span>
                 {cursor && <span className="dim">{tf('followerConfidence', {
-                  measure: cursor.measure, confidence: Math.round((cursor.confidence ?? 0) * 100),
+                  measure: measureLabel(cursor.measure),
+                  confidence: Math.round((cursor.confidence ?? 0) * 100),
                 })}</span>}
               </div>
               {inputSource !== 'midi-upload' && <LivePanel state={liveFeedback} trace={liveTrace} />}

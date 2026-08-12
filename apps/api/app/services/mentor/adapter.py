@@ -259,14 +259,45 @@ def _provider_preferences() -> dict:
     return preferences
 
 
+class _TruncatedResponse(ValueError):
+    """The model was cut off mid-JSON because it ran out of output budget."""
+
+
 def _request_structured(messages: list[dict[str, str]],
                         response_model: type[BaseModel],
                         schema_name: str) -> BaseModel:
+    """One structured call, widened once if the model runs out of room.
+
+    With reasoning enabled the model's private thinking is charged against the
+    same ceiling as its answer, so a long deliberation can consume the whole
+    budget and return half a JSON object. That reads as a parse failure, and the
+    ordinary retry then spends another full minute producing exactly the same
+    truncated answer. Widening the ceiling is the only thing that changes the
+    outcome, so it is what happens.
+    """
+    ceiling = config.MENTOR_MAX_OUTPUT_TOKENS
+    try:
+        return _one_structured_request(messages, response_model, schema_name, ceiling)
+    except _TruncatedResponse as first:
+        widened = min(ceiling * 3, config.MENTOR_MAX_OUTPUT_TOKENS_CEILING)
+        if widened <= ceiling:
+            raise
+        logger.info(json.dumps({
+            "event": "mentor_widened_output", "from": ceiling, "to": widened,
+            "reason": str(first),
+        }, ensure_ascii=False))
+        return _one_structured_request(messages, response_model, schema_name, widened)
+
+
+def _one_structured_request(messages: list[dict[str, str]],
+                            response_model: type[BaseModel],
+                            schema_name: str,
+                            max_tokens: int) -> BaseModel:
     request_body = {
         "model": config.MENTOR_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": config.MENTOR_MAX_OUTPUT_TOKENS,
+        "max_tokens": max_tokens,
     }
     response_format = _response_format(response_model, schema_name)
     if response_format:
@@ -297,7 +328,15 @@ def _request_structured(messages: list[dict[str, str]],
     served_by = payload.get("provider")
     if served_by:
         _LAST_SERVED_BY[0] = str(served_by)
-    content = payload["choices"][0]["message"].get("content")
+    choice = payload["choices"][0]
+    content = choice["message"].get("content")
+    # A model stopped at the token ceiling returns half a JSON object, which
+    # fails to parse for a reason no amount of re-asking will fix. Saying so
+    # here is what lets the caller widen the budget instead of spending another
+    # minute on an identical answer.
+    if choice.get("finish_reason") in {"length", "max_tokens"}:
+        raise _TruncatedResponse(
+            f"response hit the {request_body['max_tokens']} token ceiling")
     return response_model.model_validate(_extract_json(content))
 
 
@@ -372,6 +411,12 @@ def respond(report: DiagnosisReport, question: str = "",
             failure = exc
             if _retryable_http(exc, attempt):
                 continue
+            break
+        except _TruncatedResponse as exc:
+            # The ceiling has already been widened once inside the request.
+            # Asking again would produce the same truncated answer and cost
+            # another full generation.
+            failure = exc
             break
         except (KeyError, TypeError, ValueError, ValidationError,
                 json.JSONDecodeError) as exc:
@@ -462,6 +507,12 @@ def chat(report: DiagnosisReport, message: str,
             failure = exc
             if _retryable_http(exc, attempt):
                 continue
+            break
+        except _TruncatedResponse as exc:
+            # The ceiling has already been widened once inside the request.
+            # Asking again would produce the same truncated answer and cost
+            # another full generation.
+            failure = exc
             break
         except (KeyError, TypeError, ValueError, ValidationError,
                 json.JSONDecodeError) as exc:
@@ -651,6 +702,12 @@ def plan_exercise(report: DiagnosisReport, user_note: str,
             failure = exc
             if _retryable_http(exc, attempt):
                 continue
+            break
+        except _TruncatedResponse as exc:
+            # The ceiling has already been widened once inside the request.
+            # Asking again would produce the same truncated answer and cost
+            # another full generation.
+            failure = exc
             break
         except (KeyError, TypeError, ValueError, ValidationError,
                 json.JSONDecodeError) as exc:

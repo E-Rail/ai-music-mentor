@@ -90,7 +90,10 @@ await check('well-known demo songs are present with their real names', () => {
 })
 
 console.log('\nUSB MIDI path')
-const TWINKLE = [72, 72, 79, 79, 81, 81, 79]   // 小星星, bar 1–2
+// 小星星 bars 1-2, in the octave the score is actually written in. These are
+// the right notes: the run below is a correct take, so the report has to agree
+// that it was correct. A take that is wrong on purpose proves far less.
+const TWINKLE = [60, 60, 67, 67, 69, 69, 67]   // C4 C4 G4 G4 | A4 A4 G4
 
 await check('app loads without a page error', async () => {
   await page.goto(BASE_URL, { waitUntil: 'networkidle' })
@@ -156,6 +159,12 @@ await check('the score engraves and shows the note actually played', async () =>
   const played = await marker.getAttribute('data-pitch')
   const role = await marker.getAttribute('data-role')
   if (!played) throw new Error('no played-note marker on the staff')
+  // The notes above are the ones on the page, so the app has to recognise them
+  // as such. If this reads "extra", the score and the keyboard disagree about
+  // what octave the piece is in.
+  if (role !== 'matched') {
+    throw new Error(`a correct note was judged "${role}" at pitch ${played}`)
+  }
   return `staff engraved, marker at pitch ${played} (${role})`
 })
 
@@ -166,7 +175,12 @@ await check('stop and analyse produces a report', async () => {
   await shot('04-report')
   reportReady = true
   const overall = await page.locator('.metric .value').first().innerText()
-  return `overall ${overall}`
+  // A take that played the right notes must not be scored as wrong ones.
+  const pitchScore = Number(await page.locator('.metric .value').nth(1).innerText())
+  if (Number.isFinite(pitchScore) && pitchScore < 60) {
+    throw new Error(`correct notes scored ${pitchScore} for pitch`)
+  }
+  return `overall ${overall}, pitch ${pitchScore}`
 })
 
 await check('the report cites verifiable evidence', async () => {
@@ -183,10 +197,13 @@ await check('AI mentor finishes thinking and answers', async () => {
   if (!(await box.count())) throw new Error('mentor panel missing')
   // Wait for the summary itself. Absence of the spinner is not an answer — the
   // request may simply not have started yet.
+  // waitForFunction takes (pageFunction, arg, options). Passing the options as
+  // the second argument silently hands them to the page as data and leaves the
+  // 30s default in force — which is shorter than a slow host takes to answer.
   await page.waitForFunction(() => {
     const node = document.querySelector('.mentor-box .summary')
     return !!node && (node.textContent || '').trim().length > 10
-  }, { timeout: 150_000 })
+  }, null, { timeout: 150_000 })
   const summary = await box.locator('.summary').innerText()
   const provider = await box.locator('.mentor-meta').innerText().catch(() => '')
   if (summary.trim().length < 10) throw new Error('mentor produced no summary')

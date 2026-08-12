@@ -8,7 +8,7 @@ export const zhCN = {
   scaleStarter: '标准',
   scalePro: '专业',
   scaleStarterHint: '字大、留白多，适合刚上手。',
-  scaleProHint: '一屏放下谱面、证据和导师，适合已经熟悉流程。',
+  scaleProHint: '一屏放下谱面和问题，并展开更细的听感分析。',
   appSubtitle: '导谱 · 演奏 · 逐音诊断 · 针对性练习',
   stageScore: '曲目',
   stageInput: '输入',

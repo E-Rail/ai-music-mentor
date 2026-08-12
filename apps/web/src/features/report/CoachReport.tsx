@@ -14,6 +14,8 @@ const ScoreViewer = lazy(() => import('../score/ScoreViewer').then((module) => (
 })))
 
 type CoachReportProps = {
+  /** Pro opens the deeper musical reading instead of tucking it behind a click. */
+  scale: 'starter' | 'pro'
   report: DiagnosisReport
   baseline: DiagnosisReport | null
   beatsPerMeasure?: number
@@ -38,7 +40,7 @@ type CoachReportProps = {
 }
 
 export function CoachReport({
-  report, baseline, beatsPerMeasure, scoreXmlUrl, selectedError,
+  scale, report, baseline, beatsPerMeasure, scoreXmlUrl, selectedError,
   mentor, mentorLoading, chatMessages, chatLoading, question,
   mentorMemory,
   onChooseError, onPlayEvidence, onApplyPlan, onApplyChatAction, onAskMentor,
@@ -123,7 +125,7 @@ export function CoachReport({
           {selectedError && (
             <EvidenceDrawer report={report} error={selectedError} onPlayCompare={onPlayEvidence} />
           )}
-          <details className="technical-details">
+          <details className="technical-details" open={scale === 'pro'}>
             <summary>{t('musicalDetails')}</summary>
             <div className="evidence-layers">
               <section>

@@ -927,7 +927,13 @@ input[type=checkbox] { accent-color: var(--brass); }
 .error-item.selected { background: var(--case-3); border-left-color: var(--brass); }
 .error-item .badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 3px; color: #fff; font-size: 10.5px; white-space: nowrap; }
 .error-item .desc { flex: 1; font-size: 12.5px; }
-.error-item .conf { flex: 0 0 auto; color: var(--chalk-faint); font-family: var(--font-num); font-size: 10.5px; }
+/* How sure the reading is. Useful once you know what it means, noise before
+   that, so it belongs to Pro along with the rest of the deeper reading. */
+.error-item .conf { display: none; }
+:root[data-scale="pro"] .error-item .conf {
+  display: block; flex: 0 0 auto; color: var(--chalk-faint);
+  font-family: var(--font-num); font-size: var(--ui-xs);
+}
 
 .evidence-box { margin-top: 10px; padding: 12px; background: var(--case-2); border-radius: var(--r-sm); font-size: 12.5px; }
 .evidence-box .fact { margin-bottom: 6px; }

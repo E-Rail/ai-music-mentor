@@ -2186,6 +2186,7 @@ export default function App() {
       {/* Step 4: 报告 */}
       {step === 'report' && report && (
         <CoachReport
+          scale={uiScale}
           report={report}
           baseline={baselineReport}
           beatsPerMeasure={meta?.beatsPerMeasure}

@@ -71,6 +71,14 @@ async function download(name) {
 
 mkdirSync(oafTarget, { recursive: true })
 const manifestName = 'weights_manifest.json'
+
+// A build does not need the weights — they are static files the browser fetches
+// at run time, not something Vite bundles. CI therefore skips 60 MB it would
+// only throw away, and a machine with no connection can still build.
+if (process.env.SKIP_MODEL_DOWNLOAD) {
+  console.log('onsets-frames: skipped (SKIP_MODEL_DOWNLOAD)')
+  process.exit(0)
+}
 try {
   await download(manifestName)
   const manifest = require(new URL(manifestName, oafTarget).pathname)

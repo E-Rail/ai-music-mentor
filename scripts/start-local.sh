@@ -34,7 +34,7 @@ build_web() {
       mkdir -p "$COREPACK_HOME"
       package_manager=(corepack pnpm)
     elif command -v npx >/dev/null 2>&1; then
-      package_manager=(npx --yes pnpm@10.12.1)
+      package_manager=(npx --yes pnpm@11.21.0)
     else
       echo "pnpm/Corepack is unavailable. Reinstall a current Node.js release."
       exit 1

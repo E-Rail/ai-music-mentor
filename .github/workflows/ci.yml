@@ -24,7 +24,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          # Must match packageManager in apps/web/package.json. pnpm 10 keeps
+          # patchedDependencies in package.json and 11 keeps it in
+          # pnpm-workspace.yaml, so a mismatch fails --frozen-lockfile with
+          # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH rather than anything informative.
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -38,10 +42,16 @@ jobs:
         run: pnpm test
       - name: Production build
         working-directory: apps/web
+        # The Onsets and Frames weights are fetched by the browser at run time,
+        # not bundled, so CI has no use for the 60 MB.
+        env:
+          SKIP_MODEL_DOWNLOAD: '1'
         run: pnpm build
       - name: Install Chromium
         working-directory: apps/web
         run: pnpm exec playwright install --with-deps chromium
       - name: Mocked Web MIDI browser flow
         working-directory: apps/web
+        env:
+          SKIP_MODEL_DOWNLOAD: '1'
         run: pnpm test:e2e

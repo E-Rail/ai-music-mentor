@@ -35,6 +35,7 @@ function specFor(worker: ReturnType<typeof fakeWorker>, stallTimeoutMs = 50): En
     version: 'test',
     sampleRate: 22_050,
     stallTimeoutMs,
+    silentPace: 0,
     create: () => worker as unknown as Worker,
   }
 }
@@ -146,6 +147,53 @@ describe('running an engine', () => {
     const running = runEngine(specFor(worker, 5_000), request(), () => {})
     worker.onerror?.({ message: 'boom' })
     await expect(running).rejects.toThrow('boom')
+  })
+
+  it('keeps the bar moving while a silent engine works, without ever arriving', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = fakeWorker()
+      const seen: number[] = []
+      const spec = { ...specFor(worker, 60_000), silentPace: 2 }
+      // Two seconds of audio at the fake rate, so the estimate spans ~4s.
+      const payload = { ...request(), audio: new Float32Array(2 * 22_050) }
+      const running = runEngine(spec, payload, (p) => seen.push(p))
+      worker.send({ type: 'progress', progress: 0.55, backend: 'webgl' })
+
+      await vi.advanceTimersByTimeAsync(6_000)
+      // It advanced on its own while the engine said nothing at all...
+      expect(seen.length).toBeGreaterThan(5)
+      expect(Math.max(...seen)).toBeGreaterThan(0.55)
+      // ...and stopped short, because finishing is the result's to report.
+      expect(Math.max(...seen)).toBeLessThan(0.89)
+
+      worker.send({
+        type: 'complete', events: [], rejectedCount: 0, meanConfidence: 0,
+        latencyMs: 1, backend: 'webgl',
+      })
+      await expect(running).resolves.toMatchObject({ backend: 'webgl' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never lets the estimate stand in for the engine being alive', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = fakeWorker()
+      const spec = { ...specFor(worker, 1_000), silentPace: 2 }
+      const payload = { ...request(), audio: new Float32Array(2 * 22_050) }
+      const running = runEngine(spec, payload, () => {})
+      worker.send({ type: 'progress', progress: 0.55, backend: 'webgl' })
+      const settled = expect(running).rejects.toMatchObject({
+        code: 'TRANSCRIPTION_STALLED',
+      })
+      // The estimate is still ticking here; it must not hold the take open.
+      await vi.advanceTimersByTimeAsync(1_200)
+      await settled
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stops listening once a take is abandoned', async () => {

@@ -45,49 +45,8 @@ const MEL_PARAMS = {
   fMin: 30,
 }
 
-/**
- * Roughly how long inference takes, as a multiple of the audio's duration.
- *
- * Measured at about 2× on a real GPU and several times that on software
- * rendering. It is only used to move a progress bar, never to decide anything.
- */
-const INFERENCE_PACE = 2.5
-/** Progress the estimate may never pass, so the real result is what finishes it. */
-const ESTIMATE_CEILING = 0.88
-
 function post(message: WorkerResponse): void {
   workerScope.postMessage(message)
-}
-
-/**
- * Keep the progress bar moving through the one stage that cannot report.
- *
- * `transcribeFromMelSpec` is a single uninterruptible pass with no hook to
- * follow, and it is most of the wall clock — a bar frozen for half a minute
- * reads as a hang, and a student stops the take that was about to succeed. So
- * the gap is filled from the clock against a measured pace. It always stops
- * short of the end: the estimate can be wrong, but arriving is not something it
- * is allowed to claim.
- */
-function estimateProgress(
-  audioSeconds: number, from: number, backend: string,
-): () => void {
-  const startedAt = performance.now()
-  const expectedMs = Math.max(1_000, audioSeconds * INFERENCE_PACE * 1_000)
-  const timer = setInterval(() => {
-    const share = Math.min(1, (performance.now() - startedAt) / expectedMs)
-    post({
-      type: 'progress',
-      progress: from + (ESTIMATE_CEILING - from) * share,
-      backend,
-    })
-    // Once the estimate is spent, stop talking. Every message resets the
-    // runner's stall timer, so a heartbeat that never ends would keep a model
-    // that has genuinely hung alive for ever. Going quiet here is what lets a
-    // take that is never coming back be given up on.
-    if (share >= 1) clearInterval(timer)
-  }, 700)
-  return () => clearInterval(timer)
 }
 
 /**
@@ -129,14 +88,10 @@ workerScope.onmessage = async (message: MessageEvent<TranscribeRequest>) => {
     await model.initialize()
     post({ type: 'progress', progress: 0.55, backend })
 
-    const stopEstimating = estimateProgress(
-      audio.length / OAF_SAMPLE_RATE, 0.55, backend)
-    let sequence
-    try {
-      sequence = await model.transcribeFromMelSpec(melSpec)
-    } finally {
-      stopEstimating()
-    }
+    // Nothing can be reported from here until this returns: the pass never
+    // yields, so a timer set in this worker would not run either. The main
+    // thread fills the gap — see `runEngine`.
+    const sequence = await model.transcribeFromMelSpec(melSpec)
     post({ type: 'progress', progress: 0.92, backend })
 
     const raw: PerformanceEvent[] = (sequence.notes ?? []).map((note, index) => {

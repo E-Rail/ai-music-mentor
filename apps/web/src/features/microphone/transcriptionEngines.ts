@@ -30,8 +30,21 @@ export interface EngineSpec {
    * abandon a take that was merely still working.
    */
   stallTimeoutMs: number
+  /**
+   * How long this engine's longest silent stretch runs, per second of audio.
+   *
+   * A model that cannot report its own progress still has to look like it is
+   * working. This is the pace the estimate is drawn against — measured, but
+   * only ever used to move a bar.
+   */
+  silentPace: number
   create(): Worker
 }
+
+/** Progress the estimate may never reach; arriving is the result's to claim. */
+const ESTIMATE_CEILING = 0.88
+/** How often the estimate nudges the bar. Slow enough to be cheap, fast enough to look alive. */
+const ESTIMATE_TICK_MS = 500
 
 export const ENGINES: Record<TranscriptionEngineId, EngineSpec> = {
   'onsets-frames': {
@@ -39,6 +52,9 @@ export const ENGINES: Record<TranscriptionEngineId, EngineSpec> = {
     version: 'magenta-1.23.1',
     sampleRate: OAF_SAMPLE_RATE,
     stallTimeoutMs: 240_000,
+    // Measured at roughly 2x the audio on a real GPU, several times that on
+    // software rendering.
+    silentPace: 2.5,
     create: () => new Worker(
       new URL('../../workers/onsetsFrames.worker.ts', import.meta.url),
       { type: 'module' },
@@ -49,6 +65,8 @@ export const ENGINES: Record<TranscriptionEngineId, EngineSpec> = {
     version: 'spotify-basic-pitch-ts-1.0.1',
     sampleRate: BASIC_PITCH_SAMPLE_RATE,
     stallTimeoutMs: 45_000,
+    // Basic Pitch reports its own progress throughout; nothing to estimate.
+    silentPace: 0,
     create: () => new Worker(
       new URL('../../workers/basicPitch.worker.ts', import.meta.url),
       { type: 'module' },
@@ -109,10 +127,36 @@ export function runEngine(
   if (signal?.aborted) return Promise.reject(transcriptionCancelledError())
   const worker = spec.create()
   return new Promise<EngineRun>((resolve, reject) => {
+    // Fill the silence from here, on the main thread.
+    //
+    // A worker running one uninterruptible pass cannot report progress and
+    // cannot even run its own timers — the thread is inside the model. This
+    // thread is free, so the estimate belongs here. It advances from the last
+    // thing the engine actually said towards a ceiling it never reaches, and it
+    // deliberately does not touch the stall timer: only the engine speaking for
+    // itself counts as being alive.
+    const audioSeconds = request.audio.length / spec.sampleRate
+    const expectedMs = Math.max(1_000, audioSeconds * spec.silentPace * 1_000)
+    let reported = 0
+    let estimateTimer = 0
+    const stopEstimate = () => window.clearTimeout(estimateTimer)
+    const estimateFrom = (base: number) => {
+      stopEstimate()
+      if (spec.silentPace <= 0 || base >= ESTIMATE_CEILING) return
+      const startedAt = Date.now()
+      const tick = () => {
+        const share = Math.min(1, (Date.now() - startedAt) / expectedMs)
+        onProgress(base + (ESTIMATE_CEILING - base) * share)
+        if (share < 1) estimateTimer = window.setTimeout(tick, ESTIMATE_TICK_MS)
+      }
+      estimateTimer = window.setTimeout(tick, ESTIMATE_TICK_MS)
+    }
+
     let settled = false
     let stallTimer = 0
     const cleanup = () => {
       window.clearTimeout(stallTimer)
+      stopEstimate()
       signal?.removeEventListener('abort', cancel)
       worker.terminate()
     }
@@ -134,7 +178,6 @@ export function runEngine(
     }
     signal?.addEventListener('abort', cancel, { once: true })
     armStallTimer()
-
     worker.onerror = (event) => {
       fail(new Error(event.message || `${spec.id} 转录工作线程启动失败`))
     }
@@ -142,7 +185,10 @@ export function runEngine(
       const payload = message.data
       if (payload.type === 'progress') {
         armStallTimer()
-        onProgress(payload.progress)
+        // Never let a stale estimate walk the bar backwards.
+        reported = Math.max(reported, payload.progress)
+        onProgress(reported)
+        estimateFrom(reported)
         return
       }
       if (payload.type === 'error') {

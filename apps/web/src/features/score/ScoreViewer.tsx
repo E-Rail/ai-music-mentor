@@ -19,9 +19,11 @@ import { ERROR_TYPE_LABEL, t, tf } from '../../i18n/messages'
 import type { LivePerformanceState } from '../live'
 import { CURSOR_INK, RESOLVED_INK, errorInk } from '../report/errorPalette'
 import {
-  buildPitchScale, buildScoreLayout, locateScorePosition, staffForPitch,
-  staffHintFromEventIds, type PitchScale, type ScoreMeasureLayout, type StaffHint,
+  buildScoreLayout, buildStaffPitchScales, locateScorePosition, staffForPitch,
+  staffHintFromEventIds, type ScoreMeasureLayout, type StaffHint,
 } from './scoreGeometry'
+import { labelPlacement } from './overlayLabels'
+import { midiFromOsmdHalfTone, noteName } from './pitch'
 import { measureLabel, renumberMeasures } from './measureLabels'
 import { ENGRAVING_OPTIONS, applyEngravingRules } from './engraving'
 
@@ -46,12 +48,6 @@ interface RenderedNoteAnchor {
   y: number
   width: number
   height: number
-}
-
-const PITCH_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B']
-
-function noteName(pitch: number): string {
-  return `${PITCH_NAMES[((pitch % 12) + 12) % 12]}${Math.floor(pitch / 12) - 1}`
 }
 
 export function errorComparisonKey(error: ErrorEvent): string {
@@ -123,8 +119,12 @@ export function ScoreViewer(props: Props) {
                   const beat = timestamp * 4
                   for (const voice of entry.graphicalVoiceEntries ?? []) {
                     for (const note of voice.notes ?? []) {
-                      const pitch = Number(note.sourceNote?.halfTone ??
-                        note.sourceNote?.Pitch?.getHalfTone?.())
+                      // OSMD reports half tones an octave below MIDI. Everything
+                      // downstream — the keyboard, the analysis, the report —
+                      // speaks MIDI, so convert here and nowhere else.
+                      const pitch = midiFromOsmdHalfTone(Number(
+                        note.sourceNote?.halfTone ??
+                        note.sourceNote?.Pitch?.getHalfTone?.()))
                       if (!Number.isFinite(pitch)) continue
                       try {
                         const renderedNote = note as unknown as {
@@ -149,6 +149,11 @@ export function ScoreViewer(props: Props) {
               })
             })
             setNoteAnchors(anchors)
+            // The layout auditor reads these to check that the overlay lands on
+            // the right staff line. Development only.
+            if (import.meta.env.DEV) {
+              (window as unknown as Record<string, unknown>).__scoreAnchors = anchors
+            }
           }
         }
       } catch (e) {
@@ -162,25 +167,18 @@ export function ScoreViewer(props: Props) {
   }, [props.xmlUrl])
 
   /**
-   * "Pitch → staff height" per staff, fitted to the notes OSMD actually drew.
-   * This is what lets the overlay place a note the student played but the score
-   * never contained — a wrong note gets its own position instead of colouring
-   * the note they missed.
+   * "Pitch → staff height", fitted to the notes OSMD actually drew — once per
+   * staff per line of music. This is what lets the overlay place a note the
+   * student played but the score never contained: a wrong note gets its own
+   * position instead of colouring the note they missed.
+   *
+   * Fitting one line per staff across the whole page instead would average
+   * every system together and put the note above the staff, on no pitch at all.
    */
-  const pitchScales = useMemo(() => {
-    const perStaff = new Map<number, { pitch: number; y: number }[]>()
-    for (const anchor of noteAnchors) {
-      const list = perStaff.get(anchor.staffIndex) ?? []
-      list.push({ pitch: anchor.pitch, y: anchor.y })
-      perStaff.set(anchor.staffIndex, list)
-    }
-    const fallbackStep = (noteAnchors[0]?.height ?? 10) / 2
-    const scales = new Map<number, PitchScale>()
-    perStaff.forEach((points, staffIndex) => {
-      scales.set(staffIndex, buildPitchScale(points, fallbackStep))
-    })
-    return scales
-  }, [noteAnchors])
+  const pitchScales = useMemo(
+    () => buildStaffPitchScales(noteAnchors, layout, (noteAnchors[0]?.height ?? 10) / 2),
+    [noteAnchors, layout],
+  )
 
   const staffPitches = useMemo(() => {
     const perStaff = new Map<number, number[]>()
@@ -225,6 +223,16 @@ export function ScoreViewer(props: Props) {
     }
   }
 
+  /** Placement classes for a label hung off a point `posOf` returned. */
+  function sheetPlacement(left: string, top: string) {
+    if (!sheetSize) return { side: 'above' as const, align: 'center' as const, className: '' }
+    return labelPlacement(
+      sheetSize.w * Number.parseFloat(left) / 100,
+      sheetSize.h * Number.parseFloat(top) / 100,
+      sheetSize.w,
+    )
+  }
+
   return (
     <div className="score-viewer" style={{ position: 'relative', minHeight: props.height ?? 260 }}>
       <div ref={containerRef} style={{ width: '100%', overflow: 'hidden', background: 'white', borderRadius: 8 }} />
@@ -251,13 +259,24 @@ export function ScoreViewer(props: Props) {
           : fallback?.left ?? null
         if (!columnX) return null
 
-        const yFor = (pitch: number): string | null => {
+        // Sheet-unit height for a pitch at this point in the music, or null when
+        // the page gives nothing to place it against.
+        const sheetYFor = (pitch: number): number | null => {
+          // A pitch the page engraved right here already has an exact height.
+          // Use it: a fit is only for notes the score never contained.
+          const exact = written.find((anchor) => anchor.pitch === pitch)
+          if (exact) return exact.y
           const staffIndex = staffForPitch(pitch, staffPitches, hint)
-          const scale = staffIndex === null ? null : pitchScales.get(staffIndex)
-          if (scale) return `${(scale.yForPitch(pitch) / sheetSize.h) * 100}%`
+          const fitted = staffIndex === null ? null
+            : pitchScales.yForPitch(pitch, staffIndex, target?.measureNo ?? 1)
+          if (fitted !== null) return Math.min(Math.max(fitted, 2), sheetSize.h - 2)
           if (!fallback) return null
-          return `${Number.parseFloat(fallback.top) +
-            Number.parseFloat(fallback.height) / 2}%`
+          return sheetSize.h * (Number.parseFloat(fallback.top) +
+            Number.parseFloat(fallback.height) / 2) / 100
+        }
+        const yFor = (pitch: number): string | null => {
+          const y = sheetYFor(pitch)
+          return y === null ? null : `${(y / sheetSize.h) * 100}%`
         }
 
         const timing = livePreview.timing
@@ -278,12 +297,18 @@ export function ScoreViewer(props: Props) {
             })}
             {/* 你实际弹出的音 */}
             {livePreview.played.map((item, index) => {
-              const top = yFor(item.pitch)
-              if (!top) return null
+              const y = sheetYFor(item.pitch)
+              if (y === null) return null
+              const top = `${(y / sheetSize.h) * 100}%`
+              // Keep the note's own label on the paper: near the top edge it
+              // hangs below instead, near a side it tucks in.
+              const placement = labelPlacement(
+                sheetSize.w * Number.parseFloat(columnX) / 100, y, sheetSize.w,
+              )
               return (
                 <div
                   key={`played-${item.pitch}`}
-                  className={`score-played-note ${item.role}`}
+                  className={`score-played-note ${item.role} ${placement.className}`}
                   data-testid="score-played-note"
                   data-status={livePreview.status}
                   data-role={item.role}
@@ -320,6 +345,7 @@ export function ScoreViewer(props: Props) {
         const st = errorInk(err.type)
         const resolved = props.resolvedKeys?.has(errorComparisonKey(err))
         const selected = props.selectedErrorId === err.id
+        const placement = sheetPlacement(p.left, p.top)
         return (
           <button
             key={err.id}
@@ -341,11 +367,10 @@ export function ScoreViewer(props: Props) {
               outline: selected ? `3px solid ${resolved ? RESOLVED_COLOR : st.paper}55` : 'none',
             }}
           >
-            <span className="marker-tag" style={{
-              position: 'absolute', top: -20, left: '50%', transform: 'translateX(-50%)',
-              fontSize: 10, whiteSpace: 'nowrap', padding: '1px 4px', borderRadius: 4,
-              background: resolved ? RESOLVED_COLOR : st.paper, color: 'white',
-            }}>
+            <span
+              className={`marker-tag ${placement.className}`}
+              style={{ background: resolved ? RESOLVED_COLOR : st.paper }}
+            >
               {resolved ? `✓ ${t('improved')}` : (st.hollow ? t('missing') : ERROR_TYPE_LABEL[err.type] ?? err.type)}
             </span>
           </button>
@@ -358,6 +383,7 @@ export function ScoreViewer(props: Props) {
         if (!p) return null
         const lowConf = (props.cursor.confidence ?? 1) < 0.5 || props.cursor.frozen
         const status = props.liveFeedback?.status ?? 'idle'
+        const placement = sheetPlacement(p.left, p.top)
         return (
           <div
             className={`score-cursor ${status}`}
@@ -366,7 +392,9 @@ export function ScoreViewer(props: Props) {
             style={{ left: p.left, top: p.top, height: p.height }}
           >
             {status === 'corrected' && (
-              <span className="cursor-tag corrected">{t('liveStatusCorrected')}</span>
+              <span className={`cursor-tag corrected ${placement.className}`}>
+                {t('liveStatusCorrected')}
+              </span>
             )}
             {/* Sits below the system so it cannot cover the played note or
                 the written-note ghost, which are the point of this overlay. */}

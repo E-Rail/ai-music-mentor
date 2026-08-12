@@ -3,6 +3,9 @@ import { api } from './api/client'
 import {
   measureLabel, measureLabelList, setScoreMeasureLabels,
 } from './features/score/measureLabels'
+// One spelling for a note, everywhere: the strip of keys you are holding must
+// name the same note the staff does.
+import { noteName as midiName } from './features/score/pitch'
 import type {
   CaptureMeta, ComparisonResult, DiagnosisReport, ErrorEvent, ExerciseResult,
   InputSource, InstrumentProfile, MentorChatResponse, MentorMemoryStatus,
@@ -2670,11 +2673,6 @@ function buildOnsets(events: ScoreEvent[], rs: number, re: number) {
     map.get(key)!.pitches.push(...e.pitches)
   }
   return [...map.values()].sort((a, b) => a.measureNo - b.measureNo || a.onsetBeat - b.onsetBeat)
-}
-
-function midiName(midi: number): string {
-  const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-  return `${NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`
 }
 
 function useMemoResolvedKeys(comp: ComparisonResult | null): Set<string> {

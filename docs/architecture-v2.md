@@ -20,6 +20,22 @@ The demo intentionally remains a single-user application. Its boundaries are sha
 
 `measureNo` is a position in the performance timeline and always counts 1, 2, 3…; it is what alignment, event IDs and the follower use. What the page prints can differ — a pickup bar is printed 0, so every printed number after it is one lower than its position. `ScoreMeta.measureLabels` carries the printed name of each bar, the browser publishes it once per score in `features/score/measureLabels`, and the same list is written into the MusicXML before it is engraved. The page and every sentence about it therefore agree by construction.
 
+## Pitch, and where a note is drawn
+
+MIDI numbers are the product's one pitch unit — the keyboard, the alignment, the report and the mentor all speak them. OpenSheetMusicDisplay reports half tones an octave lower, so `features/score/pitch` converts at that boundary, the way the pixel scale already does. The same module owns both how a pitch is spelled and which staff line that spelling sits on, because they are one decision: a MIDI 70 named `B♭4` has to be drawn on the B line, not the A space.
+
+Pitch → height is fitted from the notes the renderer actually engraved, **once per staff per system**. A staff is only vertically continuous within one line of music, so a single fit across the page averages every system together and puts the note above the staff, on no pitch at all. A staff that rests through a line borrows the nearest line's fit, moved by the distance between them.
+
+Which staff a played note lands on is decided by its register, with the score's hand hint as a preference rather than a command — a chord written across both hands hints at only one of them, and the live layer draws the note that sounded.
+
+Labels hung off a point on the page (the played note, the follower's tag, an error marker) are placed by `features/score/overlayLabels`: above and centred in the middle of the page, flipped or tucked in at its edges, so none of them can leave the paper.
+
+## Layout: the box, not the window
+
+A component does not know where it has been put. The microphone panel is the whole page during setup and a 372px rail while you play, at one and the same window size — so a window-width media query cannot tell those apart, and it once spilled 258px off the side of the page. Boxes that hand out an arbitrary width declare `container-type: inline-size`, and the components inside them size themselves with `@container`. Defaults are always the narrow layout, so a missing container costs a column rather than causing an overflow. Grid tracks that must fit an unknown box use `minmax(0, …)` or `minmax(min(Npx, 100%), …)`; a bare px minimum is what an overflow looks like before it happens.
+
+`scripts/lib/overflow.mjs` is the shared probe for both `audit-layout.mjs` and the demo-flow check, which asserts at every stage that nothing paints outside its box.
+
 ## Runtime boundaries
 
 - `FileStore`: local files now; opaque storage keys and artifact metadata allow object storage later.

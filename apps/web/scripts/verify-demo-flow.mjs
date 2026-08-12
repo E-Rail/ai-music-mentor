@@ -8,6 +8,7 @@
  * USB MIDI is simulated, so this runs without any hardware attached.
  */
 import { chromium } from '@playwright/test'
+import { describeOverflow, findOverflow } from './lib/overflow.mjs'
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5173'
 const API_URL = process.env.API_URL || 'http://127.0.0.1:8000'
@@ -67,8 +68,14 @@ const play = async (pitch, holdMs = 55) => {
   await page.evaluate((p) => window.__midiNote(p, false), pitch)
 }
 
+// Every stage is checked for layout spills as it is reached, because a panel
+// only overflows in the box it is actually put in — the microphone panel fits
+// the setup screen and once spilled 258px off the side of the studio rail.
+const layoutFaults = []
 const shot = async (name) => {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/flow-${name}.png`, fullPage: true })
+  const lines = describeOverflow(await findOverflow(page))
+  for (const line of lines) layoutFaults.push(`${name}: ${line}`)
 }
 
 console.log('\nBackend')
@@ -264,6 +271,9 @@ await check('microphone mode is reachable and asks for the room check', async ()
   await micButton.click()
   await fresh.waitForTimeout(800)
   if (SHOTS) await fresh.screenshot({ path: `${SHOTS}/flow-09-microphone.png`, fullPage: true })
+  for (const line of describeOverflow(await findOverflow(fresh))) {
+    layoutFaults.push(`09-microphone: ${line}`)
+  }
   const panel = await fresh.locator('.microphone-panel').count()
   await fresh.close()
   if (!panel) throw new Error('microphone panel did not render')
@@ -273,6 +283,11 @@ await check('microphone mode is reachable and asks for the room check', async ()
 await check('no uncaught page errors during the whole run', () => {
   if (pageErrors.length) throw new Error(`${pageErrors.length}: ${pageErrors[0]}`)
   return 'clean'
+})
+
+await check('nothing spills off the page at any stage', () => {
+  if (layoutFaults.length) throw new Error(`${layoutFaults.length}: ${layoutFaults[0]}`)
+  return 'every stage stayed inside its box'
 })
 
 await browser.close()

@@ -2,12 +2,9 @@ import { t, tf } from '../../i18n/messages'
 import { LiveTrace } from './LiveTrace'
 import type { LivePerformanceState, LiveTraceNote } from './livePerformance'
 import { measureLabel } from '../score/measureLabels'
+import { noteName } from '../score/pitch'
 
-const PITCH_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B']
-
-export function noteName(pitch: number): string {
-  return `${PITCH_NAMES[((pitch % 12) + 12) % 12]}${Math.floor(pitch / 12) - 1}`
-}
+export { noteName } from '../score/pitch'
 
 const STATUS_TEXT = {
   idle: 'liveStatusIdle',

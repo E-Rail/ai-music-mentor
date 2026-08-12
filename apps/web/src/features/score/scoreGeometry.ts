@@ -1,3 +1,5 @@
+import { diatonicStep } from './pitch'
+
 export interface ScorePoint { x: number; y: number }
 export interface ScoreSize { width: number; height: number }
 
@@ -158,17 +160,9 @@ export function locateScorePosition(
   }
 }
 
-/**
- * Staff position is diatonic, not chromatic: C♯4 sits on the same line as C4,
- * and E–F are neighbours while F–G are a whole step apart. Mapping a pitch to a
- * step index is what lets the app draw a note the score never contained.
- */
-const DIATONIC_STEP_BY_PITCH_CLASS = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6]
-
-export function diatonicStep(pitch: number): number {
-  const pitchClass = ((Math.round(pitch) % 12) + 12) % 12
-  return Math.floor(Math.round(pitch) / 12) * 7 + DIATONIC_STEP_BY_PITCH_CLASS[pitchClass]
-}
+// Staff position comes from the same table as the note's name, so a pitch is
+// never drawn on a line other than the one its name implies.
+export { diatonicStep } from './pitch'
 
 export interface PitchAnchor { pitch: number; y: number }
 
@@ -235,10 +229,133 @@ export function buildPitchScale(
 }
 
 /**
+ * Which line of music on the page each measure was engraved on.
+ *
+ * A staff is only vertically continuous inside one system. Bar 1 and bar 9 are
+ * both "the treble staff", but the same pitch sits a whole page apart on them,
+ * so anything that maps pitch to height has to know which line it is looking at
+ * or it averages the entire page into a position that is on no staff at all.
+ */
+export function buildSystemIndex(layout: ScoreMeasureLayout[]): number[] {
+  const systems: number[] = []
+  let current = 0
+  let top: number | null = null
+  let height = 0
+  for (const measure of layout) {
+    if (measure.height <= 0) {
+      // An unmeasurable bar keeps the line it was found on rather than starting
+      // a new one, so one bad measure cannot split a system in two.
+      systems.push(current)
+      continue
+    }
+    if (top === null) {
+      top = measure.y
+      height = measure.height
+    } else if (measure.y > top + Math.max(height, 1) * 0.5) {
+      current += 1
+      top = measure.y
+      height = measure.height
+    }
+    systems.push(current)
+  }
+  return systems
+}
+
+export interface RenderedPitch {
+  measure: number
+  staffIndex: number
+  pitch: number
+  y: number
+}
+
+export interface PitchScaleIndex {
+  /** Height for a pitch on one staff of one bar; null if that staff is absent. */
+  yForPitch: (pitch: number, staffIndex: number, measureNo: number) => number | null
+  stepHeight: (staffIndex: number, measureNo: number) => number
+  /** How many separate fits were made — one per staff per line of music. */
+  size: number
+}
+
+/**
+ * Fit "pitch → height" once per staff per system, and place a pitch using the
+ * fit belonging to the bar it is being drawn in.
+ */
+export function buildStaffPitchScales(
+  rendered: RenderedPitch[],
+  layout: ScoreMeasureLayout[],
+  fallbackStepHeight: number,
+): PitchScaleIndex {
+  const systemOfMeasure = buildSystemIndex(layout)
+  const systemOf = (measureNo: number): number =>
+    systemOfMeasure[Math.min(Math.max(measureNo - 1, 0), systemOfMeasure.length - 1)] ?? 0
+
+  const systemTop = new Map<number, number>()
+  layout.forEach((measure, index) => {
+    const system = systemOfMeasure[index] ?? 0
+    if (measure.height > 0 && !systemTop.has(system)) systemTop.set(system, measure.y)
+  })
+
+  const points = new Map<string, PitchAnchor[]>()
+  for (const note of rendered) {
+    if (!Number.isFinite(note.pitch) || !Number.isFinite(note.y)) continue
+    const key = `${note.staffIndex}:${systemOf(note.measure)}`
+    const list = points.get(key) ?? []
+    list.push({ pitch: note.pitch, y: note.y })
+    points.set(key, list)
+  }
+  const scales = new Map<string, { system: number; staff: number; scale: PitchScale }>()
+  points.forEach((anchors, key) => {
+    const [staff, system] = key.split(':').map(Number)
+    scales.set(key, { staff, system, scale: buildPitchScale(anchors, fallbackStepHeight) })
+  })
+
+  function resolve(staffIndex: number, measureNo: number):
+    { scale: PitchScale; shift: number } | null {
+    const system = systemOf(measureNo)
+    const exact = scales.get(`${staffIndex}:${system}`)
+    if (exact) return { scale: exact.scale, shift: 0 }
+    // This staff engraved nothing on this line — a bar of rests, say. Every
+    // system on a page repeats the same staff layout, so the nearest line's fit
+    // is right once it is moved by the distance between the two lines.
+    let nearest: { system: number; scale: PitchScale } | null = null
+    let nearestDistance = Number.POSITIVE_INFINITY
+    for (const entry of scales.values()) {
+      if (entry.staff !== staffIndex) continue
+      const distance = Math.abs(entry.system - system)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearest = { system: entry.system, scale: entry.scale }
+      }
+    }
+    if (!nearest) return null
+    const from = systemTop.get(nearest.system)
+    const to = systemTop.get(system)
+    return {
+      scale: nearest.scale,
+      shift: from !== undefined && to !== undefined ? to - from : 0,
+    }
+  }
+
+  return {
+    yForPitch(pitch, staffIndex, measureNo) {
+      const found = resolve(staffIndex, measureNo)
+      if (!found || !Number.isFinite(pitch)) return null
+      return found.scale.yForPitch(pitch) + found.shift
+    },
+    stepHeight(staffIndex, measureNo) {
+      return resolve(staffIndex, measureNo)?.scale.stepHeight ?? fallbackStepHeight
+    },
+    size: scales.size,
+  }
+}
+
+/**
  * Which staff a played pitch belongs on. A hint from the score wins; otherwise
  * the pitch goes to whichever staff already engraves notes closest to it, so a
  * left-hand note lands on the bass staff without being told.
  */
+export const HAND_CROSSOVER_SEMITONES = 12
+
 export function staffForPitch(
   pitch: number,
   staffPitches: Map<number, number[]>,
@@ -246,20 +363,33 @@ export function staffForPitch(
 ): number | null {
   const indices = [...staffPitches.keys()].sort((left, right) => left - right)
   if (!indices.length) return null
-  if (hint === 'upper') return indices[0]
-  if (hint === 'lower') return indices[indices.length - 1]
-  let best = indices[0]
-  let bestDistance = Number.POSITIVE_INFINITY
-  for (const index of indices) {
+
+  const distanceTo = (index: number): number => {
+    let best = Number.POSITIVE_INFINITY
     for (const candidate of staffPitches.get(index) ?? []) {
-      const distance = Math.abs(candidate - pitch)
-      if (distance < bestDistance) {
-        bestDistance = distance
-        best = index
-      }
+      best = Math.min(best, Math.abs(candidate - pitch))
     }
+    return best
   }
-  return best
+
+  let nearest = indices[0]
+  for (const index of indices) {
+    if (distanceTo(index) < distanceTo(nearest)) nearest = index
+  }
+
+  const hinted = hint === 'upper' ? indices[0]
+    : hint === 'lower' ? indices[indices.length - 1]
+    : null
+  if (hinted === null) return nearest
+
+  // The hint says which staff the music is on at this moment; the pitch says
+  // which staff this note belongs on. A chord written across both hands hints
+  // at only one of them, so a note that plainly lives an octave inside the
+  // other staff's range goes there instead. The live layer draws the note that
+  // sounded, and it has to appear where a reader would look for it.
+  return distanceTo(hinted) - distanceTo(nearest) > HAND_CROSSOVER_SEMITONES
+    ? nearest
+    : hinted
 }
 
 export function staffHintFromEventIds(eventIds: Array<string | null | undefined>): StaffHint {

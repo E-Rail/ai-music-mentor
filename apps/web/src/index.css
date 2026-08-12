@@ -130,6 +130,21 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
   border-radius: var(--r-lg);
   box-shadow: var(--lift);
 }
+
+/* --- boxes that hand out a width -------------------------------------------
+   A component does not know where it has been put. The microphone panel is the
+   whole page during setup and a 372px rail while you play, and a window-width
+   media query cannot tell those apart — which is how it came to spill 258px off
+   the side of the page. Anything that gives a component an arbitrary width says
+   so here, and the component sizes itself to the box it was actually given.
+
+   Defaults everywhere are the narrow layout; @container widens them. A missing
+   container then costs a column, never an overflow.                          */
+
+.panel, .input-dock, .coach-evidence-column, .coach-mentor-column,
+.designer-grid > section, .generated-plan-card, .mic-monitor-column {
+  container-type: inline-size;
+}
 .panel > h2 {
   margin: 0 0 16px; font-size: 16px; font-weight: 650; letter-spacing: -.01em;
 }
@@ -228,7 +243,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   border: 1px dashed var(--rule); border-radius: var(--r);
 }
 
-.score-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 10px; }
+.score-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(215px, 100%), 1fr)); gap: 10px; }
 .score-card {
   width: 100%; padding: 13px 14px; text-align: left; cursor: pointer;
   color: var(--chalk); background: var(--case-2);
@@ -283,7 +298,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .compact-list {
   max-height: 280px; overflow: auto; padding: 12px;
   border-top: 1px solid var(--rule-soft);
-  grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(185px, 100%), 1fr));
 }
 
 /* --- import review -------------------------------------------------------- */
@@ -302,13 +317,13 @@ input[type=checkbox] { accent-color: var(--brass); }
 .display-badge.exact { color: var(--baize-bright); background: rgba(116, 160, 101, .14); }
 .display-badge.simplified { color: var(--brass); background: rgba(214, 167, 86, .13); }
 .warning-list { margin: 10px 0; padding-left: 18px; color: var(--brass); font-size: 12px; }
-.review-grid { display: grid; grid-template-columns: repeat(4, minmax(115px, 1fr)); gap: 10px; margin: 14px 0; }
+.review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(115px, 100%), 1fr)); gap: 10px; margin: 14px 0; }
 .review-grid label, .track-map, .confidence-field, .mic-device-select {
   display: flex; flex-direction: column; gap: 5px;
   color: var(--chalk-faint); font-size: 10.5px;
 }
 .confidence-field strong { color: var(--chalk); font-size: 17px; }
-.track-map { display: grid; grid-template-columns: 86px minmax(150px, 250px); align-items: center; margin: 8px 0; }
+.track-map { display: grid; grid-template-columns: minmax(0, 86px) minmax(0, 250px); align-items: center; margin: 8px 0; }
 .range-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 13px; }
 .range-row input[type=range] { flex: 1; }
 
@@ -319,7 +334,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .input-card-heading h3 { margin: 0 0 4px; color: var(--chalk); font-size: 15px; }
 .input-card-heading p { max-width: 640px; margin: 0; color: var(--chalk-dim); font-size: 12px; }
 
-.input-source-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0 22px; }
+.input-source-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 18px 0 22px; }
 .input-source-switch button {
   display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 12px 14px;
   color: var(--chalk-dim); text-align: left; cursor: pointer;
@@ -414,6 +429,34 @@ input[type=checkbox] { accent-color: var(--brass); }
   left: auto; right: calc(100% + 6px); color: var(--brass-ink);
 }
 
+/* --- keeping labels on the paper ------------------------------------------
+   Overlay labels default to above and centred, which is right in the middle of
+   a page and wrong at its edges. `labelPlacement()` decides; these rules carry
+   it out, and they are shared by every label the app hangs off the engraving. */
+
+.label-below.played-note-name, .label-below.cursor-tag, .label-below.marker-tag,
+.score-played-note.label-below .played-note-name {
+  top: calc(100% + 6px); bottom: auto;
+}
+.label-start.played-note-name, .label-start.cursor-tag, .label-start.marker-tag,
+.score-played-note.label-start .played-note-name {
+  left: 0; right: auto; transform: none;
+}
+.label-end.played-note-name, .label-end.cursor-tag, .label-end.marker-tag,
+.score-played-note.label-end .played-note-name {
+  left: auto; right: 0; transform: none;
+}
+/* No room beside the note: the timing tag goes under it instead of off the
+   page — and over it when the name has already taken the space below. */
+.score-played-note.label-start .played-note-timing,
+.score-played-note.label-end .played-note-timing {
+  top: calc(100% + 6px); left: 50%; right: auto; transform: translateX(-50%);
+}
+.score-played-note.label-below.label-start .played-note-timing,
+.score-played-note.label-below.label-end .played-note-timing {
+  top: auto; bottom: calc(100% + 6px);
+}
+
 /* The cursor never stops for a mistake. It reports what just happened and
    keeps travelling, so a wrong note is information rather than a dead end. */
 .score-cursor {
@@ -434,6 +477,15 @@ input[type=checkbox] { accent-color: var(--brass); }
   padding: 1px 6px; border-radius: 3px;
   color: var(--paper); background: var(--brass-ink);
   font-size: 9.5px; font-weight: 700; white-space: nowrap;
+}
+
+/* The name of an error, on the marker that frames it. Colour is the error's
+   own and stays in the component; position is shared with every other label. */
+.marker-tag {
+  position: absolute; top: -20px; left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 4px; border-radius: 4px;
+  color: #fff; font-size: 10px; white-space: nowrap;
 }
 
 .cursor-relocking {
@@ -575,7 +627,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   color: var(--brass); background: rgba(214, 167, 86, .07);
   border: 1px solid var(--brass-deep); border-radius: var(--r-sm);
 }
-.disconnect-recovery .device-grid.compact { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.disconnect-recovery .device-grid.compact { grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }
 .disconnect-recovery .device-item { padding: 6px 10px; }
 
 .submission-progress-card {
@@ -619,7 +671,12 @@ input[type=checkbox] { accent-color: var(--brass); }
 .mic-state.recording { color: var(--felt-bright); }
 .mic-state.transcribing, .mic-state.noise-check { color: var(--brass); }
 .mic-state.permission-denied, .mic-state.device-lost, .mic-state.error { color: var(--felt-bright); }
-.mic-panel-grid { display: grid; grid-template-columns: minmax(280px, .92fr) minmax(320px, 1.08fr); gap: 12px; margin-top: 16px; }
+.mic-panel-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 16px; }
+/* Setup gives this panel the whole page; playing gives it a 372px rail. The box
+   is the only thing that knows which, so the box is what decides. */
+@container (min-width: 640px) {
+  .mic-panel-grid { grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); }
+}
 .mic-setup-column { display: grid; align-content: start; gap: 10px; }
 .mic-setup-step { padding: 12px; background: var(--ebony); border: 1px solid var(--rule-soft); border-radius: var(--r-sm); }
 .mic-step-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
@@ -629,7 +686,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   font-size: 10px; font-weight: 700;
 }
 .mic-step-title strong { font-size: 11.5px; }
-.instrument-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.instrument-choice { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .instrument-choice button {
   min-height: 34px; color: var(--chalk-dim); cursor: pointer;
   background: var(--case-2); border: 1px solid var(--rule-soft); border-radius: var(--r-sm);
@@ -652,7 +709,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .mic-preview-facts { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-top: 10px; color: var(--chalk-faint); font-size: 10px; }
 .mic-preview-facts strong { color: var(--chalk); }
 .preview-disclaimer { margin: 9px 0 0; color: var(--chalk-faint); font-size: 10px; }
-.transcription-progress { display: grid; grid-template-columns: minmax(140px, 1fr) auto auto; align-items: center; gap: 10px; margin-top: 12px; }
+.transcription-progress { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; margin-top: 12px; }
 .transcription-progress strong { font-family: var(--font-num); font-size: 11px; }
 .headphone-warning {
   flex: 1 1 320px; padding: 8px 10px; color: var(--brass);
@@ -661,7 +718,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 
 /* --- report --------------------------------------------------------------- */
 
-.coach-workspace { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(340px, .85fr); gap: 18px; align-items: start; }
+.coach-workspace { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, .85fr); gap: 18px; align-items: start; }
 .coach-evidence-column, .coach-mentor-column { min-width: 0; }
 .coach-mentor-column { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 14px; }
 
@@ -678,7 +735,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .input-quality.medium strong { color: var(--brass); }
 .input-quality.low strong, .input-quality.insufficient strong { color: var(--felt-bright); }
 
-.metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(112px, 100%), 1fr)); gap: 10px; margin-bottom: 16px; }
 .metric { padding: 12px; text-align: center; background: var(--case-2); border: 1px solid var(--rule-soft); border-radius: var(--r-sm); }
 .metric .label { margin-bottom: 3px; color: var(--chalk-faint); font-size: 10.5px; }
 .metric .value { font-size: 21px; font-weight: 700; letter-spacing: -.02em; }
@@ -735,7 +792,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .mentor-evidence-list { display: grid; gap: 6px; }
 .mentor-evidence { color: var(--chalk-dim); font-size: 11.5px; }
 .mentor-evidence span { margin-right: 8px; color: var(--lacquer-bright); font-family: var(--font-num); white-space: nowrap; }
-.mentor-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.mentor-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap: 8px; }
 .mentor-plan { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px; color: var(--chalk-dim); background: var(--ebony); border: 1px solid var(--rule-soft); border-radius: var(--r-sm); font-size: 11px; }
 .mentor-plan strong { color: var(--chalk); font-size: 12px; }
 .mentor-loading { display: flex; align-items: center; gap: 9px; color: var(--chalk-dim); font-size: 12px; }
@@ -794,7 +851,8 @@ input[type=checkbox] { accent-color: var(--brass); }
 .generation-note { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .generation-note small { align-self: flex-end; color: var(--chalk-faint); font-family: var(--font-num); font-size: 10px; }
 .note-suggestions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.designer-grid { display: grid; grid-template-columns: 2fr 1.3fr .6fr .8fr; gap: 12px; margin-top: 18px; }
+.designer-grid { display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) minmax(0, .6fr) minmax(0, .8fr); gap: 12px; margin-top: 18px; }
 .designer-grid > section { min-width: 0; padding: 12px; background: var(--case-2); border: 1px solid var(--rule-soft); border-radius: var(--r-sm); }
 .control-label { margin-bottom: 9px; }
 .range-control { display: flex; align-items: center; gap: 9px; }
@@ -812,7 +870,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 }
 .ai-generation-note > span { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border-radius: var(--r-sm); color: var(--chalk); background: var(--lacquer); font-weight: 700; }
 .ai-generation-note strong { color: var(--chalk); }
-.generate-ai-btn { min-width: 180px; justify-content: center; }
+.generate-ai-btn { min-width: min(180px, 100%); justify-content: center; }
 .generated-plan-card { padding: 16px; background: rgba(116, 160, 101, .05); border: 1px solid rgba(116, 160, 101, .32); border-radius: var(--r-sm); }
 .generated-plan-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .generated-plan-heading h3 { margin: 4px 0 8px; color: var(--chalk); font-size: 15px; }
@@ -905,7 +963,6 @@ input[type=checkbox] { accent-color: var(--brass); }
   .coach-workspace { grid-template-columns: 1fr; }
   .coach-mentor-column { position: static; }
   .designer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mic-panel-grid { grid-template-columns: 1fr; }
   .studio-stepper small { display: none; }
 }
 
@@ -950,5 +1007,5 @@ input[type=checkbox] { accent-color: var(--brass); }
 }
 .mic-sensitivity-heading strong { font-size: 11px; }
 .mic-sensitivity-heading small { color: var(--brass); font-family: var(--font-num); font-size: 9.5px; }
-.mic-sensitivity input[type=range] { width: 100%; }
+.mic-sensitivity input[type=range] { width: 100%; margin: 0; }
 .mic-sensitivity-hint { display: block; margin-top: 4px; color: var(--chalk-faint); font-size: 9.5px; line-height: 1.5; }

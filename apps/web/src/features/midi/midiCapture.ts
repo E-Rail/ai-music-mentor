@@ -38,6 +38,16 @@ export type HealthHandler = (health: InputHealth) => void
 const NOTE_ON = 0x90
 const NOTE_OFF = 0x80
 const CONTROL_CHANGE = 0xb0
+/**
+ * Keys struck this close together are one gesture. The window runs from the
+ * first key of the group and is never extended, so a run played faster than the
+ * window cannot pile up into one enormous chord — which it did while every new
+ * key restarted the timer.
+ *
+ * Hands landing further apart than this are still one position on the page:
+ * the passage waits for the second hand rather than relying on this window to
+ * catch it.
+ */
 const CHORD_WINDOW_MS = 70
 
 interface ActiveNote {
@@ -244,9 +254,11 @@ export class MidiCapture implements PerformanceInputAdapter {
       const notes = this.active.get(key) ?? []
       notes.push({ id, tOn: now, receivedTimeMs, velocity: d2, pitch: d1, channel })
       this.active.set(key, notes)
+      const opensGroup = this.chordBuffer.length === 0
       this.chordBuffer.push({ pitch: d1, tOn: now, velocity: d2, id })
-      if (this.flushTimer) window.clearTimeout(this.flushTimer)
-      this.flushTimer = window.setTimeout(() => this.flushChord(), CHORD_WINDOW_MS)
+      if (opensGroup) {
+        this.flushTimer = window.setTimeout(() => this.flushChord(), CHORD_WINDOW_MS)
+      }
     } else if (command === NOTE_OFF || (command === NOTE_ON && d2 === 0)) {
       if (this.capturing) {
         const key = `${channel}:${d1}`
@@ -276,6 +288,7 @@ export class MidiCapture implements PerformanceInputAdapter {
   }
 
   private flushChord(): void {
+    this.flushTimer = null
     if (!this.chordBuffer.length) return
     const buf = this.chordBuffer
     this.chordBuffer = []

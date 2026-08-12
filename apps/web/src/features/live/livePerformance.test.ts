@@ -1,28 +1,45 @@
 import { describe, expect, it } from 'vitest'
 import type { ScoreEvent } from '../../types'
 import { PerformanceClock, absoluteBeatOf, liveTimingToleranceMs } from './performanceClock'
-import { buildLiveTargets, targetIndexAtElapsedBeats } from './liveTargets'
-import { LivePerformanceTracker, classifyPlayedPitches } from './livePerformance'
+import { buildLiveTargets } from './liveTargets'
+import { PassageProgress } from './passageProgress'
+import { LivePerformanceTracker } from './livePerformance'
 
+function event(
+  partial: Partial<ScoreEvent> & Pick<ScoreEvent, 'eventId' | 'measureNo' | 'onsetBeat' | 'pitches'>,
+): ScoreEvent {
+  return {
+    absoluteBeat: null, durationBeat: 1, part: 'RH', voice: 1,
+    dynamicTarget: null, optional: false, ...partial,
+  } as ScoreEvent
+}
+
+/** A one-hand scale: one note per beat, C4 upwards. */
 function scale(count: number, startPitch = 60): ScoreEvent[] {
-  return Array.from({ length: count }, (_, index) => ({
+  return Array.from({ length: count }, (_, index) => event({
     eventId: `s:RH:m${1 + Math.floor(index / 4)}:b${index % 4}:1`,
     measureNo: 1 + Math.floor(index / 4),
     onsetBeat: index % 4,
     absoluteBeat: index,
-    durationBeat: 1,
     pitches: [startPitch + index],
-    part: 'RH',
-    voice: 1,
-    dynamicTarget: null,
-    optional: false,
-  })) as ScoreEvent[]
+  }))
 }
 
 const CHORD: ScoreEvent[] = [
-  { eventId: 's:RH:m1:b0:1', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, durationBeat: 1, pitches: [60], part: 'RH', voice: 1, dynamicTarget: null, optional: false },
-  { eventId: 's:RH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, durationBeat: 1, pitches: [64, 67], part: 'RH', voice: 1, dynamicTarget: null, optional: false },
-] as ScoreEvent[]
+  event({ eventId: 's:RH:m1:b0:1', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [60] }),
+  event({ eventId: 's:RH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, pitches: [64, 67] }),
+]
+
+/**
+ * 小星星, bar 1, as it is actually written: the right hand plays four quarter
+ * notes while the left hand holds one whole note under them.
+ */
+const TWO_HANDS: ScoreEvent[] = [
+  event({ eventId: 't:RH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [60] }),
+  event({ eventId: 't:LH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [48], durationBeat: 4, part: 'LH' }),
+  event({ eventId: 't:RH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, pitches: [60] }),
+  event({ eventId: 't:RH:m1:b2:2', measureNo: 1, onsetBeat: 2, absoluteBeat: 2, pitches: [67] }),
+]
 
 function tracker(events: ScoreEvent[], source: 'web-midi' | 'microphone' = 'web-midi') {
   const instance = new LivePerformanceTracker()
@@ -70,28 +87,109 @@ describe('PerformanceClock', () => {
   })
 })
 
-describe('classifyPlayedPitches', () => {
-  it('marks a pitch the score does not contain as the player’s own note', () => {
-    const result = classifyPlayedPitches([61], [60])
-    expect(result.pitches).toEqual([{ pitch: 61, role: 'extra' }])
-    expect(result.missing).toEqual([60])
-    expect(result.status).toBe('different')
+describe('a position on the page', () => {
+  it('carries the hand that wrote each note', () => {
+    const [first] = buildLiveTargets(TWO_HANDS, 1, 99)
+    expect(first.expected).toEqual([
+      { pitch: 48, hand: 'left' }, { pitch: 60, hand: 'right' },
+    ])
   })
 
-  it('keeps both halves of a half-played chord visible', () => {
-    const result = classifyPlayedPitches([64, 70], [64, 67])
-    expect(result.pitches).toEqual([
-      { pitch: 64, role: 'matched' }, { pitch: 70, role: 'extra' },
-    ])
-    expect(result.missing).toEqual([67])
-    expect(result.status).toBe('partial')
+  it('orders by absolute beat so a meter change cannot reshuffle the passage', () => {
+    const targets = buildLiveTargets([
+      event({ eventId: 'a:RH:m1:b0:1', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [60] }),
+      event({ eventId: 'b:RH:m2:b0:1', measureNo: 2, onsetBeat: 0, absoluteBeat: 4, pitches: [62] }),
+      event({ eventId: 'c:RH:m3:b0:1', measureNo: 3, onsetBeat: 0, absoluteBeat: 5, pitches: [64] }),
+    ], 1, 3)
+    expect(targets.map((target) => target.absoluteBeat)).toEqual([0, 4, 5])
+  })
+})
+
+describe('PassageProgress', () => {
+  const targets = () => buildLiveTargets(scale(4), 1, 99)
+
+  it('moves on only when the position has been played in full', () => {
+    const progress = new PassageProgress(buildLiveTargets(CHORD, 1, 99))
+    progress.strike([60])
+    const half = progress.strike([64])
+    expect(half.completed).toBe(false)
+    expect(half.outstanding).toEqual([{ pitch: 67, hand: 'right' }])
+    expect(progress.index).toBe(1)
+    const rest = progress.strike([67])
+    expect(rest.completed).toBe(true)
+  })
+
+  it('holds where the player is when they play a wrong note', () => {
+    const progress = new PassageProgress(targets())
+    progress.strike([60])
+    const wrong = progress.strike([70])
+    expect(wrong.wrong).toEqual([70])
+    expect(wrong.accepted).toEqual([])
+    expect(wrong.blocked).toBe(true)
+    // The passage does not go looking for a 70 further along the score.
+    expect(progress.target?.pitches).toEqual([61])
+    expect(progress.index).toBe(1)
+  })
+
+  it('lets the player correct a wrong note in place', () => {
+    const progress = new PassageProgress(targets())
+    progress.strike([60])
+    progress.strike([70])
+    const fixed = progress.strike([61])
+    expect(fixed.completed).toBe(true)
+    expect(progress.blocked).toBe(false)
+    expect(progress.target?.pitches).toEqual([62])
+  })
+
+  it('treats a re-struck note as hunting, not as a mistake', () => {
+    // The left hand is owed and the player repeats the note they have while
+    // looking for it. The next position wants something else, so this is not
+    // moving on — and it is certainly not a wrong note.
+    const progress = new PassageProgress(buildLiveTargets([
+      event({ eventId: 'h:RH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [60] }),
+      event({ eventId: 'h:LH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [48], part: 'LH' }),
+      event({ eventId: 'h:RH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, pitches: [67] }),
+    ], 1, 99))
+    progress.strike([60])
+    const again = progress.strike([60])
+    expect(again.repeated).toEqual([60])
+    expect(again.wrong).toEqual([])
+    expect(again.blocked).toBe(false)
+    expect(again.outstanding).toEqual([{ pitch: 48, hand: 'left' }])
+  })
+
+  it('lets a right-hand-only practice run keep going', () => {
+    // Hands-separate practice leaves the left hand out on purpose. Its notes
+    // are missed, not wrong, so the passage moves on one position at a time
+    // instead of stalling on the first bar forever.
+    const progress = new PassageProgress(buildLiveTargets(TWO_HANDS, 1, 99))
+    expect(progress.strike([60]).outstanding).toEqual([{ pitch: 48, hand: 'left' }])
+    expect(progress.strike([60]).target?.onsetBeat).toBe(1)
+    expect(progress.strike([67]).target?.onsetBeat).toBe(2)
+    expect(progress.blocked).toBe(false)
+  })
+
+  it('will not move on for a note that is written neither here nor next', () => {
+    const progress = new PassageProgress(buildLiveTargets(TWO_HANDS, 1, 99))
+    progress.strike([60])
+    const wrong = progress.strike([70])
+    expect(wrong.wrong).toEqual([70])
+    expect(wrong.blocked).toBe(true)
+    expect(progress.target?.onsetBeat).toBe(0)
+  })
+
+  it('moves on only when the player says so', () => {
+    const progress = new PassageProgress(buildLiveTargets(TWO_HANDS, 1, 99))
+    progress.strike([60])
+    progress.skip()
+    expect(progress.target?.onsetBeat).toBe(1)
   })
 })
 
 describe('LivePerformanceTracker', () => {
   it('puts the first note on the first target however late the player begins', () => {
     const live = tracker(scale(8))
-    const state = live.observe({ pitches: [60], atMs: 12_000, followerIndex: 4 })
+    const state = live.observe({ pitches: [60], atMs: 12_000 })
     expect(state.target?.measureNo).toBe(1)
     expect(state.target?.onsetBeat).toBe(0)
     expect(state.timing?.label).toBe('onTime')
@@ -100,7 +198,6 @@ describe('LivePerformanceTracker', () => {
 
   it('never reports the microphone player as late for waiting to start', () => {
     const live = tracker(scale(8), 'microphone')
-    // The old wall-clock path pointed at note 5 after a three second pause.
     const state = live.observe({ pitches: [60], atMs: 3_000 })
     expect(state.target?.onsetBeat).toBe(0)
     expect(state.timing?.label).toBe('onTime')
@@ -108,177 +205,159 @@ describe('LivePerformanceTracker', () => {
 
   it('reports what the player actually played, not what was written', () => {
     const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    const state = live.observe({ pitches: [70], atMs: 625, followerIndex: 1 })
+    live.observe({ pitches: [60], atMs: 0 })
+    const state = live.observe({ pitches: [70], atMs: 625 })
     expect(state.played).toEqual([{ pitch: 70, role: 'extra' }])
     expect(state.missing).toEqual([61])
     expect(state.status).toBe('different')
   })
 
-  it('follows the score follower rather than a second private counter', () => {
-    const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    // A wrong note keeps the follower where it is; the live card must agree.
-    const stuck = live.observe({ pitches: [99], atMs: 625, followerIndex: 0 })
-    expect(stuck.target?.onsetBeat).toBe(0)
-    const moved = live.observe({ pitches: [63], atMs: 1_875, followerIndex: 3 })
-    expect(moved.target?.onsetBeat).toBe(3)
+  it('stops on a wrong note instead of finding it somewhere in the score', () => {
+    // 70 is written at the very end of this passage. The old follower would
+    // jump there; the passage now stays where the player is.
+    const live = tracker(scale(11))
+    live.observe({ pitches: [60], atMs: 0 })
+    const stuck = live.observe({ pitches: [70], atMs: 625 })
+    expect(stuck.target?.onsetBeat).toBe(1)
+    expect(stuck.blocked).toBe(true)
+    const stillStuck = live.observe({ pitches: [70], atMs: 1_250 })
+    expect(stillStuck.target?.onsetBeat).toBe(1)
+    expect(live.observe({ pitches: [61], atMs: 1_875 }).status).toBe('corrected')
+    expect(live.observe({ pitches: [62], atMs: 2_500 }).target?.onsetBeat).toBe(2)
+  })
+
+  it('waits for the other hand before moving on', () => {
+    const live = tracker(TWO_HANDS)
+    const rightOnly = live.observe({ pitches: [60], atMs: 0 })
+    expect(rightOnly.status).toBe('partial')
+    expect(rightOnly.outstanding).toEqual([{ pitch: 48, hand: 'left' }])
+    expect(rightOnly.blocked).toBe(false)
+    // The left hand lands 300 ms later — far outside any chord window, and
+    // still the same position on the page.
+    const both = live.observe({ pitches: [48], atMs: 300 })
+    expect(both.status).toBe('match')
+    expect(both.target?.onsetBeat).toBe(0)
+    expect(live.observe({ pitches: [60], atMs: 625 }).target?.onsetBeat).toBe(1)
+  })
+
+  it('accepts both hands struck together as one position', () => {
+    const live = tracker(TWO_HANDS)
+    const state = live.observe({ pitches: [48, 60], atMs: 0 })
+    expect(state.status).toBe('match')
+    expect(state.outstanding).toEqual([])
+  })
+
+  it('times a position from the first hand that lands, not the second', () => {
+    const live = tracker(TWO_HANDS)
+    live.observe({ pitches: [48, 60], atMs: 0 })
+    live.observe({ pitches: [60], atMs: 625 })
+    // The right hand is on time at beat 2; the left hand joining late must not
+    // re-time it, and must not be reported as a note of its own.
+    const onBeat = live.observe({ pitches: [67], atMs: 1_250 })
+    expect(onBeat.timing?.reference).toBe('elapsed')
+    expect(onBeat.timing?.label).toBe('onTime')
   })
 
   it('records a trace of the played notes with their timing', () => {
     const live = tracker(scale(4))
-    live.observe({ pitches: [60], atMs: 5_000, followerIndex: 0 })
-    live.observe({ pitches: [61], atMs: 5_625, followerIndex: 1 })
-    live.observe({ pitches: [62], atMs: 6_800, followerIndex: 2 })
+    live.observe({ pitches: [60], atMs: 5_000 })
+    live.observe({ pitches: [61], atMs: 5_625 })
+    live.observe({ pitches: [62], atMs: 6_800 })
     expect(live.traceNotes.map((note) => note.pitch)).toEqual([60, 61, 62])
     expect(live.traceNotes[0].timing).toBe('onTime')
     expect(live.traceNotes[2].timing).toBe('late')
   })
 
-  it('makes no timing claim while the follower is stuck on one onset', () => {
+  it('makes no timing claim for a note played where the passage is held', () => {
     const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    // The follower could not place these, so "late by N ms" would be invented.
-    const stuck = live.observe({ pitches: [99], atMs: 690, followerIndex: 0 })
+    live.observe({ pitches: [60], atMs: 0 })
+    const stuck = live.observe({ pitches: [99], atMs: 690 })
     expect(stuck.timing?.reference).toBe('unplaced')
-    const stillStuck = live.observe({ pitches: [98], atMs: 3_900, followerIndex: 0 })
+    const stillStuck = live.observe({ pitches: [98], atMs: 3_900 })
     expect(stillStuck.timing?.reference).toBe('unplaced')
   })
 
   it('makes no timing claim when the deviation is beyond tracking range', () => {
     const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
+    live.observe({ pitches: [60], atMs: 0 })
     // Onset 1 is one beat (625 ms) in; arriving 2.5 s later is not "late".
-    const adrift = live.observe({ pitches: [61], atMs: 3_100, followerIndex: 1 })
+    const adrift = live.observe({ pitches: [61], atMs: 3_100 })
     expect(adrift.timing?.reference).toBe('unplaced')
   })
 
   it('still reports an ordinary late note', () => {
     const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    const late = live.observe({ pitches: [61], atMs: 900, followerIndex: 1 })
+    live.observe({ pitches: [60], atMs: 0 })
+    const late = live.observe({ pitches: [61], atMs: 900 })
     expect(late.timing?.reference).toBe('elapsed')
     expect(late.timing?.label).toBe('late')
     expect(Math.round(late.timing!.deltaMs)).toBe(275)
   })
 
-  it('re-judges a note once the follower catches up, without re-anchoring', () => {
-    const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    const startedAt = live.state.startedAtMs
-    // The worker's verdict for note 2 lands after note 2 itself, so the note is
-    // first placed with the stale index 0 and corrected to 1 a moment later.
-    const provisional = live.observe({ pitches: [61], atMs: 640, followerIndex: 0 })
-    expect(provisional.timing?.reference).toBe('unplaced')
-    const corrected = live.syncPosition(1)
-    expect(corrected.target?.onsetBeat).toBe(1)
-    expect(corrected.status).toBe('match')
-    expect(corrected.timing?.reference).toBe('elapsed')
-    expect(corrected.timing?.label).toBe('onTime')
-    expect(live.state.startedAtMs).toBe(startedAt)
-  })
-
-  it('revises the trace when it revises the panel', () => {
-    const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    live.observe({ pitches: [61], atMs: 640, followerIndex: 0 })
-    const last = () => live.traceNotes[live.traceNotes.length - 1]
-    expect(last().status).toBe('different')
-    live.syncPosition(1)
-    expect(last().status).toBe('match')
-    expect(last().timing).toBe('onTime')
-  })
-
-  it('keeps the anchor verdict when the follower corrects the first note', () => {
-    const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 8_000, followerIndex: null })
-    const corrected = live.syncPosition(1)
-    expect(corrected.timing?.reference).toBe('anchor')
-    expect(corrected.timing?.label).toBe('onTime')
-  })
-
   it('keeps a partially played chord on its own onset', () => {
     const live = tracker(CHORD)
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    const state = live.observe({ pitches: [64], atMs: 625, followerIndex: 1 })
+    live.observe({ pitches: [60], atMs: 0 })
+    const state = live.observe({ pitches: [64], atMs: 625 })
     expect(state.status).toBe('partial')
     expect(state.missing).toEqual([67])
     expect(state.target?.onsetBeat).toBe(1)
   })
-})
 
-describe('target ordering', () => {
-  it('orders by absolute beat so a meter change cannot reshuffle the passage', () => {
-    const targets = buildLiveTargets([
-      { eventId: 'a', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, durationBeat: 1, pitches: [60], part: 'RH', voice: 1, dynamicTarget: null, optional: false },
-      { eventId: 'b', measureNo: 2, onsetBeat: 0, absoluteBeat: 4, durationBeat: 1, pitches: [62], part: 'RH', voice: 1, dynamicTarget: null, optional: false },
-      { eventId: 'c', measureNo: 3, onsetBeat: 0, absoluteBeat: 5, durationBeat: 1, pitches: [64], part: 'RH', voice: 1, dynamicTarget: null, optional: false },
-    ] as ScoreEvent[], 1, 3)
-    expect(targets.map((target) => target.absoluteBeat)).toEqual([0, 4, 5])
-    expect(targetIndexAtElapsedBeats(targets, 5, 4)).toBe(2)
-  })
-
-  it('measures elapsed beats from the passage start, not from measure one', () => {
-    const targets = buildLiveTargets(scale(8).map((event) => ({
-      ...event, measureNo: event.measureNo + 4, absoluteBeat: event.absoluteBeat! + 16,
-    })), 5, 99)
-    expect(targetIndexAtElapsedBeats(targets, 0, 4)).toBe(0)
-    expect(targetIndexAtElapsedBeats(targets, 3, 4)).toBe(3)
+  it('moves past a position the player chooses to skip', () => {
+    const live = tracker(TWO_HANDS)
+    live.observe({ pitches: [60], atMs: 0 })
+    const skipped = live.skipCurrent()
+    expect(skipped.target?.onsetBeat).toBe(1)
+    expect(live.observe({ pitches: [60], atMs: 625 }).status).toBe('match')
   })
 })
 
 describe('correcting a mistake', () => {
   it('marks the fix as corrected rather than as a clean hit', () => {
     const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
+    live.observe({ pitches: [60], atMs: 0 })
     expect(live.state.status).toBe('match')
-
-    // Wrong note at the second position, then the player fixes it.
-    const wrong = live.observe({ pitches: [70], atMs: 625, followerIndex: 1 })
+    const wrong = live.observe({ pitches: [70], atMs: 625 })
     expect(wrong.status).toBe('different')
-    const fixed = live.observe({ pitches: [61], atMs: 900, followerIndex: 1 })
-    expect(fixed.status).toBe('corrected')
+    expect(live.observe({ pitches: [61], atMs: 900 }).status).toBe('corrected')
   })
 
   it('does not carry a correction forward to the next note', () => {
     const live = tracker(scale(8))
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    live.observe({ pitches: [70], atMs: 625, followerIndex: 1 })
-    live.observe({ pitches: [61], atMs: 900, followerIndex: 1 })
-    const clean = live.observe({ pitches: [62], atMs: 1_500, followerIndex: 2 })
-    expect(clean.status).toBe('match')
+    live.observe({ pitches: [60], atMs: 0 })
+    live.observe({ pitches: [70], atMs: 625 })
+    live.observe({ pitches: [61], atMs: 900 })
+    expect(live.observe({ pitches: [62], atMs: 1_500 }).status).toBe('match')
   })
 
-  it('a half-played chord counts as a miss that can then be corrected', () => {
+  it('does not call a second hand arriving late a correction', () => {
+    // Waiting for the other hand is not a mistake, so completing the position
+    // is a clean match rather than a fix.
+    const live = tracker(TWO_HANDS)
+    live.observe({ pitches: [60], atMs: 0 })
+    expect(live.observe({ pitches: [48], atMs: 200 }).status).toBe('match')
+  })
+
+  it('a half-played chord finished after a wrong note is a correction', () => {
     const live = tracker(CHORD)
-    live.observe({ pitches: [60], atMs: 0, followerIndex: 0 })
-    expect(live.observe({ pitches: [64], atMs: 625, followerIndex: 1 }).status)
-      .toBe('partial')
-    expect(live.observe({ pitches: [64, 67], atMs: 900, followerIndex: 1 }).status)
-      .toBe('corrected')
+    live.observe({ pitches: [60], atMs: 0 })
+    expect(live.observe({ pitches: [64, 70], atMs: 625 }).status).toBe('partial')
+    expect(live.observe({ pitches: [67], atMs: 900 }).status).toBe('corrected')
   })
 })
 
-describe('a correction survives the follower moving on', () => {
-  // 小星星 opens C C G G — repeated notes, so the follower can legitimately
-  // place a played G on either of two onsets.
-  const TWINKLE = [72, 72, 79, 79].map((pitch, index) => ({
+describe('repeated notes', () => {
+  // 小星星 opens C C G G — the same pitch twice in a row, which is where a
+  // score-searching follower used to place one strike on the wrong onset.
+  const TWINKLE = [60, 60, 67, 67].map((pitch, index) => event({
     eventId: `t:RH:m1:b${index}:1`, measureNo: 1, onsetBeat: index,
-    absoluteBeat: index, durationBeat: 1, pitches: [pitch],
-    part: 'RH', voice: 1, dynamicTarget: null, optional: false,
-  })) as ScoreEvent[]
+    absoluteBeat: index, pitches: [pitch],
+  }))
 
-  it('stays corrected when the follower advances past the fixed note', () => {
+  it('advances one position per strike', () => {
     const live = tracker(TWINKLE)
-    live.observe({ pitches: [72], atMs: 0, followerIndex: 0 })
-    live.observe({ pitches: [72], atMs: 625, followerIndex: 1 })
-    // A wrong note where the first G belongs, then the player fixes it.
-    expect(live.observe({ pitches: [66], atMs: 1_250, followerIndex: 2 }).status)
-      .toBe('different')
-    expect(live.observe({ pitches: [79], atMs: 1_500, followerIndex: 2 }).status)
-      .toBe('corrected')
-    // The worker then settles that same note on the next G. It is still a fix.
-    expect(live.syncPosition(3).status).toBe('corrected')
-    expect(live.state.played.map((item) => item.pitch)).toEqual([79])
+    const beats = [0, 625, 1_250, 1_875].map((atMs, index) =>
+      live.observe({ pitches: [TWINKLE[index].pitches[0]], atMs }).target?.onsetBeat)
+    expect(beats).toEqual([0, 1, 2, 3])
   })
 })

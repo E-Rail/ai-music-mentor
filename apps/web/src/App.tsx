@@ -24,7 +24,6 @@ import {
   LivePerformanceTracker, idleLiveState, type LivePerformanceState,
   type LiveTraceNote,
 } from './features/live'
-import { FollowerClient, type FollowerPosition } from './features/follower/followerClient'
 import { CoachReport } from './features/report/CoachReport'
 import { errorColor, errorDetailForDisplay } from './features/report/errorPresentation'
 import {
@@ -165,7 +164,6 @@ export default function App() {
   const captureRef = useRef<MidiCapture | null>(null)
   const microphoneRef = useRef<MicrophoneCapture | null>(null)
   const midiUploadRef = useRef<MidiUploadInputAdapter | null>(null)
-  const followerRef = useRef<FollowerClient | null>(null)
   const playerRef = useRef<MidiPlayer | null>(null)
   const [midiSupported, setMidiSupported] = useState(true)
   const [inputs, setInputs] = useState<string[]>([])
@@ -173,7 +171,10 @@ export default function App() {
   const selectedInputRef = useRef<string | null>(null)
   const [recording, setRecording] = useState(false)
   const [liveNotes, setLiveNotes] = useState<number[]>([])
-  const [cursor, setCursor] = useState<{ measure: number; beat: number; frozen?: boolean; confidence?: number; bpm?: number } | null>(null)
+  // `waiting` means the passage is holding here: a note is still owed, or a
+  // wrong one has not been corrected yet.
+  const [cursor, setCursor] = useState<
+    { measure: number; beat: number; waiting?: boolean; bpm?: number } | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [recoveryContext, setRecoveryContext] = useState<RecoveryContext | null>(null)
   const [recoveredEvents, setRecoveredEvents] = useState<PerformanceEvent[]>([])
@@ -201,8 +202,6 @@ export default function App() {
   // One tracker serves every input source, so the staff marker, the cursor and
   // the live panel can never disagree about where the player is.
   const liveRef = useRef(new LivePerformanceTracker())
-  const followerIndexRef = useRef<number | null>(null)
-  const followerExpectedRef = useRef<number | null>(null)
   const microphoneConnectRequestRef = useRef(0)
   const sessionStartInFlightRef = useRef(false)
   const submissionInFlightRef = useRef(false)
@@ -267,7 +266,7 @@ export default function App() {
     mentorPendingRef.current.clear()
     mentorCacheRef.current.clear()
     playerRef.current?.stop()
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     setPlaying(false)
     setReport(null)
     setBaselineReport(null)
@@ -321,8 +320,6 @@ export default function App() {
     scoreEvents: ScoreEvent[], start: number, end: number,
     beatsPerMeasure: number, bpm: number, source: 'web-midi' | 'microphone',
   ) => {
-    followerIndexRef.current = null
-    followerExpectedRef.current = null
     setLiveTrace([])
     setLiveFeedback(liveRef.current.begin({
       events: scoreEvents, rangeStart: start, rangeEnd: end,
@@ -330,35 +327,40 @@ export default function App() {
     }))
   }
 
+  /**
+   * One place publishes everything that follows from a played note. The cursor
+   * is exactly where the passage says the player is — there is no second
+   * opinion to reconcile it with, which is what used to let the two drift.
+   */
   const publishLiveState = (state: LivePerformanceState) => {
     setLiveFeedback(state)
     setLiveTrace([...liveRef.current.traceNotes])
+    if (state.target) {
+      setCursor({
+        measure: state.target.measureNo, beat: state.target.onsetBeat,
+        waiting: state.blocked || state.outstanding.length > 0,
+        bpm: liveRef.current.bpm,
+      })
+    }
+    liveTempoHookRef.current?.(state, liveRef.current.bpm)
   }
 
-  const observeLiveInput = (
-    pitches: number[], atMs: number, followerIndex?: number | null,
-  ) => {
-    if (!recordingRef.current) return
-    publishLiveState(liveRef.current.observe({
-      pitches, atMs, followerIndex,
-      expectedIndex: followerExpectedRef.current,
-    }))
-  }
+  /** Lets the retry stage follow the player's tempo without a second matcher. */
+  const liveTempoHookRef = useRef<
+    ((state: LivePerformanceState, bpm: number) => void) | null>(null)
 
   /**
-   * The follower runs in a worker, so its verdict on a keystroke lands just
-   * after the keystroke itself. Adopt the corrected position and let the
-   * player's own tempo drive the timeline they are judged against.
+   * Move past a position the player has decided not to finish. Theirs to press:
+   * the app never rules that a wrong note "must have meant" a later one.
    */
-  const applyFollowerPosition = (position: FollowerPosition) => {
-    followerIndexRef.current = position.onsetIdx
-    followerExpectedRef.current = position.expectedIdx
+  const skipLivePosition = () => {
     if (!recordingRef.current) return
-    if (position.bpm > 0 && !position.frozen && position.confidence >= 0.5) {
-      liveRef.current.observeTempo(position.bpm)
-    }
-    publishLiveState(liveRef.current.syncPosition(
-      position.onsetIdx, position.expectedIdx))
+    publishLiveState(liveRef.current.skipCurrent())
+  }
+
+  const observeLiveInput = (pitches: number[], atMs: number) => {
+    if (!recordingRef.current) return
+    publishLiveState(liveRef.current.observe({ pitches, atMs }))
   }
 
   // The meter is cosmetic. Notes arrive separately, from the detector's own
@@ -465,7 +467,7 @@ export default function App() {
     capture.onDeviceLost = (name) => {
       capture.checkpoint()
       sendWorkflow({ type: 'DEVICE_LOST' })
-      setCursor((previous) => previous ? { ...previous, frozen: true } : previous)
+      setCursor((previous) => previous ? { ...previous, waiting: true } : previous)
       const active = readRecoveryContext()
       if (active) void api.markDeviceLost(active.sessionId).catch(() => {})
       setAlert({ type: 'warn', msg: tf('deviceLost', { name }) })
@@ -610,7 +612,7 @@ export default function App() {
     return () => {
       cancelled = true
       capture.dispose(); microphone.dispose(); midiUpload.dispose()
-      playerRef.current?.dispose(); followerRef.current?.stop()
+      playerRef.current?.dispose(); liveTempoHookRef.current = null
     }
   }, [])
 
@@ -722,7 +724,7 @@ export default function App() {
     if (recording && inputSource === 'microphone') {
       await microphoneRef.current?.cancelTake(activeSessionId)
     } else if (recording) captureRef.current?.stopCapture({ persist: false })
-    followerRef.current?.stop(); playerRef.current?.stop()
+    liveTempoHookRef.current = null; playerRef.current?.stop()
     await api.discardSession(activeSessionId).catch(() => {})
     if (inputSource === 'microphone') await microphoneRef.current?.discard(activeSessionId)
     else if (inputSource === 'midi-upload') await midiUploadRef.current?.discard(activeSessionId)
@@ -904,25 +906,8 @@ export default function App() {
       } else {
         sendWorkflow({ type: 'COUNT_IN_STARTED' })
         if (inputSource === 'web-midi') {
-          const follower = new FollowerClient()
-          follower.onPosition = (p) => {
-            setCursor({
-              measure: p.measureNo, beat: p.onsetBeat, frozen: p.frozen,
-              confidence: p.confidence, bpm: p.bpm,
-            })
-            applyFollowerPosition(p)
-          }
-          follower.onError = () => setAlert({
-            type: 'warn', msg: t('realtimeCursorUnavailable'),
-          })
-          follower.start(buildOnsets(events, rangeStart, rangeEnd), meta.beatsPerMeasure, meta.tempo)
-          followerRef.current = follower
           captureRef.current!.onGroup = (group) => {
-            observeLiveInput(
-              group.pitches, group.tOnMs, followerIndexRef.current)
-            follower.feed({
-              id: group.id, tOnMs: group.tOnMs, pitches: group.pitches,
-            })
+            observeLiveInput(group.pitches, group.tOnMs)
           }
         }
         setAlert({ type: 'info', msg: tf('countInStarts', { beats: r.countIn.beats }) })
@@ -1033,7 +1018,7 @@ export default function App() {
       eventsToSubmit = captureRef.current!.stopCapture()
       await captureRef.current!.flushBatches()
     }
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     setCursor(null)
     sendWorkflow({ type: 'SUBMIT_CAPTURE' })
     setSubmissionStage('analyzing')
@@ -1275,7 +1260,7 @@ export default function App() {
     setPlaying(false)
     setComparison(null); setCursor(null); setRetryTempo(null); setRetryUploadName(null)
     retryUploadMidiRef.current = null
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     let captureStarted = false
     let createdSessionId: string | null = null
     try {
@@ -1317,39 +1302,25 @@ export default function App() {
         recordingRef.current = true
       }
       if (inputSource === 'web-midi') {
-        const follower = new FollowerClient()
-        follower.onPosition = (position: FollowerPosition) => {
-          setCursor({
-            measure: position.measureNo, beat: position.onsetBeat,
-            frozen: position.frozen, confidence: position.confidence, bpm: position.bpm,
-          })
-          applyFollowerPosition(position)
+        // Flexible accompaniment follows the tempo the player is holding, once
+        // per bar so it bends with them rather than chasing every note.
+        liveTempoHookRef.current = (state, bpm) => {
+          const measure = state.target?.measureNo
+          if (measure == null) return
           if (lastTempoMeasureRef.current === null) {
-            lastTempoMeasureRef.current = position.measureNo
-          } else if (position.measureNo !== lastTempoMeasureRef.current) {
-            lastTempoMeasureRef.current = position.measureNo
-            if (accMode === 'flexible' && !position.frozen &&
-                position.confidence >= 0.6 && position.bpm > 0) {
-              const next = player!.followTempo(accompanimentBpmRef.current, position.bpm)
-              accompanimentBpmRef.current = next
-              player!.setBpm(next)
-              setRetryTempo(Math.round(next * 10) / 10)
-            }
+            lastTempoMeasureRef.current = measure
+            return
           }
+          if (measure === lastTempoMeasureRef.current) return
+          lastTempoMeasureRef.current = measure
+          if (accMode !== 'flexible' || state.blocked || !(bpm > 0)) return
+          const next = player!.followTempo(accompanimentBpmRef.current, bpm)
+          accompanimentBpmRef.current = next
+          player!.setBpm(next)
+          setRetryTempo(Math.round(next * 10) / 10)
         }
-        follower.onError = () => setAlert({
-          type: 'warn', msg: t('accompanimentFollowerUnavailable'),
-        })
-        follower.start(
-          buildOnsets(targetScore.scoreEvents, retryRangeStart, retryRangeEnd),
-          targetScore.metadata.beatsPerMeasure, targetScore.metadata.tempo,
-        )
-        followerRef.current = follower
         captureRef.current!.onGroup = (group) => {
-          observeLiveInput(group.pitches, group.tOnMs, followerIndexRef.current)
-          follower.feed({
-            id: group.id, tOnMs: group.tOnMs, pitches: group.pitches,
-          })
+          observeLiveInput(group.pitches, group.tOnMs)
         }
         captureRef.current!.startCapture(s.sessionId)
         sendWorkflow({ type: 'CAPTURE_STARTED', kind: 'retry' })
@@ -1409,7 +1380,7 @@ export default function App() {
         else await MidiCapture.clearRecovery(createdSessionId)
         clearStoredRecoveryContext(createdSessionId)
       }
-      followerRef.current?.stop(); playerRef.current?.stop()
+      liveTempoHookRef.current = null; playerRef.current?.stop()
       recordingRef.current = false
       setRecording(false); setRetrySessionId(null)
       sendWorkflow({ type: 'CAPTURE_DISCARDED' })
@@ -1451,7 +1422,7 @@ export default function App() {
     if (recording && inputSource === 'microphone' && activeSessionId) {
       await microphoneRef.current?.cancelTake(activeSessionId)
     } else if (recording) captureRef.current?.stopCapture({ persist: false })
-    playerRef.current?.stop(); followerRef.current?.stop()
+    playerRef.current?.stop(); liveTempoHookRef.current = null
     if (activeSessionId) {
       await api.discardSession(activeSessionId).catch(() => {})
       if (inputSource === 'microphone') await microphoneRef.current?.discard(activeSessionId)
@@ -1517,7 +1488,7 @@ export default function App() {
       await captureRef.current!.flushBatches()
     }
     playerRef.current?.stop()
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     sendWorkflow({ type: 'SUBMIT_CAPTURE' })
     setSubmissionStage('analyzing')
     try {
@@ -2045,7 +2016,7 @@ export default function App() {
                       microphoneRef.current?.setDetectionSensitivity(value)
                     }}
                   />
-                  <LivePanel state={liveFeedback} trace={liveTrace} />
+                  <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
                 </aside>
               )}
               {inputSource !== 'microphone' && (
@@ -2054,7 +2025,7 @@ export default function App() {
                       arrived on is reference, so it sits underneath. */}
                   {inputSource === 'web-midi' && (
                     <>
-                      <LivePanel state={liveFeedback} trace={liveTrace} />
+                      <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
                       <div className="held-notes">
                         <span className="eyebrow">{t('heldNotes')}</span>
                         <div className="live-notes">
@@ -2133,7 +2104,7 @@ export default function App() {
                   <span>{recording ? t('recording') : (hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('stopped'))}</span>
                   <span className="dim">{cursor ? tf('cursorPosition', {
                     measure: measureLabel(cursor.measure), bpm: cursor.bpm ?? '—',
-                    state: cursor.frozen ? ` · ${t('relocking')}` : '',
+                    state: cursor.waiting ? ` · ${t('waitingHere')}` : '',
                   }) : t('waitingForNotes')}</span>
                 </div>
                 <div className="flex">
@@ -2495,12 +2466,12 @@ export default function App() {
                         ? t('microphoneTakeReady')
                         : (hasRetryRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('waitingToRecord')))}</span>
                 <span className="dim">{tf('accompanimentStatus', { bpm: retryTempo ?? '—' })}</span>
-                {cursor && <span className="dim">{tf('followerConfidence', {
+                {cursor && <span className="dim">{tf('followerPosition', {
                   measure: measureLabel(cursor.measure),
-                  confidence: Math.round((cursor.confidence ?? 0) * 100),
+                  bpm: Math.round(cursor.bpm ?? 0),
                 })}</span>}
               </div>
-              {inputSource !== 'midi-upload' && <LivePanel state={liveFeedback} trace={liveTrace} />}
+              {inputSource !== 'midi-upload' && <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />}
               {loading && submissionStage !== 'idle' && submissionStage !== 'complete' && (
                 <div className={`submission-progress-card ${submissionStage}`} role="status">
                   <span className="submission-spinner" />
@@ -2661,19 +2632,6 @@ function UploadZone({ onFile, accept, disabled }: { onFile: (f: File) => void; a
 }
 
 // ---- 工具函数 ----
-function buildOnsets(events: ScoreEvent[], rs: number, re: number) {
-  const map = new Map<string, { onsetId: string; measureNo: number; onsetBeat: number; absoluteBeat?: number | null; pitches: number[] }>()
-  for (const e of events) {
-    if (e.measureNo < rs || e.measureNo > re || e.optional) continue
-    const key = `${e.measureNo}:${e.onsetBeat}`
-    if (!map.has(key)) {
-      const token = String(e.onsetBeat).replace('.', '_')
-      map.set(key, { onsetId: `${e.eventId.split(':')[0]}:m${e.measureNo}:b${token}`, measureNo: e.measureNo, onsetBeat: e.onsetBeat, absoluteBeat: e.absoluteBeat, pitches: [] })
-    }
-    map.get(key)!.pitches.push(...e.pitches)
-  }
-  return [...map.values()].sort((a, b) => a.measureNo - b.measureNo || a.onsetBeat - b.onsetBeat)
-}
 
 function useMemoResolvedKeys(comp: ComparisonResult | null): Set<string> {
   return new Set(comp?.resolvedErrors ?? [])

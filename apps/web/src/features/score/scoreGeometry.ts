@@ -1,3 +1,4 @@
+import { handOfEventId } from './hands'
 import { diatonicStep } from './pitch'
 
 export interface ScorePoint { x: number; y: number }
@@ -393,11 +394,10 @@ export function staffForPitch(
 }
 
 export function staffHintFromEventIds(eventIds: Array<string | null | undefined>): StaffHint {
-  const parts = eventIds
-    .filter((eventId): eventId is string => Boolean(eventId))
-    .map((eventId) => eventId.split(':')[1]?.trim().toLowerCase())
-    .filter(Boolean)
-  if (parts.some((part) => part === 'lh' || part.includes('left'))) return 'lower'
-  if (parts.some((part) => part === 'rh' || part.includes('right'))) return 'upper'
+  // A position written across both staves spans them, so it is located from the
+  // lower one; `staffForPitch` is where a played pitch may overrule that.
+  const hands = eventIds.map(handOfEventId)
+  if (hands.includes('left')) return 'lower'
+  if (hands.includes('right')) return 'upper'
   return null
 }

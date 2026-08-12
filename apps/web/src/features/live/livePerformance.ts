@@ -14,9 +14,10 @@ import {
   type TimingLabel, type TimingVerdict,
 } from './performanceClock'
 import {
-  buildLiveTargets, relativeBeatOf, resolveTargetIndex,
-  type LivePositionStrategy, type LiveTarget,
+  buildLiveTargets, relativeBeatOf,
+  type ExpectedNote, type LiveTarget,
 } from './liveTargets'
+import { PassageProgress, type StrikeOutcome } from './passageProgress'
 
 /**
  * `corrected` is a match that arrived after a wrong attempt at the same place.
@@ -53,6 +54,10 @@ export interface LivePerformanceState {
   playedAtMs: number | null
   /** Score pitches at this position that did not sound. */
   missing: number[]
+  /** The same notes with the hand that wrote each one. */
+  outstanding: ExpectedNote[]
+  /** Holding here until a wrong note is corrected or the player skips it. */
+  blocked: boolean
   /** The score position the player is on. */
   target: LiveTarget | null
   timing: TimingVerdict | null
@@ -64,31 +69,32 @@ export interface LivePerformanceState {
 export function idleLiveState(source: InputSource): LivePerformanceState {
   return {
     status: 'idle', source, played: [], playedAtMs: null, missing: [],
+    outstanding: [], blocked: false,
     target: null, timing: null, startedAtMs: null, awaitingFirstNote: true,
   }
 }
 
 /**
- * Split what was played against what was written. Pure, and the single place
- * the app decides whether a note "counts".
+ * Split what was played against what is still outstanding at this position.
+ * Pure, and the single place the app decides whether a note "counts".
+ *
+ * `expected` is the remainder, not the whole chord: once the right hand has
+ * landed, only the left hand is still owed, and replaying the right hand is
+ * neither a new match nor a mistake.
  */
-export function classifyPlayedPitches(
-  played: number[], expected: number[],
+export function classifyStrike(
+  outcome: StrikeOutcome,
 ): { pitches: PlayedPitch[]; missing: number[]; status: LiveMatchStatus } {
-  const heard = [...new Set(played)].sort((left, right) => left - right)
-  const written = new Set(expected)
-  if (!heard.length) {
-    return { pitches: [], missing: [...written].sort((a, b) => a - b), status: 'waiting' }
-  }
-  const pitches: PlayedPitch[] = heard.map((pitch) => ({
-    pitch, role: written.has(pitch) ? 'matched' : 'extra',
-  }))
-  const matchedCount = pitches.filter((item) => item.role === 'matched').length
-  const missing = [...written].filter((pitch) => !heard.includes(pitch))
-    .sort((left, right) => left - right)
-  if (!expected.length) return { pitches, missing, status: 'different' }
-  const status: LiveMatchStatus = matchedCount === heard.length && !missing.length
-    ? 'match' : matchedCount > 0 ? 'partial' : 'different'
+  const pitches: PlayedPitch[] = [
+    ...outcome.accepted.map((pitch) => ({ pitch, role: 'matched' as const })),
+    ...outcome.repeated.map((pitch) => ({ pitch, role: 'matched' as const })),
+    ...outcome.wrong.map((pitch) => ({ pitch, role: 'extra' as const })),
+  ].sort((left, right) => left.pitch - right.pitch)
+  const missing = outcome.outstanding.map((note) => note.pitch)
+  if (!pitches.length) return { pitches, missing, status: 'waiting' }
+  const status: LiveMatchStatus = outcome.wrong.length
+    ? (outcome.accepted.length ? 'partial' : 'different')
+    : outcome.completed ? 'match' : 'partial'
   return { pitches, missing, status }
 }
 
@@ -104,11 +110,10 @@ export interface LiveSessionOptions {
 export interface LiveObservation {
   pitches: number[]
   atMs: number
-  /** Last onset the follower matched; only used by the `follower` strategy. */
-  followerIndex?: number | null
-  /** Onset the follower expects next; where an unmatched note belongs. */
-  expectedIndex?: number | null
 }
+
+/** Tempo is only re-estimated once the player has given this much to go on. */
+const TEMPO_ANCHORS = 8
 
 /**
  * Owns the live picture for one take: the player's clock, the passage, the
@@ -117,145 +122,180 @@ export interface LiveObservation {
  */
 export class LivePerformanceTracker {
   private targets: LiveTarget[] = []
+  private progress = new PassageProgress()
   private clock = new PerformanceClock(96, 4)
   private trace: LiveTraceNote[] = []
   private source: InputSource = 'web-midi'
-  private strategy: LivePositionStrategy = 'follower'
   private current: LivePerformanceState = idleLiveState('web-midi')
   private sequence = 0
-  /** Score beat assigned to the note before the current one. */
-  private previousBeat: number | null = null
-  /** Score beat assigned to the current note; the follower may correct it. */
-  private currentBeat: number | null = null
-  /** Trace entries belonging to the current note, so a correction reaches them. */
-  private currentTraceIds: string[] = []
-  /** Score position the player is currently attempting, and how it has gone. */
-  private attemptKey: string | null = null
-  private missedHereAlready = false
-  /** Whether the note currently on screen was a fix, not a clean hit. */
-  private currentIsCorrection = false
-
-  /**
-   * Upgrade a clean match to `corrected` when this position was got wrong first.
-   * Fixing your own mistake is a different event from never making one, and the
-   * student is the one who should be told which happened.
-   */
-  private withCorrection(
-    status: LiveMatchStatus, target: LiveTarget | null,
-  ): LiveMatchStatus {
-    const key = target
-      ? `${target.measureNo}:${target.onsetBeat}` : null
-    if (key !== this.attemptKey) {
-      this.attemptKey = key
-      this.missedHereAlready = false
-    }
-    if (status === 'different' || status === 'partial') {
-      this.missedHereAlready = true
-      return status
-    }
-    if (status === 'match' && this.missedHereAlready) return 'corrected'
-    return status
-  }
+  /** Score beat of the last position whose timing was judged. */
+  private lastJudgedBeat: number | null = null
+  /** Positions already timed, so the second hand does not re-time the first. */
+  private timed = new Set<number>()
+  /** Positions the player got wrong before getting right. */
+  private stumbled = new Set<number>()
+  /** (beat, ms) pairs the player has actually produced, for their own tempo. */
+  private anchors: { beat: number; atMs: number }[] = []
 
   /**
    * Timing is only claimed when there is a position worth measuring against.
-   *
-   * Two notes that resolve to the same score onset mean either a repeat or a
-   * follower that has lost the player; a deviation of more than a couple of
-   * beats means the same thing. Reporting "late by 3251 ms" in either case
-   * states a fact the app does not actually know, so it reports nothing.
+   * A position held open by a wrong note, or completed by a second hand
+   * arriving late, has no new onset to measure — reporting "late by 3251 ms"
+   * there would state a fact the app does not have.
    */
   private trust(verdict: TimingVerdict, beat: number): TimingVerdict {
     if (verdict.reference === 'anchor') return verdict
-    const advanced = this.previousBeat === null || beat > this.previousBeat + 1e-6
+    const advanced = this.lastJudgedBeat === null || beat > this.lastJudgedBeat + 1e-6
     if (!advanced) return UNPLACED
     if (Math.abs(verdict.beatsOff) > MAX_TRUSTED_BEATS_OFF) return UNPLACED
     return verdict
   }
 
+  /**
+   * The player's own tempo, from the notes they have actually produced. The
+   * median of the recent beat-to-time intervals ignores one hesitant note in a
+   * way a running average does not.
+   */
+  private updateTempo(): void {
+    const recent = this.anchors.slice(-TEMPO_ANCHORS)
+    if (recent.length < 3) return
+    const intervals: number[] = []
+    for (let index = 1; index < recent.length; index += 1) {
+      const beats = recent[index].beat - recent[index - 1].beat
+      const ms = recent[index].atMs - recent[index - 1].atMs
+      if (beats > 0 && ms > 0) intervals.push(ms / beats)
+    }
+    if (intervals.length < 2) return
+    intervals.sort((left, right) => left - right)
+    const median = intervals[Math.floor(intervals.length / 2)]
+    if (median > 0) this.clock.observeTempo(60_000 / median)
+  }
+
+  private snapshot(
+    status: LiveMatchStatus, played: PlayedPitch[], playedAtMs: number | null,
+    outcome: StrikeOutcome, timing: TimingVerdict | null,
+  ): LivePerformanceState {
+    this.current = {
+      status,
+      source: this.source,
+      played,
+      playedAtMs,
+      missing: outcome.outstanding.map((note) => note.pitch),
+      outstanding: outcome.outstanding,
+      blocked: outcome.blocked,
+      target: outcome.target,
+      timing,
+      startedAtMs: this.clock.startedAtMs,
+      awaitingFirstNote: false,
+    }
+    return this.current
+  }
+
   begin(options: LiveSessionOptions): LivePerformanceState {
     this.targets = buildLiveTargets(
       options.events, options.rangeStart, options.rangeEnd)
+    this.progress = new PassageProgress(this.targets)
     this.clock = new PerformanceClock(options.bpm, options.beatsPerMeasure)
     this.trace = []
     this.sequence = 0
-    this.previousBeat = null
-    this.currentBeat = null
-    this.currentTraceIds = []
-    this.attemptKey = null
-    this.missedHereAlready = false
-    this.currentIsCorrection = false
+    this.lastJudgedBeat = null
+    this.timed = new Set()
+    this.stumbled = new Set()
+    this.anchors = []
     this.source = options.source
-    // Only USB MIDI reports true onsets; a microphone preview is a smoothed
-    // dominant pitch and cannot drive a beam search.
-    this.strategy = options.source === 'microphone' ? 'elapsed' : 'follower'
+    const first = this.targets[0] ?? null
     this.current = {
       ...idleLiveState(options.source),
       status: 'waiting',
-      target: this.targets[0] ?? null,
-      missing: this.targets[0]?.pitches ?? [],
+      target: first,
+      missing: first?.pitches ?? [],
+      outstanding: first?.expected ?? [],
     }
     return this.current
   }
 
   reset(): void {
     this.clock.reset()
+    this.progress.reset()
     this.trace = []
     this.sequence = 0
-    this.previousBeat = null
-    this.currentBeat = null
-    this.currentTraceIds = []
-    this.attemptKey = null
-    this.missedHereAlready = false
-    this.currentIsCorrection = false
+    this.lastJudgedBeat = null
+    this.timed = new Set()
+    this.stumbled = new Set()
+    this.anchors = []
     this.current = idleLiveState(this.source)
   }
 
   get state(): LivePerformanceState { return this.current }
   get traceNotes(): LiveTraceNote[] { return this.trace }
+  /** The tempo the player is actually holding, not the one on the page. */
+  get bpm(): number { return this.clock.bpm }
 
-  /** Feed the follower's tempo estimate back into the player's timeline. */
+  /** An outside tempo estimate, kept for input sources that carry one. */
   observeTempo(bpm: number): void { this.clock.observeTempo(bpm) }
 
   observe(input: LiveObservation): LivePerformanceState {
     const played = [...new Set(input.pitches)].sort((left, right) => left - right)
     if (!played.length) return this.current
 
-    // Anchor before resolving position: the first note defines beat zero, so it
-    // must not be located against a timeline that does not exist yet.
-    const firstNote = !this.clock.started
-    const index = firstNote ? 0 : resolveTargetIndex({
-      targets: this.targets, strategy: this.strategy, clock: this.clock,
-      atMs: input.atMs, followerIndex: input.followerIndex,
-      expectedIndex: input.expectedIndex, played,
-    })
-    const target = this.targets[index] ?? null
+    const outcome = this.progress.strike(played)
+    const target = outcome.target
     const beat = target
       ? relativeBeatOf(target, this.targets, this.clock.beatsPerMeasure)
       : this.clock.elapsedBeats(input.atMs)
-    this.previousBeat = this.currentBeat
-    this.currentBeat = beat
-    const timing = this.trust(this.clock.register(input.atMs, beat), beat)
 
-    const { pitches, missing, status: raw } = classifyPlayedPitches(
-      played, target?.pitches ?? [])
-    const status = this.withCorrection(raw, target)
-    this.currentIsCorrection = status === 'corrected'
-
-    this.current = {
-      status, source: this.source, played: pitches, playedAtMs: input.atMs,
-      missing, target, timing, startedAtMs: this.clock.startedAtMs,
-      awaitingFirstNote: false,
+    // The position sounded when its first correct note landed. A second hand
+    // arriving afterwards belongs to the same onset, not a later one.
+    const opensPosition = outcome.accepted.length > 0 && !this.timed.has(outcome.index)
+    let timing: TimingVerdict = UNPLACED
+    if (opensPosition) {
+      this.timed.add(outcome.index)
+      timing = this.trust(this.clock.register(input.atMs, beat), beat)
+      if (timing.reference !== 'unplaced') this.lastJudgedBeat = beat
+      this.anchors.push({ beat, atMs: input.atMs })
+      this.updateTempo()
+    } else if (!this.clock.started) {
+      // A wrong note can still be the player's first: the timeline starts when
+      // they start, whatever they played.
+      timing = this.clock.register(input.atMs, beat)
     }
-    this.currentTraceIds = []
-    for (const item of pitches) {
+
+    if (outcome.wrong.length) this.stumbled.add(outcome.index)
+    const { pitches, status: raw } = classifyStrike(outcome)
+    const status: LiveMatchStatus = raw === 'match' && this.stumbled.has(outcome.index)
+      ? 'corrected' : raw
+
+    const state = this.snapshot(status, pitches, input.atMs, outcome, timing)
+    this.recordTrace(pitches, input.atMs, status, timing)
+    return state
+  }
+
+  /**
+   * Move past the position the player is stuck on. This is theirs to press —
+   * the passage never decides on its own that a wrong note meant something
+   * else, because it does not know that and guessing relocates the mistake.
+   */
+  skipCurrent(): LivePerformanceState {
+    if (!this.targets.length) return this.current
+    const outcome = this.progress.skip()
+    return this.snapshot(
+      'waiting', [], this.current.playedAtMs,
+      { ...outcome, outstanding: this.progress.outstanding, target: this.progress.target },
+      UNPLACED,
+    )
+  }
+
+  private recordTrace(
+    played: PlayedPitch[], atMs: number,
+    status: LiveMatchStatus, timing: TimingVerdict,
+  ): void {
+    for (const item of played) {
       this.sequence += 1
-      this.currentTraceIds.push(`t${this.sequence}`)
       this.trace.push({
         id: `t${this.sequence}`,
         pitch: item.pitch,
-        atMs: input.atMs,
-        beatsFromStart: this.clock.elapsedBeats(input.atMs),
+        atMs,
+        beatsFromStart: this.clock.elapsedBeats(atMs),
         status,
         timing: timing.label,
         deltaMs: timing.deltaMs,
@@ -264,59 +304,8 @@ export class LivePerformanceTracker {
     if (this.trace.length > TRACE_LIMIT) {
       this.trace = this.trace.slice(-TRACE_LIMIT)
     }
-    return this.current
-  }
-
-  /**
-   * Correct the position once the follower has ruled on the note just played.
-   *
-   * The follower runs in a worker, so its verdict lands a moment after the
-   * keystroke that produced it. Re-scoring the same played pitches against the
-   * corrected onset keeps the panel and the staff consistent without inventing
-   * input the player never produced.
-   */
-  syncPosition(followerIndex: number, expectedIndex?: number | null): LivePerformanceState {
-    if (!this.targets.length) return this.current
-    // Resolve with the same rule as a fresh observation: an unmatched note
-    // belongs where the player was due to play, not at the last note they got
-    // right. Snapping back to the match is what hid corrections.
-    const index = resolveTargetIndex({
-      targets: this.targets, strategy: this.strategy, clock: this.clock,
-      atMs: this.current.playedAtMs ?? 0,
-      followerIndex, expectedIndex,
-      played: this.current.played.map((item) => item.pitch),
-    })
-    const target = this.targets[index]
-    if (!target || target === this.current.target) return this.current
-    if (!this.current.played.length || this.current.playedAtMs === null) {
-      this.current = { ...this.current, target }
-      return this.current
-    }
-    const beat = relativeBeatOf(target, this.targets, this.clock.beatsPerMeasure)
-    this.currentBeat = beat
-    const { pitches, missing, status: raw } = classifyPlayedPitches(
-      this.current.played.map((item) => item.pitch), target.pitches)
-    // The follower moves on once the fix lands. A correction is a fact about
-    // the note the player just played, so it survives that move.
-    const settled = this.withCorrection(raw, target)
-    const status = this.currentIsCorrection && settled === 'match'
-      ? 'corrected' : settled
-    this.currentIsCorrection = status === 'corrected'
-    // Re-judge, never re-register: the clock has already seen this note, and
-    // anchoring it a second time would move the player's own start line.
-    const timing = this.current.timing?.reference === 'anchor'
-      ? this.current.timing
-      : this.trust(this.clock.judge(this.current.playedAtMs, beat), beat)
-    this.current = { ...this.current, target, played: pitches, missing, status, timing }
-    // The trace is the same take drawn a different way; it must not keep the
-    // verdict the panel has just revised.
-    const corrected = new Set(this.currentTraceIds)
-    this.trace = this.trace.map((note) => corrected.has(note.id)
-      ? { ...note, status, timing: timing.label, deltaMs: timing.deltaMs }
-      : note)
-    return this.current
   }
 }
 
 export { absoluteBeatOf, buildLiveTargets, relativeBeatOf }
-export type { LiveTarget, LivePositionStrategy, TimingLabel, TimingVerdict }
+export type { ExpectedNote, LiveTarget, TimingLabel, TimingVerdict }

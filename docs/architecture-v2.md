@@ -20,6 +20,22 @@ The demo intentionally remains a single-user application. Its boundaries are sha
 
 `measureNo` is a position in the performance timeline and always counts 1, 2, 3…; it is what alignment, event IDs and the follower use. What the page prints can differ — a pickup bar is printed 0, so every printed number after it is one lower than its position. `ScoreMeta.measureLabels` carries the printed name of each bar, the browser publishes it once per score in `features/score/measureLabels`, and the same list is written into the MusicXML before it is engraved. The page and every sentence about it therefore agree by construction.
 
+## Following the player
+
+`features/live/passageProgress` holds the whole rule, and both input sources use it.
+
+A position on the page is one onset, however many staves it is written across. It is finished when every note in it has sounded — the two hands may land 20 ms or 400 ms apart, and it is still one position. Nothing advances until it is finished.
+
+A pitch that is written nowhere at this position is a **wrong note here**. The passage holds, names what it is still owed and which hand owes it, and looks no further. It is never matched against another position in the score. An earlier version ran a beam-search follower with a two-onset lookahead and a six-onset backward re-lock, which relocated mistakes and sometimes carried the student several notes past where they were; that follower is gone, and the live cursor now reads directly off this rule with no second opinion to reconcile.
+
+The one exception is not a wrong note. A student practising one hand leaves the other hand's notes unplayed on purpose. So a strike this position does not want, that the *immediately next* position does, played after this position has been begun, is read as a missed note and moves on by exactly one. One step, to the note that is literally next — never a search.
+
+When neither applies the player is stuck on purpose, and `跳过这个音` is theirs to press. The app never decides on its own that a wrong note meant something else.
+
+Timing is claimed once per position, from the first correct note that lands there. A second hand arriving afterwards belongs to the same onset, and a note played where the passage is held has no onset to be measured against, so it makes no claim at all. The player's tempo is the median of their own recent beat-to-time intervals.
+
+MIDI keys struck within 70 ms are one gesture. The window runs from the first key and is never extended — restarting it on every key turned a fast run into one enormous chord. Hands further apart than that are still one position; the passage waits for them rather than relying on the window.
+
 ## Pitch, and where a note is drawn
 
 MIDI numbers are the product's one pitch unit — the keyboard, the alignment, the report and the mentor all speak them. OpenSheetMusicDisplay reports half tones an octave lower, so `features/score/pitch` converts at that boundary, the way the pixel scale already does. The same module owns both how a pitch is spelled and which staff line that spelling sits on, because they are one decision: a MIDI 70 named `B♭4` has to be drawn on the B line, not the A space.

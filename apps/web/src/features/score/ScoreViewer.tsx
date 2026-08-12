@@ -32,7 +32,7 @@ interface Props {
   beatsPerMeasure: number
   errors?: ErrorEvent[]
   resolvedKeys?: Set<string>           // errorComparisonKey(error) 已改善
-  cursor?: { measure: number; beat: number; frozen?: boolean; confidence?: number } | null
+  cursor?: { measure: number; beat: number; waiting?: boolean } | null
   liveFeedback?: LivePerformanceState | null
   selectedErrorId?: string | null
   onErrorClick?: (e: ErrorEvent) => void
@@ -381,7 +381,7 @@ export function ScoreViewer(props: Props) {
       {sheetSize && props.cursor && (() => {
         const p = posOf(props.cursor.measure, props.cursor.beat, null, true)
         if (!p) return null
-        const lowConf = (props.cursor.confidence ?? 1) < 0.5 || props.cursor.frozen
+        const waiting = props.cursor.waiting === true
         const status = props.liveFeedback?.status ?? 'idle'
         const placement = sheetPlacement(p.left, p.top)
         return (
@@ -398,8 +398,8 @@ export function ScoreViewer(props: Props) {
             )}
             {/* Sits below the system so it cannot cover the played note or
                 the written-note ghost, which are the point of this overlay. */}
-            {lowConf && status !== 'corrected' && (
-              <span className="cursor-relocking">{t('relocking')}…</span>
+            {waiting && status !== 'corrected' && (
+              <span className="cursor-relocking">{t('waitingHere')}</span>
             )}
           </div>
         )

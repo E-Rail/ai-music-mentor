@@ -3,6 +3,8 @@ import { LiveTrace } from './LiveTrace'
 import type { LivePerformanceState, LiveTraceNote } from './livePerformance'
 import { measureLabel } from '../score/measureLabels'
 import { noteName } from '../score/pitch'
+import type { Hand } from '../score/hands'
+import type { ExpectedNote } from './liveTargets'
 
 export { noteName } from '../score/pitch'
 
@@ -15,6 +17,17 @@ const STATUS_TEXT = {
   corrected: 'liveStatusCorrected',
 } as const
 
+const HAND_TEXT: Record<Hand, 'liveHandLeft' | 'liveHandRight' | 'liveHandUnknown'> = {
+  left: 'liveHandLeft', right: 'liveHandRight', unknown: 'liveHandUnknown',
+}
+
+/** "左手 C3 · 右手 E4" — a student needs the hand, not just the pitch. */
+export function describeExpected(notes: ExpectedNote[]): string {
+  return notes
+    .map((note) => `${t(HAND_TEXT[note.hand])}${noteName(note.pitch)}`.trim())
+    .join(' · ')
+}
+
 /**
  * What you just played, first; what was written, second.
  *
@@ -23,7 +36,11 @@ const STATUS_TEXT = {
  * blank for the note that begins the take.
  */
 export function LivePanel(
-  { state, trace }: { state: LivePerformanceState; trace: LiveTraceNote[] },
+  { state, trace, onSkip }: {
+    state: LivePerformanceState
+    trace: LiveTraceNote[]
+    onSkip?: () => void
+  },
 ) {
   const timing = state.timing
   const timingLabel = !timing ? null
@@ -73,10 +90,26 @@ export function LivePanel(
         </div>
       </dl>
 
-      {!!state.missing.length && state.status !== 'waiting' && (
-        <p className="live-missing">{tf('liveMissingPitches', {
-          notes: state.missing.map(noteName).join(' · '),
-        })}</p>
+      {/* What this position still owes, named by hand. The passage holds here
+          until it is paid or the player decides to skip it — it never looks
+          elsewhere in the score for something a wrong note might have been. */}
+      {!!state.outstanding.length && state.status !== 'waiting' && (
+        <div className="live-owed">
+          <p className={state.blocked ? 'live-missing blocked' : 'live-missing'}>
+            {tf(state.blocked ? 'liveBlockedHere' : 'liveStillOwed', {
+              notes: describeExpected(state.outstanding),
+            })}
+          </p>
+          {state.outstanding.length > 1 && !state.blocked && (
+            <p className="live-hint">{t('liveWaitingBothHands')}</p>
+          )}
+          {onSkip && (
+            <button type="button" className="btn live-skip" onClick={onSkip}>
+              {t('liveSkipHere')}
+            </button>
+          )}
+          {onSkip && <p className="live-hint">{t('liveSkipHint')}</p>}
+        </div>
       )}
 
       <LiveTrace notes={trace} />

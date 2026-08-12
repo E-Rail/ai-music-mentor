@@ -62,16 +62,12 @@ export function MentorChat({
               <div>{message.text}</div>
               {message.role === 'assistant' && message.response && (
                 <>
-                  <div className={`chat-provider ${message.response.provider.startsWith('rules') ? 'fallback' : ''}`}>
-                    {message.response.provider.startsWith('rules')
-                      ? (message.response.provider === 'rules'
-                          ? t('mentorLocalRules') : t('mentorLocalFallback'))
-                      : tf('mentorProviderMeta', {
-                          provider: message.response.provider,
-                          model: message.response.model || 'OpenAI-compatible',
-                          latency: message.response.latencyMs ?? 0,
-                        })}
-                  </div>
+                  {message.response.provider.startsWith('rules') && (
+                    <div className="chat-provider fallback">
+                      {message.response.provider === 'rules'
+                        ? t('mentorLocalRules') : t('mentorLocalFallback')}
+                    </div>
+                  )}
                   {!!message.response.professionalGuidance.length && (
                     <ul className="chat-guidance">
                       {message.response.professionalGuidance.map((item) => (

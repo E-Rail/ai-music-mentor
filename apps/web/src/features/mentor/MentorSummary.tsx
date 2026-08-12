@@ -24,15 +24,12 @@ export function MentorSummary({ response, loading, onApplyPlan }: MentorSummaryP
     <div className="mentor-box">
       <div className="mentor-header">
         <div className="mentor-label">{t('mentorLayer')}</div>
-        <div className={`mentor-meta ${response.provider.startsWith('rules') ? 'fallback' : ''}`}>
-          {response.provider.startsWith('rules')
-            ? (response.provider === 'rules' ? t('mentorLocalRules') : t('mentorLocalFallback'))
-            : tf('mentorProviderMeta', {
-                provider: response.provider,
-                model: response.model || 'OpenAI-compatible',
-                latency: response.latencyMs ?? 0,
-              })}
-        </div>
+        {response.provider.startsWith('rules') && (
+          <div className="mentor-meta fallback">
+            {response.provider === 'rules'
+              ? t('mentorLocalRules') : t('mentorLocalFallback')}
+          </div>
+        )}
       </div>
       <div className="summary">{response.summary}</div>
       {response.evidence.length > 0 && (

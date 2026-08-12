@@ -495,7 +495,7 @@ test('a cancelled microphone transcription restores without restarting and can r
   })
 
   await page.reload()
-  await expect(page.getByText(/不会自动重新识别/)).toBeVisible()
+  await expect(page.getByText(/还没分析的录音/)).toBeVisible()
   await expect(page.getByRole('button', { name: '分析已保存录音 →' })).toBeEnabled()
   await expect(page.getByRole('button', { name: '放弃录音并返回曲目' })).toBeVisible()
   const scoreStage = page.getByRole('button', { name: /曲目 导入与选择范围/ })

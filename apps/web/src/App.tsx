@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { ScaleSwitch, useUiScale } from './features/shell/ScaleSwitch'
 import { api } from './api/client'
 import {
   measureLabel, measureLabelList, setScoreMeasureLabels,
@@ -1657,16 +1658,21 @@ export default function App() {
     )
   }
 
+  const [uiScale, setUiScale] = useUiScale()
+
   return (
     <div className="app">
       <div className="header">
         <h1>{t('appName')}</h1>
         <span className="subtitle">{t('appSubtitle')}</span>
+        <span className="spacer" />
+        <ScaleSwitch scale={uiScale} onChange={setUiScale} />
       </div>
 
       <StudioStepper active={studioStage} canOpen={canOpenStudioStage}
                      onOpen={openStudioStage} />
 
+      <div className="app-body scroll-pane">
       {(scoreDetail?.generated || exerciseScore?.generated) && (
         <div className="round-context" role="status">
           <span>{tf('roundContext', {
@@ -1990,7 +1996,8 @@ export default function App() {
             <div className="practice-studio">
               <div className="score-stage">
                 <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
-                             cursor={cursor} liveFeedback={recording ? liveFeedback : null} />
+                             cursor={cursor} follow={recording}
+                             liveFeedback={recording ? liveFeedback : null} />
               </div>
               {inputSource === 'microphone' && (
                 <aside className="input-dock">
@@ -2309,15 +2316,12 @@ export default function App() {
                     <span className="training-kicker">{t('aiPlanLabel')}</span>
                     <h3>{exercise.aiPlan?.title || t('exerciseGeneratedTitle')}</h3>
                   </div>
-                  <span className={`planner-status ${exercise.plannerProvider?.startsWith('rules') ? 'fallback' : ''}`}>
-                    {exercise.plannerProvider?.startsWith('rules')
-                      ? (exercise.plannerProvider === 'rules'
-                          ? t('exercisePlannerLocal') : t('exercisePlannerFallback'))
-                      : tf('exercisePlannerMeta', {
-                          provider: exercise.plannerProvider || 'AI',
-                          latency: exercise.plannerLatencyMs ?? 0,
-                        })}
-                  </span>
+                  {exercise.plannerProvider?.startsWith('rules') && (
+                    <span className="planner-status fallback">
+                      {exercise.plannerProvider === 'rules'
+                        ? t('exercisePlannerLocal') : t('exercisePlannerFallback')}
+                    </span>
+                  )}
                 </div>
                 {exercise.aiPlan?.rationale && <p>{exercise.aiPlan.rationale}</p>}
                 {exercise.aiPlan?.noteAcknowledgement && (
@@ -2450,6 +2454,7 @@ export default function App() {
                   <div className="retry-score-label">{t('retryGeneratedTarget')}</div>
                   <ScoreViewer xmlUrl={retryScoreXmlUrl}
                                beatsPerMeasure={retryScoreMeta.beatsPerMeasure} cursor={cursor}
+                               follow={recording}
                                liveFeedback={recording ? liveFeedback : null} />
                 </div>
               ) : (
@@ -2601,6 +2606,7 @@ export default function App() {
         </div>
       )}
       </Suspense>
+      </div>
     </div>
   )
 }

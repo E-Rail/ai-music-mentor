@@ -13,6 +13,7 @@
 // - 绿色框：再次演奏已改善
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { followScrollTop } from './followScroll'
 import { OpenSheetMusicDisplay } from 'opensheetmusicdisplay'
 import type { ErrorEvent } from '../../types'
 import { ERROR_TYPE_LABEL, t, tf } from '../../i18n/messages'
@@ -33,6 +34,8 @@ interface Props {
   errors?: ErrorEvent[]
   resolvedKeys?: Set<string>           // errorComparisonKey(error) 已改善
   cursor?: { measure: number; beat: number; waiting?: boolean } | null
+  /** Scroll the sheet to keep the cursor in view while playing. */
+  follow?: boolean
   liveFeedback?: LivePerformanceState | null
   selectedErrorId?: string | null
   onErrorClick?: (e: ErrorEvent) => void
@@ -233,8 +236,39 @@ export function ScoreViewer(props: Props) {
     )
   }
 
+  // Follow the place being played. The cursor's top is already in sheet
+  // coordinates, which is the same space this element scrolls through.
+  const followRef = useRef<HTMLDivElement>(null)
+  // posOf answers in percentages of the sheet, so the pixels come from what is
+  // actually laid out rather than from the viewBox.
+  const cursorAt = props.cursor && sheetSize
+    ? posOf(props.cursor.measure, props.cursor.beat, null, true)
+    : null
+  const cursorFraction = cursorAt ? Number.parseFloat(cursorAt.top) / 100 : null
+  const cursorSpan = cursorAt ? Number.parseFloat(cursorAt.height) / 100 : 0
+  useEffect(() => {
+    const view = followRef.current
+    if (!props.follow || !view || cursorFraction === null) return
+    const content = view.scrollHeight
+    const next = followScrollTop({
+      cursorTop: cursorFraction * content,
+      cursorHeight: cursorSpan * content,
+      viewportHeight: view.clientHeight,
+      scrollTop: view.scrollTop,
+      contentHeight: content,
+    })
+    if (next === null) return
+    view.scrollTo({
+      top: next,
+      // Someone who asked for less motion gets the jump instead of the slide.
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 'auto' : 'smooth',
+    })
+  }, [props.follow, cursorFraction, cursorSpan])
+
   return (
-    <div className="score-viewer" style={{ position: 'relative', minHeight: props.height ?? 260 }}>
+    <div ref={followRef} className={`score-viewer ${props.follow ? 'following' : ''}`}
+         style={{ position: 'relative', minHeight: props.height ?? 260 }}>
       <div ref={containerRef} style={{ width: '100%', overflow: 'hidden', background: 'white', borderRadius: 8 }} />
       {loadError && <div className="score-error" role="alert">⚠️ {loadError}</div>}
 

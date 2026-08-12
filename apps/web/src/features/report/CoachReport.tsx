@@ -70,7 +70,8 @@ export function CoachReport({
               high: t('inputQualityHigh'), medium: t('inputQualityMedium'),
               low: t('inputQualityLow'), insufficient: t('inputQualityInsufficient'),
             }[report.inputQuality.status]}</strong>
-            <span>{Math.round(report.inputQuality.confidence * 100)}% · {report.thresholdProfile}</span>
+            <span>{tf('inputQualityConfidence', {
+              value: Math.round(report.inputQuality.confidence * 100) })}</span>
           </div>
         )}
       </div>
@@ -123,7 +124,7 @@ export function CoachReport({
             <EvidenceDrawer report={report} error={selectedError} onPlayCompare={onPlayEvidence} />
           )}
           <details className="technical-details">
-            <summary>{t('technicalDetails')}</summary>
+            <summary>{t('musicalDetails')}</summary>
             <div className="evidence-layers">
               <section>
                 <h3>{t('verifiableFacts')}</h3>
@@ -178,7 +179,8 @@ function MetricsView({ report, baseline }: {
       <div className="limited-metrics-card">
         <strong>{t('limitedMetricsTitle')}</strong>
         <p>{t('limitedMetricsBody')}</p>
-        <span>{report.inputQuality.acceptedNoteCount} accepted · {report.inputQuality.rejectedNoteCount} filtered</span>
+        <span>{tf('inputQualityNotes', {
+          count: report.inputQuality.acceptedNoteCount })}</span>
       </div>
     )
   }

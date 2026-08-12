@@ -242,13 +242,20 @@ _LAST_SERVED_BY: list[str | None] = [None]
 
 
 def _provider_preferences() -> dict:
-    """Ask OpenRouter for a host that starts answering quickly.
+    """Ask OpenRouter for a host that answers quickly, and hold it to that.
 
-    The same model is served by many providers, and the slow ones spend most of
-    a minute before the first token. The interface is waiting on that first
-    token, so ordering by latency is what the student actually feels.
+    The same model is served by many hosts, and the slow ones spend most of a
+    minute before the first token. Naming one is therefore the whole latency
+    story — but `order` only binds when fallbacks are off. Left on, OpenRouter
+    routes past a pinned host freely: measured here with baidu pinned, calls
+    came back from StreamLake and took three times as long. So pinning a host
+    turns fallbacks off unless the setting says otherwise, and pinning nothing
+    leaves them on.
     """
-    preferences: dict = {"allow_fallbacks": config.MENTOR_PROVIDER_ALLOW_FALLBACKS}
+    allow_fallbacks = config.MENTOR_PROVIDER_ALLOW_FALLBACKS
+    if allow_fallbacks is None:
+        allow_fallbacks = not config.MENTOR_PROVIDER_ORDER
+    preferences: dict = {"allow_fallbacks": allow_fallbacks}
     if config.MENTOR_PROVIDER_ORDER:
         preferences["order"] = config.MENTOR_PROVIDER_ORDER
     elif config.MENTOR_PROVIDER_SORT:

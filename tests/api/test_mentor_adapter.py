@@ -381,7 +381,9 @@ def test_provider_preferences_ask_for_a_fast_host():
 
     order, sort = config.MENTOR_PROVIDER_ORDER, config.MENTOR_PROVIDER_SORT
     mode = config.MENTOR_RESPONSE_MODE
+    allow_fallbacks = config.MENTOR_PROVIDER_ALLOW_FALLBACKS
     try:
+        config.MENTOR_PROVIDER_ALLOW_FALLBACKS = None
         config.MENTOR_PROVIDER_ORDER = []
         config.MENTOR_PROVIDER_SORT = ""
         config.MENTOR_RESPONSE_MODE = "json_object"
@@ -394,12 +396,22 @@ def test_provider_preferences_ask_for_a_fast_host():
         }
 
         # A pinned host wins over the sort, and structured output narrows it.
+        # Pinning also turns fallbacks off: while they are on, `order` is only a
+        # preference and OpenRouter routes past it — measured with baidu pinned,
+        # answers came back from StreamLake three times slower, which makes the
+        # pin a fiction and the latency budget unenforceable.
         config.MENTOR_PROVIDER_ORDER = ["baidu"]
         config.MENTOR_RESPONSE_MODE = "json_schema"
         assert adapter._provider_preferences() == {
-            "allow_fallbacks": True, "order": ["baidu"], "require_parameters": True,
+            "allow_fallbacks": False, "order": ["baidu"], "require_parameters": True,
         }
+
+        # Saying so explicitly still wins, for anyone who would rather have a
+        # slow answer than none.
+        config.MENTOR_PROVIDER_ALLOW_FALLBACKS = True
+        assert adapter._provider_preferences()["allow_fallbacks"] is True
     finally:
         config.MENTOR_PROVIDER_ORDER = order
         config.MENTOR_PROVIDER_SORT = sort
         config.MENTOR_RESPONSE_MODE = mode
+        config.MENTOR_PROVIDER_ALLOW_FALLBACKS = allow_fallbacks

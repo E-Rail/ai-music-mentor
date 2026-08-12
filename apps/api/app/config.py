@@ -25,7 +25,13 @@ MENTOR_API_BASE = os.environ.get("MENTOR_API_BASE", "").rstrip("/")
 MENTOR_API_KEY = os.environ.get("MENTOR_API_KEY", "")
 MENTOR_MODEL = os.environ.get("MENTOR_MODEL", "")
 MENTOR_RESPONSE_MODE = os.environ.get("MENTOR_RESPONSE_MODE", "json_object")
-MENTOR_REASONING_EFFORT = os.environ.get("MENTOR_REASONING_EFFORT", "low").lower()
+# The mentor explains numbers that are already computed; it is not solving
+# anything. Private deliberation therefore buys nothing and costs twice — once
+# generating tokens nobody reads, and again when they crowd the answer out of
+# the ceiling and a truncated reply has to be re-asked. Measured on the same
+# host, dropping from "low" to none took time-to-first-token from 7.0s to 1.3s.
+# Models that cannot switch it off (gpt-oss) reject "none"; give them "low".
+MENTOR_REASONING_EFFORT = os.environ.get("MENTOR_REASONING_EFFORT", "none").lower()
 MENTOR_TIMEOUT_SECONDS = float(os.environ.get("MENTOR_TIMEOUT_SECONDS", "40"))
 MENTOR_CONNECT_TIMEOUT_SECONDS = float(os.environ.get(
     "MENTOR_CONNECT_TIMEOUT_SECONDS", "8"))
@@ -42,9 +48,18 @@ MENTOR_PROVIDER_ORDER = [
 # schema rejected — worse than its own default balancing. Pin a host you have
 # actually measured instead of asking for a generic "fast" one.
 MENTOR_PROVIDER_SORT = os.environ.get("MENTOR_PROVIDER_SORT", "").strip()
-# Keep fallbacks on: a pinned host that is down must not end the session.
-MENTOR_PROVIDER_ALLOW_FALLBACKS = os.environ.get(
-    "MENTOR_PROVIDER_ALLOW_FALLBACKS", "true").lower() not in {"0", "false", "no"}
+# A pinned host is only a preference while fallbacks are on, and OpenRouter
+# routes past it freely: with MENTOR_PROVIDER_ORDER=baidu set, measured calls
+# came back from StreamLake and DigitalOcean and took three times as long. So
+# naming a host now means it — pinning and hoping is not a latency guarantee.
+# Set MENTOR_PROVIDER_ALLOW_FALLBACKS=true to go back to preferring rather than
+# pinning; with no host named, fallbacks stay on either way. None means unset,
+# and the adapter answers it from the order it sees — deciding here would freeze
+# the answer at import against whatever the order happened to be then.
+_ALLOW_FALLBACKS_ENV = os.environ.get("MENTOR_PROVIDER_ALLOW_FALLBACKS", "").lower()
+MENTOR_PROVIDER_ALLOW_FALLBACKS: bool | None = (
+    None if not _ALLOW_FALLBACKS_ENV
+    else _ALLOW_FALLBACKS_ENV not in {"0", "false", "no"})
 MENTOR_READ_TIMEOUT_SECONDS = float(os.environ.get(
     "MENTOR_READ_TIMEOUT_SECONDS", str(MENTOR_TIMEOUT_SECONDS)))
 MENTOR_MAX_OUTPUT_TOKENS = int(os.environ.get("MENTOR_MAX_OUTPUT_TOKENS", "4000"))

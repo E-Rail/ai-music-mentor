@@ -96,14 +96,21 @@ def main() -> None:
     # 1. Exactly what is on the page, both hands together.
     correct = [dict(note) for note in written]
 
-    # 2. The same notes, but the left hand is always a beat-and-a-bit behind the
-    #    right. Far outside any chord window, and still the same position.
-    apart = []
-    for note in written:
-        moved = dict(note)
-        if note["hand"] == "left":
-            moved["beat"] = note["beat"] + 0.4      # ≈ 260 ms at 92 BPM
-        apart.append(moved)
+    # 2. The same notes, but the left hand is late every time — by more than a
+    #    chord window, and in the worst take by most of the bar it belongs to.
+    #    The page holds each of these left-hand notes for four beats, so a hand
+    #    this late is still playing the note it owes.
+    def left_hand_late(beats: float) -> list[dict]:
+        take = []
+        for note in written:
+            moved = dict(note)
+            if note["hand"] == "left":
+                moved["beat"] = note["beat"] + beats
+            take.append(moved)
+        return take
+
+    apart = left_hand_late(0.4)          # ≈ 260 ms at 92 BPM
+    struggling = left_hand_late(2.5)     # most of the bar behind
 
     # 3. Bar 2 beat 1 is written A4. Play B♭4 instead, then correct it.
     def with_wrong_note(fix: bool) -> list[dict]:
@@ -123,6 +130,8 @@ def main() -> None:
                    "Twinkle 1-4: both hands, as written"),
         write_take("twinkle-hands-apart", apart,
                    "Twinkle 1-4: left hand lands 260ms after the right"),
+        write_take("twinkle-left-hand-struggling", struggling,
+                   "Twinkle 1-4: left hand lands most of a bar late"),
         write_take("twinkle-wrong-note-fixed", with_wrong_note(fix=True),
                    "Twinkle 1-4: Bb4 for A4 in bar 2, then corrected"),
         write_take("twinkle-wrong-note-held", with_wrong_note(fix=False),

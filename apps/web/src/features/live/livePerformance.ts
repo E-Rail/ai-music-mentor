@@ -193,8 +193,8 @@ export class LivePerformanceTracker {
 
   begin(options: LiveSessionOptions): LivePerformanceState {
     this.targets = buildLiveTargets(
-      options.events, options.rangeStart, options.rangeEnd)
-    this.progress = new PassageProgress(this.targets)
+      options.events, options.rangeStart, options.rangeEnd, options.beatsPerMeasure)
+    this.progress = new PassageProgress(this.targets, options.beatsPerMeasure)
     this.clock = new PerformanceClock(options.bpm, options.beatsPerMeasure)
     this.trace = []
     this.sequence = 0

@@ -17,6 +17,14 @@ import { absoluteBeatOf } from './performanceClock'
 export interface ExpectedNote {
   pitch: number
   hand: Hand
+  /**
+   * Absolute beat at which this note stops sounding.
+   *
+   * A left-hand whole note is still the left hand's current note while the
+   * right hand plays four quarters over it — that is the whole of bar 1 of
+   * 小星星. A hand may claim its note for as long as the page holds it.
+   */
+  endsAtBeat: number
 }
 
 export interface LiveTarget {
@@ -29,7 +37,7 @@ export interface LiveTarget {
 }
 
 export function buildLiveTargets(
-  events: ScoreEvent[], start: number, end: number,
+  events: ScoreEvent[], start: number, end: number, beatsPerMeasure = 4,
 ): LiveTarget[] {
   const grouped = new Map<string, LiveTarget>()
   events
@@ -41,11 +49,13 @@ export function buildLiveTargets(
         absoluteBeat: event.absoluteBeat, pitches: [], expected: [], eventIds: [],
       }
       const hand = handOfEventId(event.eventId)
+      const endsAtBeat = absoluteBeatOf(event, beatsPerMeasure) +
+        (Number.isFinite(event.durationBeat) ? event.durationBeat : 1)
       const known = new Set(current.expected.map((note) => note.pitch))
       for (const pitch of event.pitches) {
         if (known.has(pitch)) continue
         known.add(pitch)
-        current.expected.push({ pitch, hand })
+        current.expected.push({ pitch, hand, endsAtBeat })
       }
       current.expected.sort((left, right) => left.pitch - right.pitch)
       current.pitches = current.expected.map((note) => note.pitch)
@@ -55,7 +65,7 @@ export function buildLiveTargets(
   // Absolute beats first so a meter change or a pickup bar cannot reorder the
   // sequence relative to the analyser.
   return [...grouped.values()].sort((left, right) =>
-    absoluteBeatOf(left, 4) - absoluteBeatOf(right, 4) ||
+    absoluteBeatOf(left, beatsPerMeasure) - absoluteBeatOf(right, beatsPerMeasure) ||
     left.measureNo - right.measureNo ||
     left.onsetBeat - right.onsetBeat)
 }

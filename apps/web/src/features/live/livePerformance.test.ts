@@ -41,6 +41,11 @@ const TWO_HANDS: ScoreEvent[] = [
   event({ eventId: 't:RH:m1:b2:2', measureNo: 1, onsetBeat: 2, absoluteBeat: 2, pitches: [67] }),
 ]
 
+/** Just the pitch and the hand — the sounding length is asserted separately. */
+function owed(notes: Array<{ pitch: number; hand: string }>) {
+  return notes.map((note) => ({ pitch: note.pitch, hand: note.hand }))
+}
+
 function tracker(events: ScoreEvent[], source: 'web-midi' | 'microphone' = 'web-midi') {
   const instance = new LivePerformanceTracker()
   instance.begin({
@@ -90,9 +95,12 @@ describe('PerformanceClock', () => {
 describe('a position on the page', () => {
   it('carries the hand that wrote each note', () => {
     const [first] = buildLiveTargets(TWO_HANDS, 1, 99)
-    expect(first.expected).toEqual([
+    expect(owed(first.expected)).toEqual([
       { pitch: 48, hand: 'left' }, { pitch: 60, hand: 'right' },
     ])
+    // The left hand holds its note through the whole bar; the right hand's
+    // first note stops after one beat.
+    expect(first.expected.map((note) => note.endsAtBeat)).toEqual([4, 1])
   })
 
   it('orders by absolute beat so a meter change cannot reshuffle the passage', () => {
@@ -113,7 +121,7 @@ describe('PassageProgress', () => {
     progress.strike([60])
     const half = progress.strike([64])
     expect(half.completed).toBe(false)
-    expect(half.outstanding).toEqual([{ pitch: 67, hand: 'right' }])
+    expect(owed(half.outstanding)).toEqual([{ pitch: 67, hand: 'right' }])
     expect(progress.index).toBe(1)
     const rest = progress.strike([67])
     expect(rest.completed).toBe(true)
@@ -136,26 +144,57 @@ describe('PassageProgress', () => {
     progress.strike([60])
     progress.strike([70])
     const fixed = progress.strike([61])
+    // The fix is reported where it belongs — the position it just completed.
     expect(fixed.completed).toBe(true)
+    expect(fixed.target?.pitches).toEqual([61])
     expect(progress.blocked).toBe(false)
-    expect(progress.target?.pitches).toEqual([62])
+    expect(progress.strike([62]).completed).toBe(true)
   })
 
-  it('treats a re-struck note as hunting, not as a mistake', () => {
-    // The left hand is owed and the player repeats the note they have while
-    // looking for it. The next position wants something else, so this is not
-    // moving on — and it is certainly not a wrong note.
-    const progress = new PassageProgress(buildLiveTargets([
-      event({ eventId: 'h:RH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [60] }),
-      event({ eventId: 'h:LH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [48], part: 'LH' }),
-      event({ eventId: 'h:RH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, pitches: [67] }),
-    ], 1, 99))
+  it('treats a re-struck note of a chord as hunting, not as a mistake', () => {
+    // One hand, two notes. The player finds the lower one, replays it while
+    // reaching for the upper one, and that is not a wrong note.
+    const progress = new PassageProgress(buildLiveTargets(CHORD, 1, 99))
     progress.strike([60])
-    const again = progress.strike([60])
-    expect(again.repeated).toEqual([60])
+    progress.strike([64])
+    const again = progress.strike([64])
+    expect(again.repeated).toEqual([64])
     expect(again.wrong).toEqual([])
     expect(again.blocked).toBe(false)
-    expect(again.outstanding).toEqual([{ pitch: 48, hand: 'left' }])
+    expect(owed(again.outstanding)).toEqual([{ pitch: 67, hand: 'right' }])
+  })
+
+  it('lets each hand travel at its own pace', () => {
+    // Bar 1 of 小星星: the left hand holds one note while the right hand plays
+    // four. The right hand must not have to wait, and the left hand must not
+    // be judged against wherever the right hand has got to.
+    const progress = new PassageProgress(buildLiveTargets(TWO_HANDS, 1, 99))
+    expect(progress.strike([60]).completed).toBe(false)   // left hand still owed
+    expect(progress.strike([60]).completed).toBe(true)    // right hand, beat 2
+    expect(progress.strike([67]).completed).toBe(true)    // right hand, beat 3
+    // The left hand finally arrives, three notes later. Its note is written to
+    // sound through this whole bar, so it is still the note it owes — not a
+    // wrong note against the right hand's position.
+    const late = progress.strike([48])
+    expect(late.wrong).toEqual([])
+    expect(late.accepted).toEqual([48])
+    expect(late.target?.onsetBeat).toBe(0)
+    expect(progress.blocked).toBe(false)
+  })
+
+  it('brings a hand up to the music once its note has stopped sounding', () => {
+    const progress = new PassageProgress(buildLiveTargets([
+      event({ eventId: 'q:RH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [60] }),
+      event({ eventId: 'q:LH:m1:b0:0', measureNo: 1, onsetBeat: 0, absoluteBeat: 0, pitches: [48] }),
+      event({ eventId: 'q:RH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, pitches: [62] }),
+      event({ eventId: 'q:LH:m1:b1:1', measureNo: 1, onsetBeat: 1, absoluteBeat: 1, pitches: [50], part: 'LH' }),
+    ], 1, 99))
+    progress.strike([60])
+    progress.strike([62])
+    // The left hand's first note was a quarter, so by beat 2 it has stopped
+    // sounding and was simply missed. C3 now is a wrong note; D3 is its next.
+    expect(progress.strike([50]).accepted).toEqual([50])
+    expect(progress.blocked).toBe(false)
   })
 
   it('lets a right-hand-only practice run keep going', () => {
@@ -163,7 +202,7 @@ describe('PassageProgress', () => {
     // are missed, not wrong, so the passage moves on one position at a time
     // instead of stalling on the first bar forever.
     const progress = new PassageProgress(buildLiveTargets(TWO_HANDS, 1, 99))
-    expect(progress.strike([60]).outstanding).toEqual([{ pitch: 48, hand: 'left' }])
+    expect(owed(progress.strike([60]).outstanding)).toEqual([{ pitch: 48, hand: 'left' }])
     expect(progress.strike([60]).target?.onsetBeat).toBe(1)
     expect(progress.strike([67]).target?.onsetBeat).toBe(2)
     expect(progress.blocked).toBe(false)
@@ -172,10 +211,13 @@ describe('PassageProgress', () => {
   it('will not move on for a note that is written neither here nor next', () => {
     const progress = new PassageProgress(buildLiveTargets(TWO_HANDS, 1, 99))
     progress.strike([60])
+    // The right hand is on beat 2 now, so its wrong note is reported there —
+    // where that hand actually is, not where the take began.
     const wrong = progress.strike([70])
     expect(wrong.wrong).toEqual([70])
     expect(wrong.blocked).toBe(true)
-    expect(progress.target?.onsetBeat).toBe(0)
+    expect(wrong.target?.onsetBeat).toBe(1)
+    expect(progress.strike([70]).target?.onsetBeat).toBe(1)
   })
 
   it('moves on only when the player says so', () => {
@@ -230,7 +272,7 @@ describe('LivePerformanceTracker', () => {
     const live = tracker(TWO_HANDS)
     const rightOnly = live.observe({ pitches: [60], atMs: 0 })
     expect(rightOnly.status).toBe('partial')
-    expect(rightOnly.outstanding).toEqual([{ pitch: 48, hand: 'left' }])
+    expect(owed(rightOnly.outstanding)).toEqual([{ pitch: 48, hand: 'left' }])
     expect(rightOnly.blocked).toBe(false)
     // The left hand lands 300 ms later — far outside any chord window, and
     // still the same position on the page.

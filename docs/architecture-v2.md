@@ -24,17 +24,19 @@ The demo intentionally remains a single-user application. Its boundaries are sha
 
 `features/live/passageProgress` holds the whole rule, and both input sources use it.
 
-A position on the page is one onset, however many staves it is written across. It is finished when every note in it has sounded — the two hands may land 20 ms or 400 ms apart, and it is still one position. Nothing advances until it is finished.
+**Each hand travels on its own.** A single cursor through the page cannot describe two-handed music: bar 1 of 小星星 is four right-hand quarter notes over one left-hand whole note, so while the right hand is on beat 3 the left hand is still on the note it struck at beat 1, because the page says to hold it. A shared cursor has to call one of those two positions wrong, and it is always the late-arriving hand that gets punished — which is how a two-handed take stopped dead on its first chord. So each hand walks its own lane, and a played note goes to the hand that is waiting for it. The hands need no coordination at all: they may land together or a beat apart and both are simply correct.
 
-A pitch that is written nowhere at this position is a **wrong note here**. The passage holds, names what it is still owed and which hand owes it, and looks no further. It is never matched against another position in the score. An earlier version ran a beam-search follower with a two-onset lookahead and a six-onset backward re-lock, which relocated mistakes and sometimes carried the student several notes past where they were; that follower is gone, and the live cursor now reads directly off this rule with no second opinion to reconcile.
+A hand may lag only while the page still holds its note. Once its note has stopped sounding and never arrived, that note is *missed*, and the hand is brought up to where the music now is — measured by the beat of the latest position where something correct actually sounded, never by another lane's cursor. A hand that has just finished a whole note points at a bar nobody has played yet; reading that as "the music has moved on" lets the other hand skip the note it is sitting on.
 
-The one exception is not a wrong note. A student practising one hand leaves the other hand's notes unplayed on purpose. So a strike this position does not want, that the *immediately next* position does, played after this position has been begun, is read as a missed note and moves on by exactly one. One step, to the note that is literally next — never a search.
+**A wrong note stops its hand where it is.** A pitch no lane is waiting for is a wrong note at the position that hand is on. It is never matched against another position in the score, and it never moves anything forward. The passage holds, names what it is still owed and which hand owes it, and looks no further. An earlier version ran a beam-search follower with a two-onset lookahead and a six-onset backward re-lock; it relocated mistakes and sometimes carried the student several notes past where they were. That follower is gone, and the live cursor reads directly off this rule with no second opinion to reconcile.
+
+The one exception is not a wrong note. Hands-separate practice leaves the other hand out on purpose, so a strike a lane's position does not want, that the lane's *immediately next* position does, played after that position has been begun or passed, is a missed note and moves that lane on by exactly one. One step, to the note that is literally next — never a search.
 
 When neither applies the player is stuck on purpose, and `跳过这个音` is theirs to press. The app never decides on its own that a wrong note meant something else.
 
 Timing is claimed once per position, from the first correct note that lands there. A second hand arriving afterwards belongs to the same onset, and a note played where the passage is held has no onset to be measured against, so it makes no claim at all. The player's tempo is the median of their own recent beat-to-time intervals.
 
-MIDI keys struck within 70 ms are one gesture. The window runs from the first key and is never extended — restarting it on every key turned a fast run into one enormous chord. Hands further apart than that are still one position; the passage waits for them rather than relying on the window.
+MIDI keys struck within 70 ms are one gesture. The window runs from the first key and is never extended — restarting it on every key turned a fast run into one enormous chord. Hands further apart than that are still one position; the lanes handle them, and the window is not asked to.
 
 ## Pitch, and where a note is drawn
 

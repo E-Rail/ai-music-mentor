@@ -8,6 +8,7 @@ demo score, so a sample cannot drift away from the page it is meant to match.
 |---|---|---|
 | `twinkle-correct.mid` | both hands, as written | walks bar 1 beat 1 → bar 4 beat 3, every position 和谱面一致 |
 | `twinkle-hands-apart.mid` | left hand lands 260 ms after the right | the panel says 还差 左手C3, then the same position completes — the position never shifts |
+| `twinkle-left-hand-struggling.mid` | left hand lands most of a bar late | the right hand runs on undisturbed and each late left-hand note is credited to its own position, because the page holds it that long |
 | `twinkle-wrong-note-fixed.mid` | B♭4 instead of A4 in bar 2, then corrected | holds at bar 2 beat 1 until A4 arrives, then 已更正 and carries on |
 | `twinkle-wrong-note-held.mid` | the same wrong note, played straight past | holds; every later note is judged against the position it is holding, and the passage never runs ahead |
 

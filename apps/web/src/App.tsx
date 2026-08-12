@@ -1698,8 +1698,10 @@ export default function App() {
       <Suspense fallback={<div className="panel score-loading">{t('scoreEngineLoading')}</div>}>
       {/* Step 1: 选曲 */}
       {step === 'select' && (
-        <div className="panel">
+        <div className={`panel ${scoreDetail ? 'fills-pane' : ''}`}>
           <h2>{t('scorePickerTitle')}</h2>
+          <div className={`select-workspace ${scoreDetail ? 'with-detail' : ''}`}>
+          <div className="select-library scroll-pane">
           <section className="library-section" aria-labelledby="demo-library-title">
             <div className="library-heading">
               <div>
@@ -1755,6 +1757,8 @@ export default function App() {
           <UploadZone onFile={importScore}
                       accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.webp"
                       disabled={loading} />
+          </div>
+          <div className="select-detail scroll-pane">
           {scoreDetail && normalization && (
             <section className="import-review" aria-labelledby="import-review-title">
               <div className="review-heading">
@@ -1867,6 +1871,8 @@ export default function App() {
               </div>
             </>
           )}
+          </div>
+          </div>
         </div>
       )}
 

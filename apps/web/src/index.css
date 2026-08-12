@@ -209,6 +209,40 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
   padding-bottom: var(--gap-lg);
 }
 
+/* Picking a song is two jobs at once — browsing the library and checking the
+   page you picked — so they sit beside each other instead of the second one
+   living 700px below the first. Before a song is chosen there is no second
+   column, and the library takes the whole width. */
+.select-workspace { display: grid; gap: var(--gap-lg); }
+.select-workspace.with-detail {
+  grid-template-columns: minmax(min(340px, 100%), .8fr) minmax(0, 1.4fr);
+  /* Stretch, not start: a column sized to its own content never reaches the
+     height that makes its overflow scroll, so it spills out of the panel
+     instead. */
+  align-items: stretch;
+  /* Each side scrolls on its own, so a long library cannot push the practice
+     range off the screen. */
+  min-height: 0;
+}
+.select-workspace.with-detail > .scroll-pane { min-height: 0; }
+
+/* A panel that should be exactly as tall as the space it was given, so the
+   columns inside it can scroll instead of the whole page growing. Measured
+   against the pane rather than a guess at the chrome above it. */
+.panel.fills-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  margin-bottom: 0;
+  min-height: 0;
+}
+.panel.fills-pane > .select-workspace { flex: 1 1 auto; }
+
+@media (max-width: 1000px) {
+  .select-workspace.with-detail { grid-template-columns: minmax(0, 1fr); }
+  .panel.fills-pane { height: auto; }
+}
+
 .header {
   display: flex; align-items: baseline; gap: var(--gap-sm);
   padding-bottom: var(--gap-sm); margin-bottom: var(--gap-sm);

@@ -1,5 +1,41 @@
 [
   {
+    "scoreId": "twinkle_star",
+    "title": "小星星",
+    "musicxml": "scores/twinkle_star.musicxml",
+    "tempo": 92.0,
+    "measureCount": 12,
+    "eventCount": 54,
+    "samples": []
+  },
+  {
+    "scoreId": "ode_to_joy",
+    "title": "欢乐颂",
+    "musicxml": "scores/ode_to_joy.musicxml",
+    "tempo": 100.0,
+    "measureCount": 8,
+    "eventCount": 38,
+    "samples": []
+  },
+  {
+    "scoreId": "two_tigers",
+    "title": "两只老虎",
+    "musicxml": "scores/two_tigers.musicxml",
+    "tempo": 108.0,
+    "measureCount": 8,
+    "eventCount": 40,
+    "samples": []
+  },
+  {
+    "scoreId": "jasmine_flower",
+    "title": "茉莉花",
+    "musicxml": "scores/jasmine_flower.musicxml",
+    "tempo": 76.0,
+    "measureCount": 8,
+    "eventCount": 32,
+    "samples": []
+  },
+  {
     "scoreId": "melody",
     "title": "晨光练习曲（单旋律）",
     "musicxml": "scores/melody.musicxml",

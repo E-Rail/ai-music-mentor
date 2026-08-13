@@ -53,10 +53,25 @@ export function workflowReducer(state: WorkflowState, event: WorkflowEvent): Wor
   switch (event.type) {
     case 'SCORE_SELECTED':
       if (state.capture) return reject(state, 'CAPTURE_ACTIVE')
-      return { ...state, phase: 'review', lastRejection: null }
+      if (state.phase === 'count_in' || state.phase === 'analysis') {
+        return reject(state, 'TRANSITION_IN_PROGRESS')
+      }
+      // A score is a hard workflow boundary. Do not carry a submitted capture,
+      // preserved retry, or stale analysis phase into the next piece.
+      return {
+        ...initialWorkflowState,
+        phase: 'review',
+        deviceConnected: state.deviceConnected,
+      }
     case 'OPEN_IMPORT':
       if (state.capture) return reject(state, 'CAPTURE_ACTIVE')
-      return { ...state, phase: 'import', lastRejection: null }
+      if (state.phase === 'count_in' || state.phase === 'analysis') {
+        return reject(state, 'TRANSITION_IN_PROGRESS')
+      }
+      return {
+        ...initialWorkflowState,
+        deviceConnected: state.deviceConnected,
+      }
     case 'START_DEVICE_SETUP':
       if (state.phase !== 'review' && state.phase !== 'report') return reject(state, 'SCORE_NOT_READY')
       return { ...state, phase: 'device_setup', lastRejection: null }
@@ -111,6 +126,10 @@ export function workflowReducer(state: WorkflowState, event: WorkflowEvent): Wor
       return { ...state, capture: null, submittedCapture: null, capturePreserved: false,
         phase: state.phase === 'retry' ? 'exercise' : 'review', lastRejection: null }
     case 'NAVIGATE':
+      if ((state.phase === 'count_in' || state.phase === 'analysis') &&
+          event.phase !== state.phase) {
+        return reject(state, 'TRANSITION_IN_PROGRESS')
+      }
       if (state.capture && event.phase !== state.phase && event.phase !== 'analysis') {
         return reject(state, 'CAPTURE_ACTIVE')
       }

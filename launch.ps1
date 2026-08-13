@@ -173,7 +173,7 @@ function Build-Web {
             }
             elseif ($null -ne $Npx) {
                 Invoke-Native -FilePath $Npx -Arguments @(
-                    "--yes", "pnpm@10.12.1", "install", "--frozen-lockfile"
+                    "--yes", "pnpm@11.21.0", "install", "--frozen-lockfile"
                 )
             }
             else {
@@ -185,6 +185,13 @@ function Build-Web {
             }
         }
 
+        # The model files the microphone path loads at run time. Copied and
+        # cached here so a lesson never waits on a download.
+        $NodeExe = Find-Application @("node.exe")
+        if ($null -eq $NodeExe) {
+            throw "Node.js is required to prepare the audio models."
+        }
+        Invoke-Native -FilePath $NodeExe -Arguments @("scripts\copy-audio-assets.mjs")
         Invoke-Native -FilePath $Tsc -Arguments @("-b")
         Invoke-Native -FilePath $Vite -Arguments @("build")
     }

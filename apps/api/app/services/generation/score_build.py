@@ -10,13 +10,32 @@ from pathlib import Path
 import music21
 import mido
 
-from app.schemas.models import ScoreEvent, ScoreMeta
+from app.schemas.models import InstrumentProfile, ScoreEvent, ScoreMeta
 
 PART_NAMES = {"RH": "Right Hand", "LH": "Left Hand"}
 
 
+def _dynamic_symbol(velocity: int) -> str:
+    if velocity < 32:
+        return "ppp"
+    if velocity < 42:
+        return "pp"
+    if velocity < 53:
+        return "p"
+    if velocity < 65:
+        return "mp"
+    if velocity < 79:
+        return "mf"
+    if velocity < 93:
+        return "f"
+    if velocity < 107:
+        return "ff"
+    return "fff"
+
+
 def events_to_musicxml(events: list[ScoreEvent], meta: ScoreMeta,
-                       tempo: float, title: str, out_path: Path) -> None:
+                       tempo: float, title: str, out_path: Path,
+                       instrument_profile: InstrumentProfile | str = InstrumentProfile.piano) -> None:
     """ScoreEvent 列表 → MusicXML 文件。事件必须属于完整小节。"""
     score = music21.stream.Score()
     score.insert(0, music21.metadata.Metadata())
@@ -25,11 +44,23 @@ def events_to_musicxml(events: list[ScoreEvent], meta: ScoreMeta,
     measures = sorted({e.measureNo for e in events})
     bpm_per_measure = meta.beatsPerMeasure
 
+    built: list[music21.stream.Part] = []
+    selected_instrument = InstrumentProfile(instrument_profile)
+    instrument_factory = {
+        InstrumentProfile.piano: music21.instrument.Piano,
+        InstrumentProfile.guitar: music21.instrument.AcousticGuitar,
+        InstrumentProfile.violin: music21.instrument.Violin,
+    }[selected_instrument]
+
     for part in parts:
         p = music21.stream.Part()
         p.partName = PART_NAMES.get(part, part)
-        p.insert(0, music21.instrument.Piano())
+        selected = instrument_factory()
+        if selected_instrument == InstrumentProfile.guitar:
+            selected.transposition = music21.interval.Interval(-12)
+        p.insert(0, selected)
         p_events = [e for e in events if e.part == part]
+        last_dynamic_target: int | None = None
         for m_no in measures:
             m = music21.stream.Measure(number=m_no)
             if m_no == measures[0]:
@@ -50,6 +81,11 @@ def events_to_musicxml(events: list[ScoreEvent], meta: ScoreMeta,
                     n = music21.chord.Chord(
                         [music21.pitch.Pitch(midi=pi) for pi in e.pitches],
                         quarterLength=e.durationBeat)
+                if (e.dynamicTarget is not None and
+                        e.dynamicTarget != last_dynamic_target):
+                    m.insert(e.onsetBeat, music21.dynamics.Dynamic(
+                        _dynamic_symbol(e.dynamicTarget)))
+                    last_dynamic_target = e.dynamicTarget
                 m.insert(e.onsetBeat, n)
                 cursor = max(cursor, e.onsetBeat + e.durationBeat)
             if cursor < bpm_per_measure:
@@ -57,6 +93,14 @@ def events_to_musicxml(events: list[ScoreEvent], meta: ScoreMeta,
                     quarterLength=bpm_per_measure - cursor))
             p.append(m)
         score.insert(0, p)
+        built.append(p)
+    # Two staves of one keyboard are braced together. Without it every renderer
+    # draws them as two unrelated players, which is the opposite of what a
+    # two-hand exercise is teaching.
+    if selected_instrument == InstrumentProfile.piano and len(built) > 1:
+        score.insert(0, music21.layout.StaffGroup(
+            built, name="Piano", abbreviation="Pno",
+            symbol="brace", barTogether=True))
     score.write("musicxml", fp=str(out_path))
 
 
@@ -82,7 +126,8 @@ def events_to_midi(events: list[ScoreEvent], meta: ScoreMeta,
             abs_on = (e.measureNo - 1) * meta.beatsPerMeasure + e.onsetBeat \
                 - base + r * span
             for pi in e.pitches:
-                msgs.append((abs_on, 1, pi, velocity))
+                target_velocity = e.dynamicTarget if e.dynamicTarget is not None else velocity
+                msgs.append((abs_on, 1, pi, target_velocity))
                 msgs.append((abs_on + e.durationBeat, 0, pi, 0))
     msgs.sort(key=lambda m: (m[0], m[1], m[2]))
     last = 0.0

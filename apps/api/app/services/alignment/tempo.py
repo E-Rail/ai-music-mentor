@@ -66,18 +66,34 @@ def fit_piecewise_tempo(matched: list[tuple[float, float]],
         return initial_tempo_map(0.0, 0.0, bpm)
 
     matched = sorted(matched)
-    # 相邻对差分
+    # 相邻对差分。极长间隔先不当成速度；它通常是停顿、重试某个音，
+    # 或设备短暂中断。后面将它建模成时间轴上的离散位移。
     inst: list[tuple[float, float]] = []  # (midBeat, secPerBeat)
+    raw_intervals: list[tuple[float, float, float, float]] = []
     for (b0, m0), (b1, m1) in zip(matched, matched[1:]):
         db, dm = b1 - b0, m1 - m0
         if db <= 0 or dm <= 0:
             continue
         spb = dm / db / 1000.0
+        raw_intervals.append((b0, b1, dm, spb))
         # 过滤异常差分（±60% 以外不纳入）
         if 0.4 * spb_default <= spb <= 2.5 * spb_default:
             inst.append(((b0 + b1) / 2, spb))
     if not inst:
         return initial_tempo_map(matched[0][0], matched[0][1], bpm)
+
+    normal_spb = statistics.median([spb for _, spb in inst])
+    pause_jumps: list[tuple[float, float, float]] = []  # (startBeat, resumeBeat, excessMs)
+    for b0, b1, dm, observed_spb in raw_intervals:
+        if observed_spb <= 2.5 * spb_default:
+            continue
+        midpoint = (b0 + b1) / 2
+        nearby = [spb for beat, spb in inst
+                  if abs(beat - midpoint) <= 1.5 * window_beats]
+        reference_spb = statistics.median(nearby) if nearby else normal_spb
+        excess_ms = dm - (b1 - b0) * reference_spb * 1000.0
+        if excess_ms >= 0.75 * spb_default * 1000.0:
+            pause_jumps.append((b0, b1, excess_ms))
 
     b_start, b_end = matched[0][0], matched[-1][0]
     anchors: list[tuple[float, float]] = []
@@ -88,6 +104,13 @@ def fit_piecewise_tempo(matched: list[tuple[float, float]],
         beats_grid.append(b)
     if beats_grid[-1] < b_end:
         beats_grid.append(b_end)
+    # A grid point at every resume beat preserves a long pause without
+    # smearing its offset across later measures.
+    beats_grid = sorted(set([
+        *beats_grid,
+        *(beat for start, resume, _ in pause_jumps
+          for beat in (start, resume) if b_start < beat < b_end),
+    ]))
 
     # 每个网格点的局部 spb = 窗口内瞬时 spb 中位数
     spb_at: list[float] = []
@@ -101,9 +124,35 @@ def fit_piecewise_tempo(matched: list[tuple[float, float]],
         b0, m0 = anchors[-1]
         b1 = beats_grid[i]
         spb = (spb_at[i - 1] + spb_at[i]) / 2
-        anchors.append((b1, m0 + (b1 - b0) * spb * 1000))
+        jump_ms = sum(excess for _, resume, excess in pause_jumps
+                      if b0 < resume <= b1)
+        anchors.append((b1, m0 + (b1 - b0) * spb * 1000 + jump_ms))
 
-    return TempoMap(anchors, spb_default)
+    # Re-anchor the integrated curve to the median local observation. Without
+    # this correction, a small tempo-estimation bias accumulates over a long
+    # take until later notes fall outside the matching gate. A local median
+    # follows genuine gradual tempo changes while ignoring isolated early/late
+    # notes that should remain diagnosable as timing errors.
+    base_map = TempoMap(anchors, spb_default)
+    corrected: list[tuple[float, float]] = []
+    correction_radius = max(1.0, window_beats / 2)
+    for grid_beat, grid_ms in anchors:
+        local_residuals = [
+            observed_ms - base_map.expected_ms(observed_beat)
+            for observed_beat, observed_ms in matched
+            if abs(observed_beat - grid_beat) <= correction_radius
+        ]
+        correction = (statistics.median(local_residuals)
+                      if local_residuals else 0.0)
+        corrected_ms = grid_ms + correction
+        if corrected:
+            previous_beat, previous_ms = corrected[-1]
+            minimum_step = ((grid_beat - previous_beat) * spb_default
+                            * 1000.0 * 0.20)
+            corrected_ms = max(corrected_ms, previous_ms + minimum_step)
+        corrected.append((grid_beat, corrected_ms))
+
+    return TempoMap(corrected, spb_default)
 
 
 def local_bpm_series(matched: list[tuple[float, float]],

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from app import config, storage
 from app.db import repositories
@@ -11,19 +12,37 @@ from app.services.file_store import artifact_path, local_file_store
 from app.services.importers import detect_importer
 from app.services.importers.base import ScoreImportError, ScoreLimitError
 from app.services.importers.midi import MidiScoreImporter
+from app.services.importers.vision import VisionScoreImporter
 
 
 def _new_score_id() -> str:
     return f"score_{uuid.uuid4().hex[:12]}"
 
 
+LibraryCategory = Literal["demo", "uploaded", "generated", "internal"]
+
+
+def _size_limit(filename: str, content: bytes) -> int:
+    """How large this kind of upload may be.
+
+    A phone photograph of a page is routinely several times the size of any
+    notation file, so it gets its own ceiling. Checking here rather than inside
+    the importer means an oversized file is refused before it is parsed.
+    """
+    if VisionScoreImporter().supports(filename, content):
+        return max(config.MAX_SCORE_IMAGE_BYTES, config.MAX_SCORE_BYTES)
+    return config.MAX_SCORE_BYTES
+
+
 def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
                  normalization: ScoreNormalization | None = None,
-                 builtin: bool = False) -> NormalizedScore:
+                 builtin: bool = False,
+                 library_category: LibraryCategory = "internal") -> NormalizedScore:
     if not content:
         raise ScoreImportError("文件为空")
-    if len(content) > config.MAX_SCORE_BYTES:
-        raise ScoreLimitError(f"文件超过 {config.MAX_SCORE_BYTES // (1024 * 1024)} MB 上限")
+    limit = _size_limit(filename, content)
+    if len(content) > limit:
+        raise ScoreLimitError(f"文件超过 {limit // (1024 * 1024)} MB 上限")
     resolved_id = score_id or _new_score_id()
     importer = detect_importer(filename, content)
     result = importer.import_bytes(filename, content, resolved_id, normalization)
@@ -46,7 +65,9 @@ def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
     normalized = result.normalized.model_copy(update={"sourceReferences": references})
     data = {
         "bundle": normalized.bundle.model_dump(), "builtin": builtin,
+        "libraryCategory": "demo" if builtin else library_category,
         "profileId": config.LOCAL_PROFILE_ID,
+        "importerVersion": config.SCORE_IMPORTER_VERSION,
         "sourceType": normalized.sourceType.value,
         "sourceName": Path(filename).name,
         "displayMode": normalized.displayMode.value,

@@ -50,6 +50,17 @@ def _valid_content() -> str:
     }, ensure_ascii=False)
 
 
+def _valid_chat_content() -> str:
+    return json.dumps({
+        "answer": "先直接回答：这是一次节奏定位问题。",
+        "intent": "diagnosis", "evidenceIds": ["ev_timing"],
+        "professionalGuidance": ["先把相邻两拍均分。"],
+        "actions": [{"type": "generate_exercise", "label": "生成节奏练习",
+                     "errorId": "err_timing"}],
+        "uncertainty": "没有视频证据。", "followUpQuestion": None,
+    }, ensure_ascii=False)
+
+
 def _patch_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
     original = httpx.Client
@@ -67,6 +78,12 @@ def _configure(monkeypatch, mode: str):
     monkeypatch.setattr(config, "MENTOR_MODEL", "fake-model")
     monkeypatch.setattr(config, "MENTOR_RESPONSE_MODE", mode)
     monkeypatch.setattr(config, "MENTOR_REASONING_EFFORT", "low")
+    # Routing preferences come from the developer's own .env. Pinning them here
+    # keeps these assertions about the adapter rather than about the machine.
+    monkeypatch.setattr(config, "MENTOR_PROVIDER_ORDER", [])
+    monkeypatch.setattr(config, "MENTOR_PROVIDER_SORT", "")
+    monkeypatch.setattr(config, "MENTOR_PROVIDER_ALLOW_FALLBACKS", True)
+    monkeypatch.setattr(config, "MENTOR_MAX_OUTPUT_TOKENS", 1_600)
 
 
 def test_json_schema_mode_sends_schema_and_validates(monkeypatch):
@@ -107,8 +124,57 @@ def test_openrouter_requires_parameter_capable_routes(monkeypatch):
     outcome = adapter.respond(_report())
 
     assert outcome.provider == "openrouter.ai"
-    assert captured["provider"] == {"require_parameters": True}
+    # Structured output narrows routing to capable hosts, and among those the
+    # request asks for the one that starts answering soonest.
+    assert captured["provider"] == {
+        "allow_fallbacks": True, "require_parameters": True,
+    }
     assert captured["reasoning"] == {"effort": "low", "exclude": True}
+
+
+def test_a_truncated_answer_is_asked_again_with_more_room(monkeypatch):
+    """A model cut off mid-JSON gets a wider ceiling, not the same question."""
+    ceilings: list[int] = []
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        ceilings.append(body["max_tokens"])
+        if len(ceilings) == 1:
+            return httpx.Response(200, json={"choices": [
+                {"finish_reason": "length", "message": {"content": '{"summary": "半'}},
+            ]})
+        return httpx.Response(200, json={"choices": [
+            {"finish_reason": "stop", "message": {"content": _valid_content()}},
+        ]})
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.respond(_report())
+
+    assert ceilings == [1_600, 4_800]
+    assert outcome.provider == "fake-provider.test"
+    assert outcome.response.summary
+
+
+def test_a_truncation_that_survives_more_room_is_not_asked_a_third_time(monkeypatch):
+    """Widening is the only thing that could help; when it does not, stop."""
+    calls = 0
+
+    def handler(_request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [
+            {"finish_reason": "length", "message": {"content": "{"}},
+        ]})
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.respond(_report())
+
+    # One at the configured ceiling, one widened. Not four.
+    assert calls == 2
+    assert outcome.provider == "rules-fallback"
+    assert outcome.response.summary
 
 
 def test_json_object_mode_and_malformed_retry_fall_back(monkeypatch):
@@ -215,6 +281,70 @@ def test_chat_history_is_bounded_and_sent_in_order(monkeypatch):
     assert messages[-1]["content"] == "继续怎么练？"
 
 
+def test_dedicated_chat_answers_current_message_and_uses_v4_prompt(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": _valid_chat_content()}}],
+        })
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.chat(
+        _error_report(), "No, I asked how syncopation works.",
+        selected_error_id="err_timing", practice_context={
+            "instrument": "piano",
+            "recentComparison": {"metricDelta": {"rhythmScore": 4}},
+        },
+    )
+
+    assert outcome.response.answer.startswith("先直接回答")
+    assert outcome.response.evidenceIds == ["ev_timing"]
+    assert captured["messages"][-1]["content"] == "No, I asked how syncopation works."
+    system = captured["messages"][0]["content"]
+    assert "Answer the user's current message directly" in system
+    assert "Respect corrections" in system
+    assert '"recentComparison"' in system
+    assert '"rhythmScore": 4' in system
+
+
+def test_chat_retries_503_once_then_succeeds(monkeypatch):
+    calls = 0
+
+    def handler(_request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, json={"error": "busy"})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": _valid_chat_content()}}],
+        })
+
+    _configure(monkeypatch, "json_object")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.chat(_error_report(), "为什么这里晚了？", "err_timing")
+    assert calls == 2
+    assert outcome.provider == "fake-provider.test"
+
+
+def test_chat_rejects_invented_evidence(monkeypatch):
+    content = json.loads(_valid_chat_content())
+    content["evidenceIds"] = ["ev_invented"]
+
+    def handler(_request: httpx.Request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(content)}}],
+        })
+
+    _configure(monkeypatch, "json_schema")
+    _patch_client(monkeypatch, handler)
+    outcome = adapter.chat(_error_report(), "解释一下", "err_timing")
+    assert outcome.provider == "rules-fallback"
+    assert outcome.response.intent == "clarification"
+
+
 def test_ai_exercise_planner_returns_grounded_parameters(monkeypatch):
     captured = {}
     content = json.dumps({
@@ -242,3 +372,46 @@ def test_ai_exercise_planner_returns_grounded_parameters(monkeypatch):
     assert outcome.response.strategy == "slow_ladder"
     assert captured["response_format"]["json_schema"]["name"] == "exercise_planner_response"
     assert "控制在五分钟" in captured["messages"][-1]["content"]
+
+
+def test_provider_preferences_ask_for_a_fast_host():
+    """Time-to-first-token, not throughput, is what the interface waits on."""
+    from app import config
+    from app.services.mentor import adapter
+
+    order, sort = config.MENTOR_PROVIDER_ORDER, config.MENTOR_PROVIDER_SORT
+    mode = config.MENTOR_RESPONSE_MODE
+    allow_fallbacks = config.MENTOR_PROVIDER_ALLOW_FALLBACKS
+    try:
+        config.MENTOR_PROVIDER_ALLOW_FALLBACKS = None
+        config.MENTOR_PROVIDER_ORDER = []
+        config.MENTOR_PROVIDER_SORT = ""
+        config.MENTOR_RESPONSE_MODE = "json_object"
+        # No override by default: OpenRouter's own balancing beat a generic sort.
+        assert adapter._provider_preferences() == {"allow_fallbacks": True}
+
+        config.MENTOR_PROVIDER_SORT = "latency"
+        assert adapter._provider_preferences() == {
+            "allow_fallbacks": True, "sort": "latency",
+        }
+
+        # A pinned host wins over the sort, and structured output narrows it.
+        # Pinning also turns fallbacks off: while they are on, `order` is only a
+        # preference and OpenRouter routes past it — measured with baidu pinned,
+        # answers came back from StreamLake three times slower, which makes the
+        # pin a fiction and the latency budget unenforceable.
+        config.MENTOR_PROVIDER_ORDER = ["baidu"]
+        config.MENTOR_RESPONSE_MODE = "json_schema"
+        assert adapter._provider_preferences() == {
+            "allow_fallbacks": False, "order": ["baidu"], "require_parameters": True,
+        }
+
+        # Saying so explicitly still wins, for anyone who would rather have a
+        # slow answer than none.
+        config.MENTOR_PROVIDER_ALLOW_FALLBACKS = True
+        assert adapter._provider_preferences()["allow_fallbacks"] is True
+    finally:
+        config.MENTOR_PROVIDER_ORDER = order
+        config.MENTOR_PROVIDER_SORT = sort
+        config.MENTOR_RESPONSE_MODE = mode
+        config.MENTOR_PROVIDER_ALLOW_FALLBACKS = allow_fallbacks

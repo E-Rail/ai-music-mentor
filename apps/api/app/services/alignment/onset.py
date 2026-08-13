@@ -15,6 +15,7 @@ class ScoreOnset(BaseModel):
     onsetId: str                    # scoreId:m{measure}:b{onset}
     measureNo: int
     onsetBeat: float
+    absoluteBeat: float | None = None
     durationBeat: float
     pitches: list[int]              # 各声部音高并集
     members: list[ScoreEvent]       # 该 onset 上的声部事件
@@ -33,9 +34,20 @@ def build_onsets(events: list[ScoreEvent]) -> list[ScoreOnset]:
             onsetId=f"{members[0].eventId.split(':')[0]}:m{m}:b{token}",
             measureNo=m,
             onsetBeat=onset,
+            absoluteBeat=next((member.absoluteBeat for member in members
+                               if member.absoluteBeat is not None), None),
             durationBeat=max(e.durationBeat for e in members),
             pitches=pitches,
             members=sorted(members, key=lambda e: e.part),
             optional=all(e.optional for e in members)))
-    out.sort(key=lambda o: (o.measureNo, o.onsetBeat))
+    out.sort(key=lambda o: (
+        o.absoluteBeat if o.absoluteBeat is not None else float("inf"),
+        o.measureNo, o.onsetBeat,
+    ))
     return out
+
+
+def score_onset_beat(onset: ScoreOnset, beats_per_measure: float) -> float:
+    """Return the exact imported timeline, with a legacy-score fallback."""
+    return (onset.absoluteBeat if onset.absoluteBeat is not None else
+            (onset.measureNo - 1) * beats_per_measure + onset.onsetBeat)

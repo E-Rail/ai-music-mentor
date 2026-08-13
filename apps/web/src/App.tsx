@@ -1,18 +1,46 @@
-import { lazy, Suspense, useEffect, useReducer, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { ScaleSwitch, useUiScale } from './features/shell/ScaleSwitch'
 import { api } from './api/client'
+import {
+  measureLabel, measureLabelList, setScoreMeasureLabels,
+} from './features/score/measureLabels'
+// One spelling for a note, everywhere: the strip of keys you are holding must
+// name the same note the staff does.
+import { noteName as midiName } from './features/score/pitch'
 import type {
-  ComparisonResult, DiagnosisReport, ErrorEvent, ExerciseResult,
-  MentorPlanItem, MentorResponse, PerformanceEvent, ScoreDetail, ScoreEvent, ScoreMeta, ScoreNormalization,
+  CaptureMeta, ComparisonResult, DiagnosisReport, ErrorEvent, ExerciseResult,
+  InputSource, InstrumentProfile, MentorChatResponse, MentorMemoryStatus,
+  MentorPlanItem, MentorResponse,
+  PerformanceEvent, ScoreDetail, ScoreEvent, ScoreMeta, ScoreNormalization,
+  ScoreSourceType,
 } from './types'
 import { MidiCapture } from './features/midi/midiCapture'
-import { FollowerClient, type FollowerPosition } from './features/follower/followerClient'
-import { errorDetailForDisplay } from './features/report/errorPresentation'
-import type { MidiPlayer } from './features/audio/player'
+import { MicrophoneCapture, type MicrophonePreview, type MicrophoneState } from './features/microphone/microphoneCapture'
+import { MicrophonePanel } from './features/microphone/MicrophonePanel'
+import type { InputDeviceDescriptor } from './features/input/PerformanceInputAdapter'
+import { MidiUploadInputAdapter } from './features/input/MidiUploadInputAdapter'
+import { StudioStepper, type StudioStage } from './features/practice/StudioStepper'
+import { LivePanel } from './features/live/LivePanel'
 import {
-  initialWorkflowState, workflowReducer, workspaceForPhase, type WorkflowPhase,
+  LivePerformanceTracker, idleLiveState, type LivePerformanceState,
+  type LiveTraceNote,
+} from './features/live'
+import { CoachReport } from './features/report/CoachReport'
+import { errorColor, errorDetailForDisplay } from './features/report/errorPresentation'
+import {
+  categoryForScore, partitionScoreLibrary, scoreDisplayTitle,
+  type ScoreLibraryItem,
+} from './features/score/library'
+import type { MentorChatMessage } from './features/mentor/MentorChat'
+import {
+  chatMessageId, readMentorChat, writeMentorChat,
+} from './features/mentor/chatStorage'
+import { MidiPlayer, ensureAudio, parsePitchNames, playPitches } from './features/audio/player'
+import {
+  initialWorkflowState, workflowReducer, type WorkflowPhase,
 } from './workflow/machine'
 import {
-  ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, SEVERITY_LABEL, t, tf,
+  CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, t, tf,
 } from './i18n/messages'
 
 const ScoreViewer = lazy(() => import('./features/score/ScoreViewer').then((module) => ({
@@ -36,56 +64,17 @@ type RecoveryContext = {
   rangeEnd: number
   baselineReportId?: string
   exerciseId?: string
+  inputSource?: InputSource
+  instrument?: InstrumentProfile
+  uploadedMidiRef?: string
+  uploadedFileName?: string
   savedAt: number
 }
-type MentorChatMessage = {
-  id: string
-  role: 'user' | 'assistant'
-  text: string
-  status: 'sending' | 'sent' | 'error'
-  response?: MentorResponse
-  error?: string
-}
 type ExerciseStage = 'design' | 'generated'
-type ScoreListItem = ScoreMeta & {
-  builtin: boolean
-  generated?: boolean
-  lineageDepth?: number
-}
+type SubmissionStage = 'idle' | 'saving' | 'transcribing' | 'analyzing' | 'complete' | 'error'
+type ScoreListItem = ScoreLibraryItem
 
 const RECOVERY_CONTEXT_KEY = 'ai-music-mentor:active-session'
-const MENTOR_CHAT_KEY_PREFIX = 'ai-music-mentor:mentor-chat:'
-const MENTOR_QUICK_QUESTIONS = [
-  t('mentorQuickWhy'), t('mentorQuickPractice'), t('mentorQuickPlan'),
-]
-
-function readMentorChat(reportId: string): MentorChatMessage[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(`${MENTOR_CHAT_KEY_PREFIX}${reportId}`) || '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((message) => message &&
-      (message.role === 'user' || message.role === 'assistant') &&
-      typeof message.text === 'string' && typeof message.id === 'string')
-      .map((message) => message.status === 'sending'
-        ? { ...message, status: 'error', error: t('mentorChatInterrupted') }
-        : message)
-      .slice(-40) as MentorChatMessage[]
-  } catch { return [] }
-}
-
-function writeMentorChat(reportId: string, messages: MentorChatMessage[]): void {
-  try {
-    localStorage.setItem(
-      `${MENTOR_CHAT_KEY_PREFIX}${reportId}`,
-      JSON.stringify(messages.slice(-40)),
-    )
-  } catch { /* text chat remains available in memory */ }
-}
-
-function clientMessageId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `chat_${Date.now()}_${Math.random()}`
-}
-
 function readRecoveryContext(): RecoveryContext | null {
   try {
     const raw = localStorage.getItem(RECOVERY_CONTEXT_KEY)
@@ -111,19 +100,33 @@ function clearStoredRecoveryContext(sessionId?: string): void {
   } catch { /* storage unavailable */ }
 }
 
-const STEP_LABELS: { key: Step; label: string }[] = [
-  { key: 'select', label: t('stepPrepare') },
-  { key: 'calibrate', label: t('stepDevice') },
-  { key: 'perform', label: t('stepPerform') },
-  { key: 'report', label: t('stepReport') },
-  { key: 'exercise', label: t('stepExercise') },
-  { key: 'compare', label: t('stepCompare') },
-]
-
 const PHASE_TO_STEP: Record<WorkflowPhase, Step> = {
   import: 'select', review: 'select', device_setup: 'calibrate', count_in: 'perform',
   recording: 'perform', analysis: 'perform', report: 'report', exercise: 'exercise',
   retry: 'compare', comparison: 'compare',
+}
+
+/**
+ * How much of a new piece to practise first.
+ *
+ * Nobody learns a piece by playing all of it badly. A take is only useful
+ * feedback if the player can hold the passage together, so a long import opens
+ * on its first section and says so; a short one opens whole. The control is
+ * right there either way — this is a starting point, not a rule.
+ */
+const FIRST_PASSAGE_MEASURES = 16
+
+function openingRange(measureCount: number): { start: number; end: number } {
+  const total = Math.max(1, Math.floor(measureCount) || 1)
+  return { start: 1, end: Math.min(total, FIRST_PASSAGE_MEASURES) }
+}
+
+/** Files that have to be looked at rather than parsed. */
+const READ_FROM_PAGE_SUFFIXES = /\.(pdf|png|jpe?g|webp|heic|heif)$/i
+
+/** A score that a model read off a page, rather than one someone exported. */
+function isReadFromPage(detail: { sourceType: ScoreSourceType }): boolean {
+  return detail.sourceType === 'pdf' || detail.sourceType === 'image'
 }
 
 export default function App() {
@@ -133,7 +136,16 @@ export default function App() {
   const [scoreId, setScoreId] = useState<string | null>(null)
   const [scoreDetail, setScoreDetail] = useState<ScoreDetail | null>(null)
   const [normalization, setNormalization] = useState<ScoreNormalization | null>(null)
-  const [meta, setMeta] = useState<ScoreMeta | null>(null)
+  const [meta, setMetaState] = useState<ScoreMeta | null>(null)
+  /**
+   * Setting the open score also publishes how its bars are named, so the staff,
+   * the live cursor and every report say the same bar number. Going through one
+   * setter is what makes that true no matter which path loaded the score.
+   */
+  const setMeta = useCallback((next: ScoreMeta | null) => {
+    setScoreMeasureLabels(next?.measureLabels)
+    setMetaState(next)
+  }, [])
   const [events, setEvents] = useState<ScoreEvent[]>([])
   const [rangeStart, setRangeStart] = useState(1)
   const [rangeEnd, setRangeEnd] = useState(8)
@@ -151,25 +163,59 @@ export default function App() {
 
   // 演奏
   const captureRef = useRef<MidiCapture | null>(null)
-  const followerRef = useRef<FollowerClient | null>(null)
+  const microphoneRef = useRef<MicrophoneCapture | null>(null)
+  const midiUploadRef = useRef<MidiUploadInputAdapter | null>(null)
   const playerRef = useRef<MidiPlayer | null>(null)
-  const playerLoadRef = useRef<Promise<MidiPlayer> | null>(null)
   const [midiSupported, setMidiSupported] = useState(true)
   const [inputs, setInputs] = useState<string[]>([])
   const [selectedInput, setSelectedInput] = useState<string | null>(null)
   const selectedInputRef = useRef<string | null>(null)
   const [recording, setRecording] = useState(false)
   const [liveNotes, setLiveNotes] = useState<number[]>([])
-  const [cursor, setCursor] = useState<{ measure: number; beat: number; frozen?: boolean; confidence?: number; bpm?: number } | null>(null)
+  // `waiting` means the passage is holding here: a note is still owed, or a
+  // wrong one has not been corrected yet.
+  const [cursor, setCursor] = useState<
+    { measure: number; beat: number; waiting?: boolean; bpm?: number } | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [recoveryContext, setRecoveryContext] = useState<RecoveryContext | null>(null)
   const [recoveredEvents, setRecoveredEvents] = useState<PerformanceEvent[]>([])
-  const [uploadMode, setUploadMode] = useState(false)
+  const [inputSource, setInputSource] = useState<InputSource>('web-midi')
+  const [instrument, setInstrument] = useState<InstrumentProfile>('piano')
+  const [uploadMode, setUploadModeState] = useState(false)
+  const [microphoneState, setMicrophoneState] = useState<MicrophoneState>('idle')
+  const [microphoneError, setMicrophoneError] = useState<string | null>(null)
+  const [microphoneDevices, setMicrophoneDevices] = useState<InputDeviceDescriptor[]>([])
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState('')
+  const [micSensitivity, setMicSensitivity] = useState(0.5)
+  const [micSensitivityPinned, setMicSensitivityPinned] = useState(false)
+  const [microphonePreview, setMicrophonePreview] = useState<MicrophonePreview>({
+    levelDb: -60, waveform: [], pitchHz: null, noiseFloorDb: null,
+    analysisGainDb: 0, signalToNoiseDb: null,
+  })
+  const [transcriptionProgress, setTranscriptionProgress] = useState(0)
+  const [captureMeta, setCaptureMeta] = useState<CaptureMeta | undefined>()
+  const [headphonesConfirmed, setHeadphonesConfirmed] = useState(false)
+  const [submissionStage, setSubmissionStage] = useState<SubmissionStage>('idle')
+  const [liveFeedback, setLiveFeedback] = useState<LivePerformanceState>(
+    idleLiveState('web-midi'))
+  const [liveTrace, setLiveTrace] = useState<LiveTraceNote[]>([])
+  const recordingRef = useRef(false)
+  // One tracker serves every input source, so the staff marker, the cursor and
+  // the live panel can never disagree about where the player is.
+  const liveRef = useRef(new LivePerformanceTracker())
+  const microphoneConnectRequestRef = useRef(0)
+  const sessionStartInFlightRef = useRef(false)
+  const submissionInFlightRef = useRef(false)
   const [calibration, setCalibration] = useState<CalibrationStatus>({
     noteCount: 0, centerC: false, lastPitch: null, lastVelocity: null,
     jitterMs: null, duplicateMessages: 0,
   })
   const uploadMidiRef = useRef<string | null>(null)
+  const setUploadMode = (enabled: boolean) => {
+    setUploadModeState(enabled)
+    if (enabled) setInputSource('midi-upload')
+    else if (inputSource === 'midi-upload') setInputSource('web-midi')
+  }
 
   // 报告
   const [report, setReport] = useState<DiagnosisReport | null>(null)
@@ -179,10 +225,13 @@ export default function App() {
   const [mentorLoading, setMentorLoading] = useState(false)
   const [mentorChat, setMentorChat] = useState<MentorChatMessage[]>([])
   const [mentorChatLoading, setMentorChatLoading] = useState(false)
+  const [mentorMemory, setMentorMemory] = useState<MentorMemoryStatus | null>(null)
   const [question, setQuestion] = useState('')
   const mentorCacheRef = useRef(new Map<string, MentorResponse>())
   const mentorPendingRef = useRef(new Map<string, Promise<MentorResponse>>())
   const mentorRequestRef = useRef(0)
+  const mentorChatRequestRef = useRef(0)
+  const mentorChatAbortRef = useRef<AbortController | null>(null)
 
   // 练习
   const [exercise, setExercise] = useState<ExerciseResult | null>(null)
@@ -194,6 +243,8 @@ export default function App() {
   const [loopCount, setLoopCount] = useState(4)
   const [hands, setHands] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
+  const exerciseRequestRef = useRef(0)
+  const scoreLoadRequestRef = useRef(0)
 
   // 对比
   const [comparison, setComparison] = useState<ComparisonResult | null>(null)
@@ -204,6 +255,127 @@ export default function App() {
   const [retryTempo, setRetryTempo] = useState<number | null>(null)
   const accompanimentBpmRef = useRef(0)
   const lastTempoMeasureRef = useRef<number | null>(null)
+
+  const resetPracticeBlock = () => {
+    // Reports, chats, generated results and retry captures belong to exactly
+    // one score context. Invalidate late async responses before clearing UI.
+    exerciseRequestRef.current += 1
+    mentorRequestRef.current += 1
+    mentorChatRequestRef.current += 1
+    mentorChatAbortRef.current?.abort()
+    mentorChatAbortRef.current = null
+    mentorPendingRef.current.clear()
+    mentorCacheRef.current.clear()
+    playerRef.current?.stop()
+    liveTempoHookRef.current = null
+    setPlaying(false)
+    setReport(null)
+    setBaselineReport(null)
+    setSelectedError(null)
+    setMentor(null)
+    setMentorLoading(false)
+    setMentorChat([])
+    setMentorChatLoading(false)
+    setMentorMemory(null)
+    setQuestion('')
+    setExercise(null)
+    setExerciseScore(null)
+    setExerciseStage('design')
+    setGenerationNote('')
+    setStrategy('auto')
+    setTempoRatio(0.6)
+    setLoopCount(4)
+    setHands(null)
+    setComparison(null)
+    setSessionId(null)
+    setRetrySessionId(null)
+    setRetryUploadName(null)
+    setRetryTempo(null)
+    setCursor(null)
+    setRecoveredEvents([])
+    setRecoveryContext(null)
+    setCaptureMeta(undefined)
+    setTranscriptionProgress(0)
+    setSubmissionStage('idle')
+    setLoading(false)
+    setRecording(false)
+    recordingRef.current = false
+    setLiveNotes([])
+    liveRef.current.reset()
+    setLiveTrace([])
+    setLiveFeedback(idleLiveState(
+      inputSource === 'microphone' ? 'microphone' : 'web-midi'))
+    uploadMidiRef.current = null
+    retryUploadMidiRef.current = null
+    clearStoredRecoveryContext()
+  }
+
+  useEffect(() => { recordingRef.current = recording }, [recording])
+
+  /**
+   * Arm the live layer for a take. Nothing here starts a clock: the
+   * performance timeline begins at the player's first note, so a student may
+   * take as long as they like after the count-in.
+   */
+  const prepareLiveFeedback = (
+    scoreEvents: ScoreEvent[], start: number, end: number,
+    beatsPerMeasure: number, bpm: number, source: 'web-midi' | 'microphone',
+  ) => {
+    setLiveTrace([])
+    setLiveFeedback(liveRef.current.begin({
+      events: scoreEvents, rangeStart: start, rangeEnd: end,
+      bpm, beatsPerMeasure, source,
+    }))
+  }
+
+  /**
+   * One place publishes everything that follows from a played note. The cursor
+   * is exactly where the passage says the player is — there is no second
+   * opinion to reconcile it with, which is what used to let the two drift.
+   */
+  const publishLiveState = (state: LivePerformanceState) => {
+    setLiveFeedback(state)
+    setLiveTrace([...liveRef.current.traceNotes])
+    // The listener does better when it knows what is due. A left hand played
+    // softer than the melody is otherwise easy to lose entirely, and a note
+    // that is never heard is a note the cursor walks straight past.
+    microphoneRef.current?.expect(state.outstanding.length
+      ? state.outstanding.map((note) => note.pitch)
+      : state.target?.pitches ?? [])
+    if (state.target) {
+      setCursor({
+        measure: state.target.measureNo, beat: state.target.onsetBeat,
+        waiting: state.blocked || state.outstanding.length > 0,
+        bpm: liveRef.current.bpm,
+      })
+    }
+    liveTempoHookRef.current?.(state, liveRef.current.bpm)
+  }
+
+  /** Lets the retry stage follow the player's tempo without a second matcher. */
+  const liveTempoHookRef = useRef<
+    ((state: LivePerformanceState, bpm: number) => void) | null>(null)
+
+  /**
+   * Move past a position the player has decided not to finish. Theirs to press:
+   * the app never rules that a wrong note "must have meant" a later one.
+   */
+  const skipLivePosition = () => {
+    if (!recordingRef.current) return
+    publishLiveState(liveRef.current.skipCurrent())
+  }
+
+  const observeLiveInput = (pitches: number[], atMs: number) => {
+    if (!recordingRef.current) return
+    publishLiveState(liveRef.current.observe({ pitches, atMs }))
+  }
+
+  // The meter is cosmetic. Notes arrive separately, from the detector's own
+  // onset decisions, so a held note is one note rather than a pitch sample
+  // every 180 ms and room tone never registers as playing at all.
+  const updateMicrophonePreview = (preview: MicrophonePreview) => {
+    setMicrophonePreview(preview)
+  }
 
   const loadMentor = async (activeReport: DiagnosisReport, prompt = '',
     errorId?: string, notifyOnError = true): Promise<MentorResponse | null> => {
@@ -300,8 +472,9 @@ export default function App() {
     capture.onBatch = (activeSessionId, batchId, sequence, batchEvents) =>
       api.persistEventBatch(activeSessionId, batchId, sequence, batchEvents)
     capture.onDeviceLost = (name) => {
+      capture.checkpoint()
       sendWorkflow({ type: 'DEVICE_LOST' })
-      setCursor((previous) => previous ? { ...previous, frozen: true } : previous)
+      setCursor((previous) => previous ? { ...previous, waiting: true } : previous)
       const active = readRecoveryContext()
       if (active) void api.markDeviceLost(active.sessionId).catch(() => {})
       setAlert({ type: 'warn', msg: tf('deviceLost', { name }) })
@@ -319,14 +492,67 @@ export default function App() {
       }
     }
     captureRef.current = capture
+    const microphone = new MicrophoneCapture()
+    microphone.onStateChange = (state, message) => {
+      setMicrophoneState(state)
+      if ((state === 'error' || state === 'permission-denied' || state === 'device-lost') && message) {
+        setMicrophoneError(message)
+      } else if (state === 'ready') {
+        setMicrophoneError(null)
+      }
+    }
+    microphone.onPreview = updateMicrophonePreview
+    microphone.onDetectedNote = (note) => {
+      // Every pitch heard at the attack, so a two-hand chord reads as one.
+      observeLiveInput(note.pitches, note.atMs)
+      // The detector re-tunes itself to the room; show what it settled on.
+      setMicSensitivity((previous) => {
+        const actual = microphone.detectionSensitivity
+        return Math.abs(actual - previous) > 0.01 ? actual : previous
+      })
+    }
+    microphone.onTranscriptionProgress = setTranscriptionProgress
+    microphone.onDeviceLost = () => {
+      recordingRef.current = false
+      setRecording(false)
+      sendWorkflow({ type: 'DEVICE_LOST' })
+      const active = readRecoveryContext()
+      if (active) void api.markDeviceLost(active.sessionId).catch(() => {})
+      setAlert({ type: 'warn', msg: t('microphoneDeviceLost') })
+    }
+    microphone.onLimitReached = () => {
+      recordingRef.current = false
+      setRecording(false)
+      setAlert({ type: 'warn', msg: t('microphoneLimitReached') })
+    }
+    microphoneRef.current = microphone
+    const midiUpload = new MidiUploadInputAdapter(api.uploadMidi)
+    midiUploadRef.current = midiUpload
     const stored = readRecoveryContext()
     if (stored) {
       void (async () => {
         let recovered: PerformanceEvent[] = []
+        let recoveredMeta: CaptureMeta | undefined
+        let recoveredUploadRef: string | undefined
+        let recoveredMicrophoneTake = false
         try {
-          recovered = await MidiCapture.recover(stored.sessionId)
-          if (!recovered.length) {
-            await MidiCapture.clearRecovery(stored.sessionId)
+          if (stored.inputSource === 'microphone') {
+            recoveredMicrophoneTake = await microphone.restoreTake(
+              stored.sessionId, stored.instrument ?? 'piano')
+          } else if (stored.inputSource === 'midi-upload') {
+            recoveredUploadRef = stored.uploadedMidiRef
+            if (recoveredUploadRef) {
+              midiUpload.restoreReference(
+                stored.sessionId, recoveredUploadRef, stored.uploadedFileName)
+            }
+          } else {
+            recovered = await MidiCapture.recover(stored.sessionId)
+          }
+          if (!recovered.length && !recoveredUploadRef && !recoveredMicrophoneTake) {
+            if (stored.inputSource === 'microphone') await microphone.discard(stored.sessionId)
+            else if (stored.inputSource === 'midi-upload') await midiUpload.discard(stored.sessionId)
+            else await MidiCapture.clearRecovery(stored.sessionId)
+            await api.discardSession(stored.sessionId).catch(() => {})
             clearStoredRecoveryContext(stored.sessionId)
             return
           }
@@ -349,13 +575,19 @@ export default function App() {
           setEvents(currentScore.scoreEvents); setScoreDetail(currentScore)
           setNormalization(currentScore.normalization)
           setRangeStart(stored.rangeStart); setRangeEnd(stored.rangeEnd)
-          setUploadMode(false); setRecording(false); setRecoveredEvents(recovered)
+          setInputSource(stored.inputSource ?? 'web-midi')
+          setInstrument(stored.instrument ?? 'piano')
+          setUploadModeState(stored.inputSource === 'midi-upload')
+          setRecording(false); setRecoveredEvents(recovered); setCaptureMeta(recoveredMeta)
           setRecoveryContext(stored)
           if (stored.kind === 'baseline') {
             setSessionId(stored.sessionId)
+            uploadMidiRef.current = recoveredUploadRef ?? null
             sendWorkflow({ type: 'CAPTURE_RESTORED', kind: 'baseline' })
           } else {
             setRetrySessionId(stored.sessionId)
+            retryUploadMidiRef.current = recoveredUploadRef ?? null
+            setRetryUploadName(stored.uploadedFileName ?? null)
             setBaselineReport(baseline); setReport(baseline)
             setExercise(restoredExercise)
             setExerciseScore(
@@ -369,7 +601,11 @@ export default function App() {
           }
           setAlert({
             type: 'info',
-            msg: tf('recoveredNotesCanSubmit', { count: recovered.length }),
+            msg: recoveredUploadRef
+              ? tf('recoveredMidiCanSubmit', { name: stored.uploadedFileName ?? 'MIDI' })
+              : recoveredMicrophoneTake
+                ? t('microphoneSavedTakeRecovered')
+              : tf('recoveredNotesCanSubmit', { count: recovered.length }),
           })
         } catch (error) {
           if (!cancelled) {
@@ -382,31 +618,34 @@ export default function App() {
     }
     return () => {
       cancelled = true
-      capture.dispose(); playerRef.current?.dispose(); followerRef.current?.stop()
+      capture.dispose(); microphone.dispose(); midiUpload.dispose()
+      playerRef.current?.dispose(); liveTempoHookRef.current = null
     }
   }, [])
 
-  const getPlayer = (): Promise<MidiPlayer> => {
-    if (playerRef.current) return Promise.resolve(playerRef.current)
-    if (!playerLoadRef.current) {
-      playerLoadRef.current = import('./features/audio/player')
-        .then(({ MidiPlayer: Player }) => {
-          const player = new Player()
-          playerRef.current = player
-          return player
-        })
-        .catch((error) => {
-          playerLoadRef.current = null
-          throw error
-        })
+  useEffect(() => {
+    let cancelled = false
+    if (!report) {
+      setMentorMemory(null)
+      return () => { cancelled = true }
     }
-    return playerLoadRef.current
+    api.getMentorMemory(report.reportId)
+      .then((memory) => { if (!cancelled) setMentorMemory(memory) })
+      .catch(() => { if (!cancelled) setMentorMemory(null) })
+    return () => { cancelled = true }
+  }, [report?.reportId])
+
+  const getPlayer = (): MidiPlayer => {
+    playerRef.current ??= new MidiPlayer()
+    return playerRef.current
   }
 
   const discardRecoveredRecording = async () => {
     const context = recoveryContext
     if (!context) return
-    await MidiCapture.clearRecovery(context.sessionId)
+    if (context.inputSource === 'microphone') await microphoneRef.current?.discard(context.sessionId)
+    else if (context.inputSource === 'midi-upload') await midiUploadRef.current?.discard(context.sessionId)
+    else await MidiCapture.clearRecovery(context.sessionId)
     await api.discardSession(context.sessionId).catch(() => {})
     clearStoredRecoveryContext(context.sessionId)
     sendWorkflow({ type: 'CAPTURE_DISCARDED' })
@@ -431,58 +670,148 @@ export default function App() {
     }
   }
 
+  const chooseInputSource = (source: InputSource) => {
+    if (loading || recording || workflow.phase === 'analysis') return
+    setInputSource(source)
+    setUploadModeState(source === 'midi-upload')
+    setAlert(null)
+    if (source === 'midi-upload') sendWorkflow({ type: 'DEVICE_CONNECTED' })
+    if (source === 'web-midi' && selectedInput) sendWorkflow({ type: 'DEVICE_CONNECTED' })
+    if (source === 'microphone' && microphoneState === 'ready') {
+      sendWorkflow({ type: 'DEVICE_CONNECTED' })
+    }
+  }
+
+  const connectMicrophone = async (deviceId = selectedMicrophoneId || undefined) => {
+    const requestId = ++microphoneConnectRequestRef.current
+    setLoading(true); setAlert(null)
+    setMicrophoneError(null)
+    try {
+      const devices = await microphoneRef.current!.connect(deviceId)
+      if (requestId !== microphoneConnectRequestRef.current) return
+      setMicrophoneDevices(devices)
+      const selected = deviceId && devices.some((device) => device.id === deviceId)
+        ? deviceId : devices[0]?.id ?? ''
+      setSelectedMicrophoneId(selected)
+      sendWorkflow({ type: 'DEVICE_CONNECTED' })
+      const previewWarning = microphoneRef.current?.previewWarning
+      setAlert({
+        type: previewWarning ? 'info' : 'success',
+        msg: previewWarning
+          ? tf('microphoneReadyWithPreviewWarning', { detail: previewWarning })
+          : t('microphoneReady'),
+      })
+    } catch (error) {
+      if (requestId !== microphoneConnectRequestRef.current) return
+      const state = microphoneRef.current?.state
+      const detail = (error as Error).message
+      setMicrophoneError(detail)
+      setAlert({
+        type: 'warn',
+        msg: state === 'permission-denied'
+          ? t('microphonePermissionDenied')
+          : tf('reconnectFailed', { detail }),
+      })
+    } finally {
+      if (requestId === microphoneConnectRequestRef.current) setLoading(false)
+    }
+  }
+
+  const cancelMicrophoneConnect = () => {
+    microphoneConnectRequestRef.current += 1
+    microphoneRef.current?.cancelConnect()
+    setLoading(false)
+    setMicrophoneError(null)
+    setAlert({ type: 'info', msg: t('microphoneRequestCancelled') })
+  }
+
   const discardActiveCapture = async () => {
     const activeSessionId = workflow.capture === 'retry' ? retrySessionId : sessionId
     if (!activeSessionId) return
-    if (recording) captureRef.current?.stopCapture({ persist: false })
-    followerRef.current?.stop(); playerRef.current?.stop()
+    if (recording && inputSource === 'microphone') {
+      await microphoneRef.current?.cancelTake(activeSessionId)
+    } else if (recording) captureRef.current?.stopCapture({ persist: false })
+    liveTempoHookRef.current = null; playerRef.current?.stop()
     await api.discardSession(activeSessionId).catch(() => {})
-    await MidiCapture.clearRecovery(activeSessionId)
+    if (inputSource === 'microphone') await microphoneRef.current?.discard(activeSessionId)
+    else if (inputSource === 'midi-upload') await midiUploadRef.current?.discard(activeSessionId)
+    else await MidiCapture.clearRecovery(activeSessionId)
     clearStoredRecoveryContext(activeSessionId)
+    recordingRef.current = false
     setRecording(false); setCursor(null); setRecoveredEvents([]); setRecoveryContext(null)
+    setSubmissionStage('idle')
     if (workflow.capture === 'retry') setRetrySessionId(null)
     else setSessionId(null)
     sendWorkflow({ type: 'CAPTURE_DISCARDED' })
     setAlert({ type: 'info', msg: t('captureDiscarded') })
   }
 
-  const stepIndex = STEP_LABELS.findIndex((s) => s.key === step)
+  const discardCaptureAndReturnToScores = async () => {
+    setLoading(true)
+    try {
+      await discardActiveCapture()
+      resetPracticeBlock()
+      sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
+      setAlert({ type: 'info', msg: t('returnedToScoresAfterDiscard') })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const rangeValid = !!meta && Number.isInteger(rangeStart) && Number.isInteger(rangeEnd) &&
     rangeStart >= 1 && rangeEnd >= rangeStart && rangeEnd <= meta.measureCount
 
   // ---- 选曲 ----
   const selectScore = async (id: string) => {
+    const requestId = ++scoreLoadRequestRef.current
     setLoading(true); setAlert(null)
     try {
       const r = await api.getScore(id)
+      if (requestId !== scoreLoadRequestRef.current) return
+      resetPracticeBlock()
       setScoreId(id); setMeta(r.metadata); setEvents(r.scoreEvents)
       setScoreDetail(r); setNormalization(r.normalization)
-      setExercise(null); setExerciseScore(null); setComparison(null)
-      setRangeEnd(r.metadata.measureCount)
-      setRangeStart(1)
+      const opening = openingRange(r.metadata.measureCount)
+      setRangeStart(opening.start); setRangeEnd(opening.end)
       sendWorkflow({ type: 'SCORE_SELECTED' })
-    } catch (e) { setAlert({ type: 'error', msg: tf('scoreLoadFailed', { detail: (e as Error).message }) }) }
-    setLoading(false)
+    } catch (e) {
+      if (requestId === scoreLoadRequestRef.current) {
+        setAlert({ type: 'error', msg: tf('scoreLoadFailed', { detail: (e as Error).message }) })
+      }
+    }
+    if (requestId === scoreLoadRequestRef.current) setLoading(false)
   }
 
   const importScore = async (file: File) => {
+    const requestId = ++scoreLoadRequestRef.current
     setLoading(true); setAlert(null)
+    // Reading a page takes tens of seconds, which is long enough that silence
+    // reads as a hang. Say what is happening before the wait, not after it.
+    if (READ_FROM_PAGE_SUFFIXES.test(file.name)) {
+      setAlert({ type: 'info', msg: t('uploadScoreReading') })
+    }
     try {
       const r = await api.importScore(file)
+      if (requestId !== scoreLoadRequestRef.current) return
+      resetPracticeBlock()
       setScores((s) => [...s.filter((x) => x.scoreId !== r.scoreId), {
         ...r.metadata, builtin: false, generated: false, lineageDepth: 0,
+        libraryCategory: r.libraryCategory ?? 'uploaded',
+        sourceName: r.sourceName ?? file.name,
       }])
       setScoreId(r.scoreId); setMeta(r.metadata); setEvents(r.scoreEvents)
       setScoreDetail(r); setNormalization(r.normalization)
-      setExercise(null); setExerciseScore(null); setComparison(null)
-      setRangeStart(1); setRangeEnd(r.metadata.measureCount)
+      const opening = openingRange(r.metadata.measureCount)
+      setRangeStart(opening.start); setRangeEnd(opening.end)
       sendWorkflow({ type: 'SCORE_SELECTED' })
       setAlert({ type: 'success', msg: tf('scoreImported', { title: r.metadata.title }) })
     } catch (e) {
-      const err = e as Error & { code?: string }
-      setAlert({ type: 'error', msg: err.code === 'SCORE_UNSUPPORTED' ? err.message : tf('scoreImportFailed', { detail: err.message }) })
+      if (requestId === scoreLoadRequestRef.current) {
+        const err = e as Error & { code?: string }
+        setAlert({ type: 'error', msg: err.code === 'SCORE_UNSUPPORTED' ? err.message : tf('scoreImportFailed', { detail: err.message }) })
+      }
     }
-    setLoading(false)
+    if (requestId === scoreLoadRequestRef.current) setLoading(false)
   }
 
   const confirmNormalization = async () => {
@@ -510,10 +839,12 @@ export default function App() {
       setAlert({ type: 'warn', msg: t('confirmNormalizationFirst') })
       return
     }
-    void getPlayer().catch(() => { /* 仅预取；真正播放时会显示错误 */ })
+    getPlayer()
     sendWorkflow({ type: 'START_DEVICE_SETUP' }); setAlert(null); setLiveNotes([])
     setCalibration({ noteCount: 0, centerC: false, lastPitch: null, lastVelocity: null,
       jitterMs: null, duplicateMessages: 0 })
+    if (inputSource === 'microphone' || inputSource === 'midi-upload') return
+    setLoading(true)
     try {
       const names = await captureRef.current!.requestAccess()
       setInputs(names); setMidiSupported(true)
@@ -524,10 +855,13 @@ export default function App() {
     } catch (e) {
       setMidiSupported(false); setUploadMode(true)
       setAlert({ type: 'warn', msg: t('midiPermissionFallback') })
+    } finally {
+      setLoading(false)
     }
   }
 
   const pickInput = (name: string) => {
+    if (loading || recording) return
     if (captureRef.current!.selectInput(name)) {
       selectedInputRef.current = name
       setSelectedInput(name); setUploadMode(false)
@@ -539,42 +873,50 @@ export default function App() {
   // ---- 创建会话 + 进入演奏 ----
   const startSession = async () => {
     if (!scoreId || !meta) return
-    if (!uploadMode && !selectedInput) {
+    if (sessionStartInFlightRef.current) return
+    if (inputSource === 'web-midi' && !selectedInput) {
       setAlert({ type: 'warn', msg: t('chooseMidiOrUpload') })
       return
     }
-    setLoading(true); setAlert(null)
+    if (inputSource === 'microphone' && microphoneState !== 'ready') {
+      setAlert({ type: 'warn', msg: t('microphoneConnect') })
+      return
+    }
+    sessionStartInFlightRef.current = true
+    setLoading(true); setAlert(null); setSubmissionStage('idle')
     let countInPlayer: MidiPlayer | null = null
-    let audioReady = uploadMode
-    if (!uploadMode) {
+    let audioReady = inputSource === 'midi-upload'
+    if (inputSource !== 'midi-upload') {
       try {
-        countInPlayer = await getPlayer()
+        countInPlayer = getPlayer()
         await countInPlayer.unlock()
         audioReady = true
       } catch { /* 会话仍可录制，稍后给出无预备拍提示 */ }
     }
     try {
-      const r = await api.createSession(scoreId, rangeStart, rangeEnd, uploadMode ? 'midi-file' : selectedInput!)
+      const device = inputSource === 'midi-upload' ? 'midi-file'
+        : inputSource === 'microphone' ? (selectedMicrophoneId || 'microphone')
+          : selectedInput!
+      const r = await api.createSession(
+        scoreId, rangeStart, rangeEnd, device, inputSource, instrument)
       setSessionId(r.sessionId)
       uploadMidiRef.current = null
+      setCaptureMeta(undefined)
       setCursor(null); setLiveNotes([]); setRecording(false)
-      if (uploadMode) {
+      if (inputSource === 'midi-upload') {
+        midiUploadRef.current!.start(r.sessionId, instrument)
         sendWorkflow({ type: 'CAPTURE_STARTED', kind: 'baseline' })
+        writeRecoveryContext({
+          kind: 'baseline', sessionId: r.sessionId, scoreId,
+          rangeStart, rangeEnd, inputSource, instrument, savedAt: Date.now(),
+        })
       } else {
         sendWorkflow({ type: 'COUNT_IN_STARTED' })
-        const follower = new FollowerClient()
-        follower.onPosition = (p) => setCursor({
-          measure: p.measureNo, beat: p.onsetBeat, frozen: p.frozen,
-          confidence: p.confidence, bpm: p.bpm,
-        })
-        follower.onError = () => setAlert({
-          type: 'warn', msg: t('realtimeCursorUnavailable'),
-        })
-        follower.start(buildOnsets(events, rangeStart, rangeEnd), meta.beatsPerMeasure, meta.tempo)
-        followerRef.current = follower
-        captureRef.current!.onGroup = (group) => follower.feed({
-          id: group.id, tOnMs: group.tOnMs, pitches: group.pitches,
-        })
+        if (inputSource === 'web-midi') {
+          captureRef.current!.onGroup = (group) => {
+            observeLiveInput(group.pitches, group.tOnMs)
+          }
+        }
         setAlert({ type: 'info', msg: tf('countInStarts', { beats: r.countIn.beats }) })
         try {
           if (!audioReady || !countInPlayer) throw new Error(t('audioContextUnavailable'))
@@ -582,17 +924,36 @@ export default function App() {
         } catch {
           setAlert({ type: 'warn', msg: t('countInUnavailable') })
         }
-        captureRef.current!.startCapture(r.sessionId)
+        prepareLiveFeedback(
+          events, rangeStart, rangeEnd, meta.beatsPerMeasure, meta.tempo,
+          inputSource === 'microphone' ? 'microphone' : 'web-midi',
+        )
+        recordingRef.current = true
+        if (inputSource === 'microphone') {
+          microphoneRef.current!.start(r.sessionId, instrument)
+        } else {
+          captureRef.current!.startCapture(r.sessionId)
+        }
         sendWorkflow({ type: 'CAPTURE_STARTED', kind: 'baseline' })
         writeRecoveryContext({
           kind: 'baseline', sessionId: r.sessionId, scoreId,
-          rangeStart, rangeEnd, savedAt: Date.now(),
+          rangeStart, rangeEnd, inputSource, instrument, savedAt: Date.now(),
         })
         setRecording(true)
-        setAlert({ type: 'info', msg: t('recordingDeterministic') })
+        setAlert({
+          type: 'info',
+          msg: inputSource === 'microphone'
+            ? t('microphoneRecording') : t('recordingDeterministic'),
+        })
       }
-    } catch (e) { setAlert({ type: 'error', msg: tf('createSessionFailed', { detail: (e as Error).message }) }) }
-    setLoading(false)
+    } catch (e) {
+      recordingRef.current = false
+      setRecording(false)
+      setAlert({ type: 'error', msg: tf('createSessionFailed', { detail: (e as Error).message }) })
+    } finally {
+      sessionStartInFlightRef.current = false
+      setLoading(false)
+    }
   }
 
   // ---- 上传 MIDI 降级 ----
@@ -601,55 +962,98 @@ export default function App() {
     uploadMidiRef.current = null
     setLoading(true); setAlert(null)
     try {
-      const r = await api.uploadMidi(sessionId, file)
+      const r = await midiUploadRef.current!.upload(file)
       setAlert({ type: 'success', msg: tf('midiUploaded', { name: file.name }) })
-      uploadMidiRef.current = r.uploadedMidiRef
+      uploadMidiRef.current = r.uploadedMidiRef ?? null
+      const context = readRecoveryContext()
+      if (context?.sessionId === sessionId && r.uploadedMidiRef) {
+        const updated = {
+          ...context, uploadedMidiRef: r.uploadedMidiRef,
+          uploadedFileName: file.name, savedAt: Date.now(),
+        }
+        writeRecoveryContext(updated)
+        setRecoveryContext(updated)
+      }
     } catch (e) { setAlert({ type: 'error', msg: tf('uploadFailed', { detail: (e as Error).message }) }) }
     setLoading(false)
   }
   // ---- 停止演奏 → 提交分析 ----
   const stopAndAnalyze = async () => {
     if (!sessionId) return
-    if (uploadMode && !uploadMidiRef.current) {
+    if (submissionInFlightRef.current) return
+    if (inputSource === 'midi-upload' && !uploadMidiRef.current) {
       setAlert({ type: 'warn', msg: t('uploadPerformanceFirst') })
       return
     }
+    submissionInFlightRef.current = true
     setLoading(true); setAlert(null)
-    const usingRecoveredEvents = recoveryContext?.kind === 'baseline' && recoveredEvents.length > 0
+    setSubmissionStage(inputSource === 'microphone' ? 'transcribing' : 'saving')
+    const usingRecoveredEvents = recoveryContext?.kind === 'baseline' && (
+      recoveredEvents.length > 0 || (inputSource === 'microphone' && !!captureMeta))
     let eventsToSubmit: PerformanceEvent[] = []
     let midiRef: string | undefined
-    if (uploadMode && uploadMidiRef.current) {
+    let submittedCaptureMeta = captureMeta
+    if (inputSource === 'midi-upload' && uploadMidiRef.current) {
       midiRef = uploadMidiRef.current
     } else if (usingRecoveredEvents) {
       eventsToSubmit = recoveredEvents
+    } else if (inputSource === 'microphone') {
+      recordingRef.current = false
+      setRecording(false)
+      setTranscriptionProgress(0)
+      try {
+        const result = await microphoneRef.current!.stop()
+        eventsToSubmit = result.events
+        submittedCaptureMeta = result.captureMeta
+        setCaptureMeta(result.captureMeta)
+      } catch (error) {
+        submissionInFlightRef.current = false
+        setLoading(false)
+        const failure = error as Error & { code?: string }
+        if (failure.code === 'TRANSCRIPTION_CANCELLED') {
+          setSubmissionStage('idle')
+          setAlert({ type: 'info', msg: t('transcriptionCancelledSaved') })
+        } else {
+          setSubmissionStage('error')
+          setAlert({ type: 'warn', msg: tf('transcriptionFailed', { detail: failure.message }) })
+        }
+        return
+      }
     } else {
+      recordingRef.current = false
       setRecording(false)
       eventsToSubmit = captureRef.current!.stopCapture()
       await captureRef.current!.flushBatches()
     }
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     setCursor(null)
     sendWorkflow({ type: 'SUBMIT_CAPTURE' })
+    setSubmissionStage('analyzing')
     try {
-      const r = await api.finishSession(sessionId, eventsToSubmit, midiRef)
+      const r = await api.finishSession(
+        sessionId, eventsToSubmit, midiRef, submittedCaptureMeta)
       const rep = await api.getReport(r.reportId)
       setReport(rep); setBaselineReport(rep)
       setSelectedError(rep.errors[0] ?? null)
       setMentor(null)
       setMentorChat(readMentorChat(rep.reportId))
       sendWorkflow({ type: 'ANALYSIS_COMPLETED' })
-      await MidiCapture.clearRecovery(sessionId)
+      setSubmissionStage('complete')
+      if (inputSource === 'microphone') await microphoneRef.current?.discard(sessionId)
+      else if (inputSource === 'midi-upload') await midiUploadRef.current?.discard(sessionId)
+      else await MidiCapture.clearRecovery(sessionId)
       clearStoredRecoveryContext(sessionId)
       setRecoveredEvents([]); setRecoveryContext(null)
       // 预取导师解释
       void loadMentor(rep, '', rep.errors[0]?.id, false)
     } catch (e) {
+      setSubmissionStage('error')
       const err = e as Error & { code?: string }
       if (err.code === 'ALIGNMENT_LOW_CONFIDENCE') {
         setAlert({ type: 'warn', msg: t('lowAlignmentConfidence') })
       } else { setAlert({ type: 'error', msg: tf('analysisFailed', { detail: err.message }) }) }
       sendWorkflow({ type: 'ANALYSIS_FAILED' })
-      if (!uploadMode && !usingRecoveredEvents) {
+      if (inputSource !== 'midi-upload' && !usingRecoveredEvents) {
         const context = readRecoveryContext()
         if (context && eventsToSubmit.length) {
           setRecoveryContext(context)
@@ -657,20 +1061,23 @@ export default function App() {
         }
       }
     }
+    submissionInFlightRef.current = false
     setLoading(false)
   }
 
   // ---- 导师追问 ----
   const askMentor = async (prompt?: string, retryMessageId?: string) => {
-    if (!report || mentorChatLoading || mentorLoading) return
+    if (!report || mentorChatLoading) return
+    const activeReportId = report.reportId
+    const requestId = ++mentorChatRequestRef.current
     const text = (prompt ?? question).trim()
     if (!text) return
     setAlert(null)
     const history = mentorChat
       .filter((message) => message.status === 'sent')
-      .map((message) => ({ role: message.role, content: message.text }))
+      .map((message) => ({ role: message.role, content: message.text.slice(0, 2_000) }))
       .slice(-10)
-    const userId = retryMessageId ?? clientMessageId()
+    const userId = retryMessageId ?? chatMessageId()
     let pendingMessages = retryMessageId
       ? mentorChat.map((message) => message.id === retryMessageId
         ? { ...message, status: 'sending' as const, error: undefined }
@@ -682,22 +1089,27 @@ export default function App() {
     setMentorChat(pendingMessages)
     writeMentorChat(report.reportId, pendingMessages)
     setMentorChatLoading(true)
+    const controller = new AbortController()
+    mentorChatAbortRef.current = controller
     try {
-      const response = await api.mentor(
-        report.reportId, text, selectedError?.id, history)
+      const response = await api.mentorChat(
+        report.reportId, text, selectedError?.id, history, controller.signal)
+      if (requestId !== mentorChatRequestRef.current || report.reportId !== activeReportId) return
       pendingMessages = [
         ...pendingMessages.map((message) => message.id === userId
           ? { ...message, status: 'sent' as const, error: undefined }
           : message),
         {
-          id: clientMessageId(), role: 'assistant' as const,
-          text: response.summary, status: 'sent' as const, response,
+          id: chatMessageId(), role: 'assistant' as const,
+          text: response.answer, status: 'sent' as const, response,
         },
       ]
       setMentorChat(pendingMessages)
       writeMentorChat(report.reportId, pendingMessages)
+      if (response.memory) setMentorMemory(response.memory)
       if (!prompt) setQuestion('')
     } catch (error) {
+      if (requestId !== mentorChatRequestRef.current) return
       const detail = (error as Error).message
       pendingMessages = pendingMessages.map((message) => message.id === userId
         ? { ...message, status: 'error' as const, error: detail }
@@ -706,13 +1118,62 @@ export default function App() {
       writeMentorChat(report.reportId, pendingMessages)
       setAlert({ type: 'warn', msg: tf('mentorUnavailableWithDetail', { detail }) })
     } finally {
-      setMentorChatLoading(false)
+      if (mentorChatAbortRef.current === controller) mentorChatAbortRef.current = null
+      if (requestId === mentorChatRequestRef.current) setMentorChatLoading(false)
     }
+  }
+
+  const forgetMentorMemory = async () => {
+    if (!report) return
+    try {
+      await api.forgetMentorMemory(report.reportId)
+      setMentorChat([])
+      writeMentorChat(report.reportId, [])
+      setMentorMemory((previous) => ({
+        enabled: true,
+        scopeId: previous?.scopeId ?? `score:${report.scoreId}`,
+        rememberedTurnCount: 0,
+        updatedAt: null,
+      }))
+      setAlert({ type: 'info', msg: t('mentorMemoryForgotten') })
+    } catch (error) {
+      setAlert({
+        type: 'warn',
+        msg: tf('mentorMemoryForgetFailed', { detail: (error as Error).message }),
+      })
+    }
+  }
+
+  const applyChatAction = (response: MentorChatResponse, actionIndex: number) => {
+    const action = response.actions[actionIndex]
+    if (!action || !report) return
+    if (action.type === 'select_error' && action.errorId) {
+      const error = report.errors.find((item) => item.id === action.errorId)
+      if (error) chooseError(report, error)
+      return
+    }
+    if (action.type === 'generate_exercise') {
+      if (action.errorId) {
+        const error = report.errors.find((item) => item.id === action.errorId)
+        if (error) setSelectedError(error)
+      }
+      setBaselineReport(report)
+      setExercise(null)
+      setExerciseScore(null)
+      setComparison(null)
+      setExerciseStage('design')
+      sendWorkflow({ type: 'EXERCISE_OPENED' })
+      return
+    }
+    if (action.type === 'retry') setStep(exercise ? 'compare' : 'calibrate')
   }
 
   // ---- 生成练习 ----
   const genExercise = async () => {
     if (!report) return
+    const requestId = ++exerciseRequestRef.current
+    const sourceReportId = report.reportId
+    const sourceScoreId = report.scoreId
     setLoading(true); setAlert(null)
     try {
       const r = await api.createExercise(report.reportId,
@@ -720,6 +1181,8 @@ export default function App() {
         { strategy, tempoRatio, loopCount, hands }, generationNote, true)
       if (!r.practiceScoreId) throw new Error(t('exerciseScoreUnavailable'))
       const generatedScore = await api.getScore(r.practiceScoreId)
+      if (requestId !== exerciseRequestRef.current ||
+          report.reportId !== sourceReportId || report.scoreId !== sourceScoreId) return
       setExercise(r)
       setExerciseScore(generatedScore)
       setBaselineReport(report)
@@ -729,6 +1192,8 @@ export default function App() {
         {
           ...generatedScore.metadata, builtin: false, generated: true,
           lineageDepth: generatedScore.lineageDepth ?? r.lineageDepth ?? 1,
+          libraryCategory: generatedScore.libraryCategory ?? 'generated',
+          sourceName: generatedScore.sourceName,
         },
       ])
       if (r.aiPlan) {
@@ -739,16 +1204,22 @@ export default function App() {
       }
       setExerciseStage('generated')
       const strategyLabel = EXERCISE_STRATEGIES.find(([key]) => key === r.ruleId)?.[1] || r.ruleId
-      setAlert({ type: 'success', msg: tf('exerciseGenerated', { rule: strategyLabel, measures: r.sourceMeasures.join('-') }) })
-    } catch (e) { setAlert({ type: 'error', msg: tf('exerciseFailed', { detail: (e as Error).message }) }) }
-    setLoading(false)
+      setAlert({ type: 'success', msg: tf('exerciseGenerated', {
+        rule: strategyLabel, measures: measureLabelList(r.sourceMeasures, '-'),
+      }) })
+    } catch (e) {
+      if (requestId === exerciseRequestRef.current) {
+        setAlert({ type: 'error', msg: tf('exerciseFailed', { detail: (e as Error).message }) })
+      }
+    }
+    if (requestId === exerciseRequestRef.current) setLoading(false)
   }
 
   const playExercise = async () => {
     if (!exercise) return
     setPlaying(true)
     try {
-      const player = await getPlayer()
+      const player = getPlayer()
       await player.unlock()
       const midi = await player.loadMidi(exercise.midiUrl)
       await player.play(midi, { onEnd: () => setPlaying(false) })
@@ -760,7 +1231,6 @@ export default function App() {
 
   const playEvidence = async (text: string) => {
     try {
-      const { ensureAudio, parsePitchNames, playPitches } = await import('./features/audio/player')
       await ensureAudio()
       const pitches = parsePitchNames(text)
       if (pitches.length) await playPitches(pitches)
@@ -778,20 +1248,26 @@ export default function App() {
   // ---- 伴奏 + 再次演奏 → 对比 ----
   const startAccompaniment = async () => {
     if (!baselineReport) return
+    if (sessionStartInFlightRef.current) return
     if (!exercise) {
       setAlert({ type: 'warn', msg: t('generateExerciseBeforeRetry') })
       setStep('exercise')
       return
     }
-    if (!uploadMode && !selectedInput) {
+    if (inputSource === 'web-midi' && !selectedInput) {
       setAlert({ type: 'warn', msg: t('midiReconnectRequired') })
       return
     }
-    setLoading(true); setAlert(null)
+    if (inputSource === 'microphone' && microphoneState !== 'ready') {
+      setAlert({ type: 'warn', msg: t('microphoneConnect') })
+      return
+    }
+    sessionStartInFlightRef.current = true
+    setLoading(true); setAlert(null); setSubmissionStage('idle')
     setPlaying(false)
     setComparison(null); setCursor(null); setRetryTempo(null); setRetryUploadName(null)
     retryUploadMidiRef.current = null
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     let captureStarted = false
     let createdSessionId: string | null = null
     try {
@@ -802,91 +1278,124 @@ export default function App() {
       setExerciseScore(targetScore)
       const retryRangeStart = 1
       const retryRangeEnd = targetScore.metadata.measureCount
-      const player = await getPlayer()
-      await player.unlock()
+      const accompanimentAllowed = inputSource !== 'microphone' || headphonesConfirmed
+      const player = accompanimentAllowed ? getPlayer() : null
+      if (player) await player.unlock()
       const s = await api.createSession(
         targetScore.scoreId, retryRangeStart, retryRangeEnd,
-        uploadMode ? 'midi-file' : selectedInput!,
+        inputSource === 'midi-upload' ? 'midi-file'
+          : inputSource === 'microphone' ? (selectedMicrophoneId || 'microphone')
+            : selectedInput!,
+        inputSource, instrument,
       )
       createdSessionId = s.sessionId
       setRetrySessionId(s.sessionId)
+      setCaptureMeta(undefined)
       sendWorkflow({ type: 'RETRY_STARTED' })
-      const acc = await api.createAccompaniment(
-        targetScore.scoreId, retryRangeStart, retryRangeEnd, accMode,
-      )
-      const midi = await player.loadMidi(acc.midiUrl)
-      accompanimentBpmRef.current = acc.baseTempo
+      const acc = accompanimentAllowed
+        ? await api.createAccompaniment(
+            targetScore.scoreId, retryRangeStart, retryRangeEnd, accMode)
+        : null
+      const midi = acc && player ? await player.loadMidi(acc.midiUrl) : null
+      accompanimentBpmRef.current = acc?.baseTempo ?? targetScore.metadata.tempo
       lastTempoMeasureRef.current = null
-      setRetryTempo(acc.baseTempo)
-      if (!uploadMode) {
-        const follower = new FollowerClient()
-        follower.onPosition = (position: FollowerPosition) => {
-          setCursor({
-            measure: position.measureNo, beat: position.onsetBeat,
-            frozen: position.frozen, confidence: position.confidence, bpm: position.bpm,
-          })
-          if (lastTempoMeasureRef.current === null) {
-            lastTempoMeasureRef.current = position.measureNo
-          } else if (position.measureNo !== lastTempoMeasureRef.current) {
-            lastTempoMeasureRef.current = position.measureNo
-            if (accMode === 'flexible' && !position.frozen &&
-                position.confidence >= 0.6 && position.bpm > 0) {
-              const next = player.followTempo(accompanimentBpmRef.current, position.bpm)
-              accompanimentBpmRef.current = next
-              player.setBpm(next)
-              setRetryTempo(Math.round(next * 10) / 10)
-            }
-          }
-        }
-        follower.onError = () => setAlert({
-          type: 'warn', msg: t('accompanimentFollowerUnavailable'),
-        })
-        follower.start(
-          buildOnsets(targetScore.scoreEvents, retryRangeStart, retryRangeEnd),
+      setRetryTempo(acc?.baseTempo ?? null)
+      if (inputSource !== 'midi-upload') {
+        prepareLiveFeedback(
+          targetScore.scoreEvents, retryRangeStart, retryRangeEnd,
           targetScore.metadata.beatsPerMeasure, targetScore.metadata.tempo,
+          inputSource === 'microphone' ? 'microphone' : 'web-midi',
         )
-        followerRef.current = follower
-        captureRef.current!.onGroup = (group) => follower.feed({
-          id: group.id, tOnMs: group.tOnMs, pitches: group.pitches,
-        })
+        recordingRef.current = true
+      }
+      if (inputSource === 'web-midi') {
+        // Flexible accompaniment follows the tempo the player is holding, once
+        // per bar so it bends with them rather than chasing every note.
+        liveTempoHookRef.current = (state, bpm) => {
+          const measure = state.target?.measureNo
+          if (measure == null) return
+          if (lastTempoMeasureRef.current === null) {
+            lastTempoMeasureRef.current = measure
+            return
+          }
+          if (measure === lastTempoMeasureRef.current) return
+          lastTempoMeasureRef.current = measure
+          if (accMode !== 'flexible' || state.blocked || !(bpm > 0)) return
+          const next = player!.followTempo(accompanimentBpmRef.current, bpm)
+          accompanimentBpmRef.current = next
+          player!.setBpm(next)
+          setRetryTempo(Math.round(next * 10) / 10)
+        }
+        captureRef.current!.onGroup = (group) => {
+          observeLiveInput(group.pitches, group.tOnMs)
+        }
         captureRef.current!.startCapture(s.sessionId)
         sendWorkflow({ type: 'CAPTURE_STARTED', kind: 'retry' })
         writeRecoveryContext({
           kind: 'retry', sessionId: s.sessionId, scoreId: targetScore.scoreId,
           rangeStart: retryRangeStart, rangeEnd: retryRangeEnd,
           baselineReportId: baselineReport.reportId, exerciseId: exercise.exerciseId,
-          savedAt: Date.now(),
+          inputSource, instrument, savedAt: Date.now(),
+        })
+        captureStarted = true
+        setRecording(true)
+      } else if (inputSource === 'microphone') {
+        microphoneRef.current!.start(s.sessionId, instrument)
+        sendWorkflow({ type: 'CAPTURE_STARTED', kind: 'retry' })
+        writeRecoveryContext({
+          kind: 'retry', sessionId: s.sessionId, scoreId: targetScore.scoreId,
+          rangeStart: retryRangeStart, rangeEnd: retryRangeEnd,
+          baselineReportId: baselineReport.reportId, exerciseId: exercise.exerciseId,
+          inputSource, instrument, savedAt: Date.now(),
         })
         captureStarted = true
         setRecording(true)
       } else {
+        midiUploadRef.current!.start(s.sessionId, instrument)
         sendWorkflow({ type: 'CAPTURE_STARTED', kind: 'retry' })
+        writeRecoveryContext({
+          kind: 'retry', sessionId: s.sessionId, scoreId: targetScore.scoreId,
+          rangeStart: retryRangeStart, rangeEnd: retryRangeEnd,
+          baselineReportId: baselineReport.reportId, exerciseId: exercise.exerciseId,
+          inputSource, instrument, savedAt: Date.now(),
+        })
       }
-      await player.play(midi, {
-        volume: -10,
-        onEnd: () => setAlert({ type: 'info', msg: t('accompanimentEnded') }),
-      })
+      if (midi && player) {
+        await player.play(midi, {
+          volume: -10,
+          onEnd: () => setAlert({ type: 'info', msg: t('accompanimentEnded') }),
+        })
+      }
       setAlert({
         type: 'info',
-        msg: uploadMode
+        msg: inputSource === 'microphone' && !headphonesConfirmed
+          ? t('microphoneRecording')
+          : uploadMode
           ? t('accompanimentUploadStarted')
           : tf('accompanimentStarted', {
               mode: accMode === 'flexible' ? t('flexibleTempoDescription') : t('fixedTempoDescription'),
             }),
       })
     } catch (e) {
-      if (captureStarted) captureRef.current!.stopCapture({ persist: false })
+      if (captureStarted && inputSource === 'microphone' && createdSessionId) {
+        await microphoneRef.current?.cancelTake(createdSessionId)
+      } else if (captureStarted) captureRef.current!.stopCapture({ persist: false })
       if (createdSessionId) {
         await api.discardSession(createdSessionId).catch(() => {})
-        await MidiCapture.clearRecovery(createdSessionId)
+        if (inputSource === 'microphone') await microphoneRef.current?.discard(createdSessionId)
+        else if (inputSource === 'midi-upload') await midiUploadRef.current?.discard(createdSessionId)
+        else await MidiCapture.clearRecovery(createdSessionId)
         clearStoredRecoveryContext(createdSessionId)
       }
-      followerRef.current?.stop(); playerRef.current?.stop()
+      liveTempoHookRef.current = null; playerRef.current?.stop()
+      recordingRef.current = false
       setRecording(false); setRetrySessionId(null)
       sendWorkflow({ type: 'CAPTURE_DISCARDED' })
       setAlert({ type: 'error', msg: tf('accompanimentFailed', { detail: (e as Error).message }) })
+    } finally {
+      sessionStartInFlightRef.current = false
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const onUploadRetryMidi = async (file: File) => {
@@ -895,9 +1404,18 @@ export default function App() {
     setRetryUploadName(null)
     setLoading(true); setAlert(null)
     try {
-      const result = await api.uploadMidi(retrySessionId, file)
-      retryUploadMidiRef.current = result.uploadedMidiRef
+      const result = await midiUploadRef.current!.upload(file)
+      retryUploadMidiRef.current = result.uploadedMidiRef ?? null
       setRetryUploadName(file.name)
+      const context = readRecoveryContext()
+      if (context?.sessionId === retrySessionId && result.uploadedMidiRef) {
+        const updated = {
+          ...context, uploadedMidiRef: result.uploadedMidiRef,
+          uploadedFileName: file.name, savedAt: Date.now(),
+        }
+        writeRecoveryContext(updated)
+        setRecoveryContext(updated)
+      }
       setAlert({ type: 'success', msg: tf('retryMidiUploaded', { name: file.name }) })
     } catch (error) {
       setAlert({ type: 'error', msg: tf('retryMidiUploadFailed', { detail: (error as Error).message }) })
@@ -908,14 +1426,20 @@ export default function App() {
   const cancelRetry = async () => {
     const activeSessionId = retrySessionId
     setLoading(true)
-    if (recording) captureRef.current?.stopCapture({ persist: false })
-    playerRef.current?.stop(); followerRef.current?.stop()
+    if (recording && inputSource === 'microphone' && activeSessionId) {
+      await microphoneRef.current?.cancelTake(activeSessionId)
+    } else if (recording) captureRef.current?.stopCapture({ persist: false })
+    playerRef.current?.stop(); liveTempoHookRef.current = null
     if (activeSessionId) {
       await api.discardSession(activeSessionId).catch(() => {})
-      await MidiCapture.clearRecovery(activeSessionId)
+      if (inputSource === 'microphone') await microphoneRef.current?.discard(activeSessionId)
+      else if (inputSource === 'midi-upload') await midiUploadRef.current?.discard(activeSessionId)
+      else await MidiCapture.clearRecovery(activeSessionId)
       clearStoredRecoveryContext(activeSessionId)
     }
+    recordingRef.current = false
     setRecording(false); setRetrySessionId(null); setRetryTempo(null); setCursor(null)
+    setSubmissionStage('idle')
     setRecoveredEvents([]); setRecoveryContext(null); setRetryUploadName(null)
     retryUploadMidiRef.current = null
     sendWorkflow({ type: 'CAPTURE_DISCARDED' })
@@ -925,28 +1449,57 @@ export default function App() {
 
   const stopRetryAndCompare = async () => {
     if (!retrySessionId || !baselineReport) return
-    if (uploadMode && !retryUploadMidiRef.current) {
+    if (submissionInFlightRef.current) return
+    if (inputSource === 'midi-upload' && !retryUploadMidiRef.current) {
       setAlert({ type: 'warn', msg: t('uploadFreshRetryFirst') })
       return
     }
+    submissionInFlightRef.current = true
     setLoading(true); setAlert(null)
-    const usingRecoveredEvents = recoveryContext?.kind === 'retry' && recoveredEvents.length > 0
+    setSubmissionStage(inputSource === 'microphone' ? 'transcribing' : 'saving')
+    const usingRecoveredEvents = recoveryContext?.kind === 'retry' && (
+      recoveredEvents.length > 0 || (inputSource === 'microphone' && !!captureMeta))
     let ev: PerformanceEvent[] = []
     let ref: string | undefined
-    if (uploadMode && retryUploadMidiRef.current) {
+    let retryCaptureMeta = captureMeta
+    if (inputSource === 'midi-upload' && retryUploadMidiRef.current) {
       ref = retryUploadMidiRef.current
     } else if (usingRecoveredEvents) {
       ev = recoveredEvents
+    } else if (inputSource === 'microphone') {
+      recordingRef.current = false
+      setRecording(false)
+      setTranscriptionProgress(0)
+      try {
+        const result = await microphoneRef.current!.stop()
+        ev = result.events
+        retryCaptureMeta = result.captureMeta
+        setCaptureMeta(result.captureMeta)
+      } catch (error) {
+        submissionInFlightRef.current = false
+        setLoading(false)
+        const failure = error as Error & { code?: string }
+        if (failure.code === 'TRANSCRIPTION_CANCELLED') {
+          setSubmissionStage('idle')
+          setAlert({ type: 'info', msg: t('transcriptionCancelledSaved') })
+        } else {
+          setSubmissionStage('error')
+          setAlert({ type: 'warn', msg: tf('transcriptionFailed', { detail: failure.message }) })
+        }
+        return
+      }
     } else {
+      recordingRef.current = false
       setRecording(false)
       ev = captureRef.current!.stopCapture()
       await captureRef.current!.flushBatches()
     }
     playerRef.current?.stop()
-    followerRef.current?.stop()
+    liveTempoHookRef.current = null
     sendWorkflow({ type: 'SUBMIT_CAPTURE' })
+    setSubmissionStage('analyzing')
     try {
-      const r = await api.finishSession(retrySessionId, ev, ref)
+      const r = await api.finishSession(retrySessionId, ev, ref, retryCaptureMeta)
       const [comp, rep2] = await Promise.all([
         api.compare(baselineReport.reportId, r.reportId),
         api.getReport(r.reportId),
@@ -965,13 +1518,17 @@ export default function App() {
       setSelectedError(rep2.errors[0] ?? null)
       setMentor(null)
       setMentorChat(readMentorChat(rep2.reportId))
-      await MidiCapture.clearRecovery(retrySessionId)
+      if (inputSource === 'microphone') await microphoneRef.current?.discard(retrySessionId)
+      else if (inputSource === 'midi-upload') await midiUploadRef.current?.discard(retrySessionId)
+      else await MidiCapture.clearRecovery(retrySessionId)
       clearStoredRecoveryContext(retrySessionId)
       setRecoveredEvents([]); setRecoveryContext(null)
       sendWorkflow({ type: 'COMPARISON_COMPLETED' })
+      setSubmissionStage('complete')
       void loadMentor(rep2, '', rep2.errors[0]?.id, false)
     } catch (e) {
-      if (!uploadMode && !usingRecoveredEvents) {
+      setSubmissionStage('error')
+      if (inputSource !== 'midi-upload' && !usingRecoveredEvents) {
         const context = readRecoveryContext()
         if (context && ev.length) {
           setRecoveryContext(context)
@@ -981,6 +1538,7 @@ export default function App() {
       sendWorkflow({ type: 'ANALYSIS_FAILED' })
       setAlert({ type: 'error', msg: tf('comparisonFailed', { detail: (e as Error).message }) })
     }
+    submissionInFlightRef.current = false
     setLoading(false)
   }
 
@@ -998,47 +1556,129 @@ export default function App() {
     sendWorkflow({ type: 'EXERCISE_OPENED' })
   }
 
+  const openExerciseDesigner = () => {
+    if (!report) return
+    setBaselineReport(report)
+    setExercise(null)
+    setExerciseScore(null)
+    setComparison(null)
+    setRetrySessionId(null)
+    setExerciseStage('design')
+    sendWorkflow({ type: 'EXERCISE_OPENED' })
+  }
+
   const resolvedKeys = useMemoResolvedKeys(comparison)
   const hasBaselineRecovery = recoveryContext?.kind === 'baseline' && recoveredEvents.length > 0
   const hasRetryRecovery = recoveryContext?.kind === 'retry' && recoveredEvents.length > 0
   const retryScoreXmlUrl = exerciseScore?.renderUrl ?? null
   const retryScoreMeta = exerciseScore?.metadata ?? null
-  const workspace = workspaceForPhase(workflow.phase)
+  const activeCaptureSessionId = workflow.capture === 'retry' ? retrySessionId : sessionId
+  const hasSavedMicrophoneTake = inputSource === 'microphone' && !recording &&
+    microphoneState !== 'transcribing' &&
+    Boolean(microphoneRef.current?.hasTake(activeCaptureSessionId))
+  const studioStage: StudioStage = step === 'select' ? 'score'
+    : step === 'calibrate' ? 'input'
+      : step === 'perform' ? 'perform' : 'coach'
+  const canOpenStudioStage = (stage: StudioStage) => {
+    if (loading || workflow.phase === 'count_in' || workflow.phase === 'analysis') {
+      return stage === studioStage
+    }
+    if (workflow.capture !== null) {
+      return stage === studioStage || (stage === 'score' && hasSavedMicrophoneTake)
+    }
+    if (stage === 'score') return true
+    if (stage === 'input') return Boolean(scoreId)
+    if (stage === 'perform') return Boolean(sessionId) && step === 'perform'
+    return Boolean(report)
+  }
+  const openStudioStage = (stage: StudioStage) => {
+    if (!canOpenStudioStage(stage)) return
+    if (stage === 'score') {
+      if (workflow.capture !== null) {
+        if (!hasSavedMicrophoneTake || !window.confirm(t('discardTakeReturnConfirm'))) return
+        void discardCaptureAndReturnToScores()
+        return
+      }
+      const openSessions = [sessionId, retrySessionId].filter(
+        (value): value is string => Boolean(value))
+      openSessions.forEach((activeSessionId) => {
+        void api.discardSession(activeSessionId).catch(() => {})
+      })
+      resetPracticeBlock()
+      sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
+    }
+    else if (stage === 'input') setStep('calibrate')
+    else if (stage === 'perform') setStep('perform')
+    else setStep('report')
+  }
+  const clearGeneratedExercises = async () => {
+    if (!window.confirm(t('clearGeneratedExercisesConfirm'))) return
+    setLoading(true); setAlert(null)
+    try {
+      const selectedWasGenerated = scores.some((item) =>
+        item.scoreId === scoreId && categoryForScore(item) === 'generated')
+      const result = await api.clearGeneratedScores()
+      resetPracticeBlock()
+      setScores((previous) => previous.filter(
+        (item) => categoryForScore(item) !== 'generated'))
+      if (selectedWasGenerated) {
+        setScoreId(null); setScoreDetail(null); setNormalization(null)
+        setMeta(null); setEvents([])
+        sendWorkflow({ type: 'RESET' })
+      } else {
+        sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
+      }
+      setAlert({
+        type: 'success',
+        msg: tf('generatedExercisesCleared', { count: result.clearedCount }),
+      })
+    } catch (error) {
+      setAlert({
+        type: 'error',
+        msg: tf('generatedExercisesClearFailed', { detail: (error as Error).message }),
+      })
+    }
+    setLoading(false)
+  }
+  const scoreLibrary = partitionScoreLibrary(scores)
+  const renderScoreCard = (score: ScoreListItem, compact = false) => {
+    const category = categoryForScore(score)
+    const displayTitle = category === 'generated'
+      ? tf('generatedLibraryItemTitle', { round: score.lineageDepth ?? 1 })
+      : scoreDisplayTitle(score)
+    return (
+      <button type="button" key={score.scoreId}
+              aria-pressed={scoreId === score.scoreId}
+              className={`score-card ${compact ? 'compact' : ''} ${scoreId === score.scoreId ? 'selected' : ''}`}
+              onClick={() => selectScore(score.scoreId)}>
+        <div className="title">
+          <span className="score-title-text">{displayTitle}</span>
+          {category === 'demo' && <span className="tag">{t('demoTag')}</span>}
+          {category === 'uploaded' && <span className="tag uploaded">{t('uploadedTag')}</span>}
+          {category === 'generated' && <span className="tag generated">{t('aiGeneratedTag')}</span>}
+        </div>
+        <div className="meta">{tf('scoreMeta', {
+          measures: score.measureCount, tempo: score.tempo, meter: score.timeSignature,
+        })}</div>
+      </button>
+    )
+  }
+
+  const [uiScale, setUiScale] = useUiScale()
 
   return (
     <div className="app">
       <div className="header">
         <h1>{t('appName')}</h1>
         <span className="subtitle">{t('appSubtitle')}</span>
+        <span className="spacer" />
+        <ScaleSwitch scale={uiScale} onChange={setUiScale} />
       </div>
 
-      <nav className="workspaces" aria-label={t('workspaceAriaLabel')}>
-        <button type="button" className={workspace === 'score' ? 'active' : ''}
-                disabled={workflow.capture !== null}
-                onClick={() => sendWorkflow({ type: 'NAVIGATE', phase: scoreId ? 'review' : 'import' })}>
-          <span>01</span>{t('workspaceScore')}
-        </button>
-        <button type="button" className={workspace === 'performance' ? 'active' : ''}
-                disabled={!scoreId || workflow.capture !== null}
-                onClick={() => sendWorkflow({ type: 'NAVIGATE', phase: 'device_setup' })}>
-          <span>02</span>{t('workspacePerformance')}
-        </button>
-        <button type="button" className={workspace === 'training' ? 'active' : ''}
-                disabled={!report || workflow.capture !== null}
-                onClick={() => sendWorkflow({ type: 'NAVIGATE', phase: 'report' })}>
-          <span>03</span>{t('workspaceTraining')}
-        </button>
-      </nav>
+      <StudioStepper active={studioStage} canOpen={canOpenStudioStage}
+                     onOpen={openStudioStage} />
 
-      <div className="steps">
-        {STEP_LABELS.map((s, i) => (
-          <span key={s.key} aria-current={step === s.key ? 'step' : undefined}
-                className={`step-chip ${step === s.key ? 'active' : i < stepIndex ? 'done' : ''}`}>
-            {s.label}
-          </span>
-        ))}
-      </div>
-
+      <div className="app-body scroll-pane">
       {(scoreDetail?.generated || exerciseScore?.generated) && (
         <div className="round-context" role="status">
           <span>{tf('roundContext', {
@@ -1064,32 +1704,67 @@ export default function App() {
       <Suspense fallback={<div className="panel score-loading">{t('scoreEngineLoading')}</div>}>
       {/* Step 1: 选曲 */}
       {step === 'select' && (
-        <div className="panel">
+        <div className="panel fills-pane">
           <h2>{t('scorePickerTitle')}</h2>
-          <div className="score-list">
-            {scores.map((s) => (
-              <button type="button" key={s.scoreId}
-                      aria-pressed={scoreId === s.scoreId}
-                      className={`score-card ${scoreId === s.scoreId ? 'selected' : ''}`}
-                      onClick={() => selectScore(s.scoreId)}>
-                <div className="title">
-                  {s.title}
-                  {s.builtin && <span className="tag">{t('builtin')}</span>}
-                  {s.generated && (
-                    <span className="tag generated">{tf('generatedScoreTag', {
-                      round: s.lineageDepth ?? 1,
-                    })}</span>
-                  )}
-                </div>
-                <div className="meta">{tf('scoreMeta', {
-                  measures: s.measureCount, tempo: s.tempo, meter: s.timeSignature,
-                })}</div>
-              </button>
-            ))}
-          </div>
+          <div className={`select-workspace ${scoreDetail ? 'with-detail' : ''}`}>
+          <div className="select-library scroll-pane">
+          <section className="library-section" aria-labelledby="demo-library-title">
+            <div className="library-heading">
+              <div>
+                <h3 id="demo-library-title">{t('demoLibraryTitle')}</h3>
+                <p className="dim">{t('demoLibraryHint')}</p>
+              </div>
+              <span className="library-count">{scoreLibrary.demos.length}</span>
+            </div>
+            <div className="score-list">
+              {scoreLibrary.demos.map((score) => renderScoreCard(score))}
+            </div>
+          </section>
+
+          <section className="library-section" aria-labelledby="upload-library-title">
+            <div className="library-heading">
+              <div>
+                <h3 id="upload-library-title">{t('uploadedLibraryTitle')}</h3>
+                <p className="dim">{t('uploadedLibraryHint')}</p>
+              </div>
+              <span className="library-count">{scoreLibrary.uploads.length}</span>
+            </div>
+            {scoreLibrary.uploads.length > 0 ? (
+              <div className="score-list">
+                {scoreLibrary.uploads.map((score) => renderScoreCard(score))}
+              </div>
+            ) : <div className="library-empty">{t('uploadedLibraryEmpty')}</div>}
+          </section>
+
+          {scoreLibrary.generated.length > 0 && (
+            <details className="generated-library">
+              <summary>
+                <span className="generated-library-icon" aria-hidden="true">✦</span>
+                <span className="generated-library-copy">
+                  <strong>{t('generatedLibraryTitle')}</strong>
+                  <small>{t('generatedLibraryHint')}</small>
+                </span>
+                <span className="library-count">{scoreLibrary.generated.length}</span>
+              </summary>
+              <div className="generated-library-actions">
+                <span>{t('clearGeneratedExercisesHint')}</span>
+                <button type="button" className="btn btn-danger btn-sm"
+                        disabled={loading} onClick={clearGeneratedExercises}>
+                  {t('clearGeneratedExercises')}
+                </button>
+              </div>
+              <div className="score-list compact-list">
+                {scoreLibrary.generated.map((score) => renderScoreCard(score, true))}
+              </div>
+            </details>
+          )}
           <h3>{t('uploadScoreTitle')}</h3>
           <p className="dim">{t('uploadScoreHint')}</p>
-          <UploadZone onFile={importScore} accept=".musicxml,.xml,.mxl,.mid,.midi" disabled={loading} />
+          <UploadZone onFile={importScore}
+                      accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.webp"
+                      disabled={loading} />
+          </div>
+          <div className="select-detail scroll-pane">
           {scoreDetail && normalization && (
             <section className="import-review" aria-labelledby="import-review-title">
               <div className="review-heading">
@@ -1097,12 +1772,15 @@ export default function App() {
                   <h3 id="import-review-title">{t('importReview')}</h3>
                   <p className="dim">{t('importReviewHint')}</p>
                 </div>
-                <span className={`display-badge ${scoreDetail.sourceType === 'midi' ? 'simplified' : 'exact'}`}>
+                <span className={`display-badge ${
+                  scoreDetail.displayMode === 'exact_notation' ? 'exact' : 'simplified'}`}>
                   {scoreDetail.displayMode === 'exact_notation' ? t('exactNotation') : t('simplifiedNotation')}
                 </span>
               </div>
               {scoreDetail.displayMode === 'simplified_quantized_staff' && (
-                <div className="alert alert-info">{t('simplifiedNotice')}</div>
+                <div className="alert alert-info">
+                  {isReadFromPage(scoreDetail) ? t('readNotice') : t('simplifiedNotice')}
+                </div>
               )}
               {!!scoreDetail.warnings.length && (
                 <ul className="warning-list">
@@ -1159,9 +1837,28 @@ export default function App() {
               )}
             </section>
           )}
+          {meta && scoreId && (
+            <section className="score-preview" aria-label={t('scorePreview')}>
+              <div className="score-preview-heading">
+                <span className="eyebrow">{t('scorePreview')}</span>
+                <small>{tf('scoreMeta', {
+                  measures: meta.measureCount, tempo: meta.tempo,
+                  meter: meta.timeSignature,
+                })}</small>
+              </div>
+              <div className="score-stage">
+                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)}
+                             beatsPerMeasure={meta.beatsPerMeasure} height={200} />
+              </div>
+            </section>
+          )}
           {meta && (
             <>
               <h3>{t('practiceRange')}</h3>
+              {meta.measureCount > rangeEnd && rangeStart === 1 &&
+               rangeEnd === openingRange(meta.measureCount).end && (
+                <p className="dim">{tf('practiceRangeShortened', { count: rangeEnd })}</p>
+              )}
               <div className="range-row">
                 <span>{t('rangePrefix')}</span>
                 <input aria-label={t('rangeStartAria')} type="number" min={1} max={meta.measureCount} value={rangeStart}
@@ -1180,33 +1877,58 @@ export default function App() {
               </div>
             </>
           )}
+          </div>
+          </div>
         </div>
       )}
 
       {/* Step 2: 校准 */}
       {step === 'calibrate' && (
-        <div className="panel">
+        <div className="panel input-workspace">
           <div className="review-heading">
             <div>
-              <h2>{t('usbMidiTitle')}</h2>
-              <p className="dim">{t('usbMidiHint')}</p>
+              <h2>{t('inputMode')}</h2>
+              <p className="dim">{t('microphoneHint')}</p>
             </div>
-            <button className="btn btn-sm" type="button" onClick={gotoCalibrate} disabled={loading}>{t('rescan')}</button>
           </div>
-          {!midiSupported && <div className="alert alert-warn">{t('midiBrowserFallback')}</div>}
-          {midiSupported && (
+          <div className="input-source-switch" role="group" aria-label={t('inputMode')}>
+            {([
+              ['web-midi', 'MIDI', t('inputMidi'), t('inputMidiCaption')],
+              ['microphone', 'MIC', t('inputMicrophone'), t('inputMicrophoneCaption')],
+              ['midi-upload', 'FILE', t('inputUpload'), t('inputUploadCaption')],
+            ] as [InputSource, string, string, string][]).map(([source, badge, label, caption]) => (
+              <button type="button" key={source} aria-pressed={inputSource === source}
+                      className={inputSource === source ? 'active' : ''}
+                      disabled={loading || recording}
+                      onClick={() => chooseInputSource(source)}>
+                <span className="input-source-badge">{badge}</span>
+                <span><strong>{label}</strong><small>{caption}</small></span>
+              </button>
+            ))}
+          </div>
+
+          {inputSource === 'web-midi' && (
             <>
-              <div className="device-grid">
-                {inputs.map((name) => (
-                  <button type="button" key={name} aria-pressed={selectedInput === name}
-                          className={`device-item ${selectedInput === name ? 'selected' : ''}`}
-                          onClick={() => pickInput(name)}>
-                    <span className="dot" /> <span>{name}</span>
-                  </button>
-                ))}
-                {inputs.length === 0 && <div className="dim">{t('noMidiInput')}</div>}
+              <div className="input-card-heading">
+                <div><h3>{t('usbMidiTitle')}</h3><p>{t('usbMidiHint')}</p></div>
+                <button className="btn btn-sm" type="button" onClick={gotoCalibrate}
+                        disabled={loading}>{t('rescan')}</button>
               </div>
-              {!uploadMode && (
+              {!midiSupported ? (
+                <div className="alert alert-warn">{t('midiBrowserFallback')}</div>
+              ) : (
+                <>
+                  <div className="device-grid">
+                    {inputs.map((name) => (
+                      <button type="button" key={name} aria-pressed={selectedInput === name}
+                              className={`device-item ${selectedInput === name ? 'selected' : ''}`}
+                              disabled={loading || recording}
+                              onClick={() => pickInput(name)}>
+                        <span className="dot" /> <span>{name}</span>
+                      </button>
+                    ))}
+                    {inputs.length === 0 && <div className="dim">{t('noMidiInput')}</div>}
+                  </div>
                 <div className="calibration-card" aria-live="polite">
                   <h3>{t('healthCheck')}</h3>
                   <p className="dim">{t('healthCheckHint')}</p>
@@ -1231,16 +1953,37 @@ export default function App() {
                     <span>{t('duplicateMessages')} <strong>{calibration.duplicateMessages}</strong></span>
                   </div>
                 </div>
+                </>
               )}
-              <div className="flex mt-12">
-                <label className="mode-toggle">
-                  <input type="checkbox" checked={uploadMode} onChange={(e) => setUploadMode(e.target.checked)} />
-                  {t('useMidiUploadFallback')}
-                </label>
-              </div>
             </>
           )}
-          {uploadMode && (
+
+          {inputSource === 'microphone' && (
+            <MicrophonePanel
+              state={microphoneState} devices={microphoneDevices}
+              selectedDeviceId={selectedMicrophoneId} instrument={instrument}
+              preview={microphonePreview} progress={transcriptionProgress} busy={loading}
+              errorDetail={microphoneError}
+              previewMode={microphoneRef.current?.previewMode ?? 'unavailable'}
+              onConnect={() => void connectMicrophone()}
+              onCancelConnect={cancelMicrophoneConnect}
+              onSelectDevice={(deviceId) => {
+                setSelectedMicrophoneId(deviceId)
+                void connectMicrophone(deviceId)
+              }}
+              onInstrumentChange={setInstrument}
+              onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
+              sensitivity={micSensitivity}
+              sensitivityPinned={micSensitivityPinned}
+              onSensitivityChange={(value) => {
+                setMicSensitivity(value)
+                setMicSensitivityPinned(true)
+                microphoneRef.current?.setDetectionSensitivity(value)
+              }}
+            />
+          )}
+
+          {inputSource === 'midi-upload' && (
             <div className="mt-20">
               <div className="alert alert-info">{t('uploadFallbackHint')}</div>
             </div>
@@ -1248,9 +1991,10 @@ export default function App() {
           <div className="flex mt-20 between">
             <button className="btn" onClick={() => setStep('select')} disabled={loading}>{t('back')}</button>
             <button className="btn btn-primary" onClick={startSession}
-                    disabled={loading || (!selectedInput && !uploadMode) ||
-                      (!uploadMode && (!calibration.centerC || calibration.noteCount < 5))}>
-              {uploadMode ? t('enterMidiUpload') : t('startWithCountIn')}
+                    disabled={loading ||
+                      (inputSource === 'web-midi' && (!selectedInput || !calibration.centerC || calibration.noteCount < 5)) ||
+                      (inputSource === 'microphone' && microphoneState !== 'ready')}>
+              {inputSource === 'midi-upload' ? t('enterMidiUpload') : t('startWithCountIn')}
             </button>
           </div>
         </div>
@@ -1258,13 +2002,100 @@ export default function App() {
 
       {/* Step 3: 演奏 */}
       {step === 'perform' && (
-        <div className="panel">
+        <div className="panel performance-panel">
           <h2>{t('performanceTitle')} {uploadMode ? t('uploadModeSuffix') : ''}</h2>
           {meta && scoreId && (
-            <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
-                         cursor={cursor} />
+            <div className="practice-studio">
+              <div className="score-stage">
+                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
+                             cursor={cursor} follow={recording}
+                             liveFeedback={recording ? liveFeedback : null} />
+              </div>
+              {inputSource === 'microphone' && (
+                <aside className="input-dock">
+                  <MicrophonePanel
+                    state={microphoneState} devices={microphoneDevices}
+                    selectedDeviceId={selectedMicrophoneId} instrument={instrument}
+                    preview={microphonePreview} progress={transcriptionProgress} busy={loading}
+                    errorDetail={microphoneError}
+                    previewMode={microphoneRef.current?.previewMode ?? 'unavailable'}
+                    onConnect={() => void connectMicrophone()}
+                    onCancelConnect={cancelMicrophoneConnect}
+                    onSelectDevice={(deviceId) => {
+                      setSelectedMicrophoneId(deviceId)
+                      void connectMicrophone(deviceId)
+                    }}
+                    onInstrumentChange={setInstrument}
+                    onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
+                    sensitivity={micSensitivity}
+                    sensitivityPinned={micSensitivityPinned}
+                    onSensitivityChange={(value) => {
+                      setMicSensitivity(value)
+                      setMicSensitivityPinned(true)
+                      microphoneRef.current?.setDetectionSensitivity(value)
+                    }}
+                  />
+                  <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
+                </aside>
+              )}
+              {inputSource !== 'microphone' && (
+                <aside className="input-dock" aria-label={t('inputDockTitle')}>
+                  {/* What you are playing leads the rail; the hardware it
+                      arrived on is reference, so it sits underneath. */}
+                  {inputSource === 'web-midi' && (
+                    <>
+                      <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
+                      <div className="held-notes">
+                        <span className="eyebrow">{t('heldNotes')}</span>
+                        <div className="live-notes">
+                          {liveNotes.length
+                            ? liveNotes.map((pitch) => <span key={pitch} className="live-note">{midiName(pitch)}</span>)
+                            : <span className="dim">{t('heldNotesEmpty')}</span>}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  <div className="input-status-card">
+                    <span className="eyebrow">{t('inputDockTitle')}</span>
+                    <dl>
+                      <div><dt>{t('inputSourceLabel')}</dt><dd>{inputSource === 'web-midi' ? t('inputMidi') : t('inputUpload')}</dd></div>
+                      <div><dt>{t('inputInstrumentLabel')}</dt><dd>{instrument === 'piano'
+                        ? t('instrumentPiano') : instrument === 'guitar'
+                          ? t('instrumentGuitar') : t('instrumentViolin')}</dd></div>
+                      <div><dt>{t('inputDeviceLabel')}</dt><dd>{inputSource === 'web-midi'
+                        ? (selectedInput ?? t('noMidiInput'))
+                        : (uploadMidiRef.current ? t('inputFileStored') : t('inputFileAwaiting'))}</dd></div>
+                    </dl>
+                    <div className={`input-status-pill ${
+                      (inputSource === 'web-midi' && workflow.deviceConnected) ||
+                      (inputSource === 'midi-upload' && uploadMidiRef.current) ? 'ready' : ''}`}>
+                      {inputSource === 'web-midi' && workflow.deviceConnected
+                        ? t('inputCaptureReady')
+                        : inputSource === 'midi-upload' && uploadMidiRef.current
+                          ? t('inputAnalysisReady') : t('waitingForNotes')}
+                    </div>
+                  </div>
+                </aside>
+              )}
+            </div>
           )}
-          {!uploadMode && (
+          {loading && submissionStage !== 'idle' && submissionStage !== 'complete' && (
+            <div className={`submission-progress-card ${submissionStage}`} role="status">
+              <span className="submission-spinner" />
+              <div>
+                <strong>{submissionStage === 'transcribing'
+                  ? t('submissionTranscribing')
+                  : submissionStage === 'analyzing'
+                    ? t('submissionAnalyzing') : t('submissionSaving')}</strong>
+                {submissionStage === 'transcribing' && (
+                  <div className="submission-meter"><span style={{
+                    width: `${Math.max(4, Math.round(transcriptionProgress * 100))}%`,
+                  }} /></div>
+                )}
+              </div>
+            </div>
+          )}
+          {inputSource === 'web-midi' && (
             <>
               {workflow.capture && !workflow.deviceConnected && (
                 <div className="disconnect-recovery" role="alert">
@@ -1286,32 +2117,65 @@ export default function App() {
               {workflow.phase === 'analysis' && (
                 <div className="analysis-progress" role="status">{t('analysisRunning')}</div>
               )}
-              <div className="recording-bar">
-                {recording && <span className="rec-dot" />}
-                <span>{recording ? t('recording') : (hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('stopped'))}</span>
-                <span className="dim">{t('liveNotes')}</span>
-                <div className="live-notes">{liveNotes.map((pitch) => <span key={pitch} className="live-note">{midiName(pitch)}</span>)}</div>
-                <span className="dim">| {cursor ? tf('cursorPosition', {
-                  measure: cursor.measure, bpm: cursor.bpm ?? '—', state: cursor.frozen ? ` · ${t('relocking')}` : '',
-                }) : t('waitingForNotes')}</span>
-              </div>
-              <div className="flex mt-12 between">
-                <button className="btn" disabled={hasBaselineRecovery} onClick={async () => {
-                  try {
-                    const player = await getPlayer()
-                    await player.countIn(Math.round(meta!.beatsPerMeasure), meta!.tempo)
-                  } catch (error) {
-                    setAlert({ type: 'warn', msg: tf('countInPlaybackFailed', { detail: (error as Error).message }) })
-                  }
-                }}>{t('hearCountIn')}</button>
-                <button className="btn btn-danger" onClick={stopAndAnalyze}
-                        disabled={loading || workflow.phase === 'analysis' || (!recording && !hasBaselineRecovery)}>
-                  {hasBaselineRecovery ? t('analyzeRecovered') : t('stopAndAnalyze')}
-                </button>
+              <div className="transport-bar midi-transport">
+                <div className="recording-bar">
+                  {recording && <span className="rec-dot" />}
+                  <span>{recording ? t('recording') : (hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('stopped'))}</span>
+                  <span className="dim">{cursor ? tf('cursorPosition', {
+                    measure: measureLabel(cursor.measure), bpm: cursor.bpm ?? '—',
+                    state: cursor.waiting ? ` · ${t('waitingHere')}` : '',
+                  }) : t('waitingForNotes')}</span>
+                </div>
+                <div className="flex">
+                  <button className="btn" disabled={hasBaselineRecovery} onClick={async () => {
+                    try {
+                      const player = getPlayer()
+                      await player.countIn(Math.round(meta!.beatsPerMeasure), meta!.tempo)
+                    } catch (error) {
+                      setAlert({ type: 'warn', msg: tf('countInPlaybackFailed', { detail: (error as Error).message }) })
+                    }
+                  }}>{t('hearCountIn')}</button>
+                  <button className="btn btn-danger" onClick={stopAndAnalyze}
+                          disabled={loading || workflow.phase === 'analysis' || (!recording && !hasBaselineRecovery)}>
+                    {hasBaselineRecovery ? t('analyzeRecovered') : t('stopAndAnalyze')}
+                  </button>
+                </div>
               </div>
             </>
           )}
-          {uploadMode && (
+          {inputSource === 'microphone' && (
+            <div className="transport-bar" aria-live="polite">
+              <div className="transport-status">
+                {recording && <span className="rec-dot" />}
+                <strong>{microphoneState === 'transcribing'
+                  ? t('microphoneTranscribing')
+                  : recording ? t('microphoneRecording')
+                    : microphoneRef.current?.hasTake(sessionId) ? t('microphoneTakeReady')
+                    : hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length })
+                      : t('stopped')}</strong>
+                <span>{t('microphonePreviewOnly')}</span>
+              </div>
+              <div className="flex">
+                <button className="btn btn-danger" onClick={stopAndAnalyze}
+                        disabled={loading || microphoneState === 'transcribing' ||
+                          (!recording && !hasBaselineRecovery &&
+                            !microphoneRef.current?.hasTake(sessionId))}>
+                  {hasBaselineRecovery
+                    ? t('analyzeRecovered')
+                    : !recording && microphoneRef.current?.hasTake(sessionId)
+                      ? t('analyzeSavedTake')
+                      : t('stopAndAnalyze')}
+                </button>
+                {!recording && microphoneRef.current?.hasTake(sessionId) && (
+                  <button className="btn" onClick={() => void discardCaptureAndReturnToScores()}
+                          disabled={loading || microphoneState === 'transcribing'}>
+                    {t('discardTakeAndReturn')}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {inputSource === 'midi-upload' && (
             <div className="mt-20">
               <div className="dim">{t('uploadedMidiExplanation')}</div>
               {sessionId && <UploadZone onFile={onUploadMidi} accept=".mid,.midi" disabled={loading} />}
@@ -1327,231 +2191,31 @@ export default function App() {
 
       {/* Step 4: 报告 */}
       {step === 'report' && report && (
-        <div className="panel">
-          <h2>{t('reportTitle')}</h2>
-          <MetricsView report={report} baseline={baselineReport} />
-          {baselineReport && baselineReport.scoreId !== report.scoreId && (
-            <div className="dim lineage-metric-note">{t('lineageMetricNotice')}</div>
-          )}
-          <div className="evidence-layers">
-            <section>
-              <h3>{t('verifiableFacts')}</h3>
-              <p>{tf('evidenceCount', { count: report.evidences.length })}</p>
-            </section>
-            <section>
-              <h3>{t('repeatedPatterns')}</h3>
-              <p>{report.patterns.length
-                ? report.patterns.map((pattern) => tf('repeatedPattern', {
-                    description: pattern.description, count: pattern.sampleCount,
-                  })).join('；')
-                : t('noRepeatedPattern')}</p>
-            </section>
-            <section>
-              <h3>{t('possibleCauses')}</h3>
-              <p>{report.hypotheses.length
-                ? report.hypotheses.map((hypothesis) => tf('hypothesisConfidence', {
-                    cause: hypothesis.cause, confidence: hypothesis.confidence,
-                  })).join('；')
-                : t('insufficientEvidence')}</p>
-            </section>
-          </div>
-          {meta && scoreId && (
-            <ScoreViewer
-              xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
-              errors={report.errors}
-              selectedErrorId={selectedError?.id}
-              onErrorClick={(e) => chooseError(report, e)}
-            />
-          )}
-          <h3>{tf('errorList', { count: report.errors.length })}</h3>
-          <div className="error-list">
-            {report.errors.map((e) => {
-              const displayDetail = errorDetailForDisplay(e, report.evidences)
-              return (
-                <button type="button" key={e.id}
-                        className={`error-item ${selectedError?.id === e.id ? 'selected' : ''}`}
-                        onClick={() => chooseError(report, e)}>
-                  <span className="badge" style={{ background: errColor(e.type) }}>
-                    {ERROR_TYPE_LABEL[e.type] ?? e.type}
-                  </span>
-                  <span className="desc">
-                    {tf('errorPosition', {
-                      measure: e.location.measure, beat: e.location.beat + 1, severity: SEVERITY_LABEL[e.severity],
-                    })}
-                    {displayDetail && ` · ${displayDetail}`}
-                  </span>
-                  <span className="conf">{tf('confidence', { value: e.confidence })}</span>
-                </button>
-              )
-            })}
-            {report.errors.length === 0 && <div className="dim">{t('noErrors')}</div>}
-          </div>
-
-          {selectedError && (
-            <EvidenceDrawer report={report} err={selectedError} onPlayCompare={playEvidence} />
-          )}
-
-          {mentorLoading && (
-            <div className="mentor-box mentor-loading" role="status">
-              <span className="mentor-loading-dot" />
-              {t('mentorThinking')}
-            </div>
-          )}
-
-          {mentor && !mentorLoading && (
-            <div className="mentor-box">
-              <div className="mentor-header">
-                <div className="mentor-label">{t('mentorLayer')}</div>
-                <div className={`mentor-meta ${mentor.provider.startsWith('rules') ? 'fallback' : ''}`}>
-                  {mentor.provider.startsWith('rules')
-                    ? (mentor.provider === 'rules' ? t('mentorLocalRules') : t('mentorLocalFallback'))
-                    : tf('mentorProviderMeta', {
-                        provider: mentor.provider,
-                        model: mentor.model || 'OpenAI-compatible',
-                        latency: mentor.latencyMs ?? 0,
-                      })}
-                </div>
-              </div>
-              <div className="summary">{mentor.summary}</div>
-              {mentor.evidence.length > 0 && (
-                <section className="mentor-section">
-                  <h4>{t('mentorEvidenceTitle')}</h4>
-                  <div className="mentor-evidence-list">
-                    {mentor.evidence.map((evidence, index) => (
-                      <div className="mentor-evidence" key={`${evidence.measure}:${evidence.beat}:${index}`}>
-                        <span>{tf('mentorEvidencePosition', {
-                          measure: evidence.measure, beat: evidence.beat + 1,
-                        })}</span>
-                        {evidence.fact}
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
-              {mentor.hypotheses.length > 0 && (
-                <section className="mentor-section">
-                  <h4>{t('mentorHypothesesTitle')}</h4>
-                  {mentor.hypotheses.map((hypothesis, index) => (
-                    <div key={`${hypothesis.cause}:${index}`} className="hyp">
-                      • {tf('hypothesisConfidence', {
-                        cause: hypothesis.cause, confidence: hypothesis.confidence,
-                      })}<br />{t('limitation')}{hypothesis.limitation}
-                    </div>
-                  ))}
-                </section>
-              )}
-              {mentor.plan.length > 0 && (
-                <section className="mentor-section">
-                  <h4>{t('mentorPlanTitle')}</h4>
-                  <div className="mentor-plan-grid">
-                    {mentor.plan.map((plan, index) => (
-                      <article className="mentor-plan" key={`${plan.exerciseType}:${index}`}>
-                        <strong>{plan.label || plan.exerciseType}</strong>
-                        <span>{tf('mentorPlanMeasures', { measures: plan.measures.join('、') })}</span>
-                        {plan.tempo && <span>{tf('mentorPlanTempo', { tempo: plan.tempo })}</span>}
-                        <span>{tf('mentorPlanRepetitions', { count: plan.repetitions })}</span>
-                        <span>{tf('mentorSuccessCriterion', { criterion: plan.successCriterion })}</span>
-                        <button className="btn btn-sm" onClick={() => applyMentorPlan(plan)}>
-                          {t('mentorApplyPlan')}
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              )}
-              {mentor.encouragement && <div className="encourage">{mentor.encouragement}</div>}
-            </div>
-          )}
-          <section className="mentor-chat mt-20">
-            <div className="mentor-chat-heading">
-              <div>
-                <span className="mentor-chat-kicker">{t('mentorChatKicker')}</span>
-                <h3>{t('mentorChatTitle')}</h3>
-              </div>
-              <span className="dim">{t('mentorChatSaved')}</span>
-            </div>
-            <div className="mentor-chat-thread" aria-live="polite">
-              {mentorChat.length === 0 && (
-                <div className="mentor-chat-empty">{t('mentorChatEmpty')}</div>
-              )}
-              {mentorChat.map((message) => (
-                <div className={`chat-row ${message.role}`} key={message.id}>
-                  <div className={`chat-bubble ${message.status}`}>
-                    <div className="chat-role">
-                      {message.role === 'user' ? t('mentorChatYou') : t('mentorChatAi')}
-                    </div>
-                    <div>{message.text}</div>
-                    {message.role === 'assistant' && message.response && (
-                      <>
-                        <div className={`chat-provider ${message.response.provider.startsWith('rules') ? 'fallback' : ''}`}>
-                          {message.response.provider.startsWith('rules')
-                            ? (message.response.provider === 'rules'
-                                ? t('mentorLocalRules') : t('mentorLocalFallback'))
-                            : tf('mentorProviderMeta', {
-                                provider: message.response.provider,
-                                model: message.response.model || 'OpenAI-compatible',
-                                latency: message.response.latencyMs ?? 0,
-                              })}
-                        </div>
-                        {message.response.plan[0] && (
-                          <button className="btn btn-sm chat-plan-action"
-                                  onClick={() => applyMentorPlan(message.response!.plan[0])}>
-                            {t('mentorApplyPlan')}
-                          </button>
-                        )}
-                      </>
-                    )}
-                    {message.status === 'sending' && (
-                      <span className="chat-status">{t('mentorChatSending')}</span>
-                    )}
-                    {message.status === 'error' && (
-                      <div className="chat-error">
-                        <span>{tf('mentorChatFailed', { detail: message.error })}</span>
-                        <button className="btn btn-sm" disabled={mentorChatLoading || mentorLoading}
-                                onClick={() => void askMentor(message.text, message.id)}>
-                          {t('mentorChatRetry')}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="mentor-quick">
-              <span className="dim">{t('mentorQuickQuestions')}</span>
-              {MENTOR_QUICK_QUESTIONS.map((prompt) => (
-                <button type="button" className="strategy-btn" key={prompt}
-                        disabled={mentorLoading || mentorChatLoading}
-                        onClick={() => void askMentor(prompt)}>{prompt}</button>
-              ))}
-            </div>
-            <div className="mentor-composer">
-              <textarea value={question} onChange={(e) => setQuestion(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey && question.trim() &&
-                              !mentorLoading && !mentorChatLoading) {
-                            e.preventDefault()
-                            void askMentor()
-                          }
-                        }}
-                        rows={3} maxLength={2000}
-                        placeholder={t('mentorQuestionPlaceholder')} />
-              <button className="btn btn-primary" onClick={() => void askMentor()}
-                      disabled={mentorLoading || mentorChatLoading || !question.trim()}>
-                {mentorChatLoading ? t('mentorChatSending') : t('askMentor')}
-              </button>
-            </div>
-            <div className="dim mentor-chat-hint">{t('mentorChatHint')}</div>
-          </section>
-
-          <div className="flex mt-20 between">
-            <button className="btn" onClick={() => setStep('calibrate')}>{t('rerecord')}</button>
-            <button className="btn btn-primary"
-                    onClick={() => sendWorkflow({ type: 'EXERCISE_OPENED' })}>{t('generateExerciseNext')}</button>
-          </div>
-        </div>
+        <CoachReport
+          scale={uiScale}
+          report={report}
+          baseline={baselineReport}
+          beatsPerMeasure={meta?.beatsPerMeasure}
+          scoreXmlUrl={scoreId ? api.scoreXmlUrl(scoreId) : undefined}
+          selectedError={selectedError}
+          mentor={mentor}
+          mentorLoading={mentorLoading}
+          chatMessages={mentorChat}
+          chatLoading={mentorChatLoading}
+          question={question}
+          mentorMemory={mentorMemory}
+          onChooseError={(error) => chooseError(report, error)}
+          onPlayEvidence={playEvidence}
+          onApplyPlan={applyMentorPlan}
+          onApplyChatAction={applyChatAction}
+          onAskMentor={askMentor}
+          onQuestionChange={setQuestion}
+          onCancelChat={() => mentorChatAbortRef.current?.abort()}
+          onForgetMemory={forgetMentorMemory}
+          onRerecord={() => setStep('calibrate')}
+          onGenerateExercise={openExerciseDesigner}
+        />
       )}
-
       {/* Step 5: 练习 */}
       {step === 'exercise' && (
         <div className="panel training-panel">
@@ -1573,12 +2237,12 @@ export default function App() {
             <div className="exercise-designer">
               {selectedError && (
                 <div className="exercise-target">
-                  <span className="badge" style={{ background: errColor(selectedError.type) }}>
+                  <span className="badge" style={{ background: errorColor(selectedError.type) }}>
                     {ERROR_TYPE_LABEL[selectedError.type] ?? selectedError.type}
                   </span>
                   <div>
                     <strong>{tf('exerciseTargetPosition', {
-                      measure: selectedError.location.measure,
+                      measure: measureLabel(selectedError.location.measure),
                       beat: selectedError.location.beat + 1,
                     })}</strong>
                     <span>{errorDetailForDisplay(selectedError, report?.evidences ?? [])}</span>
@@ -1665,27 +2329,32 @@ export default function App() {
                     <span className="training-kicker">{t('aiPlanLabel')}</span>
                     <h3>{exercise.aiPlan?.title || t('exerciseGeneratedTitle')}</h3>
                   </div>
-                  <span className={`planner-status ${exercise.plannerProvider?.startsWith('rules') ? 'fallback' : ''}`}>
-                    {exercise.plannerProvider?.startsWith('rules')
-                      ? (exercise.plannerProvider === 'rules'
-                          ? t('exercisePlannerLocal') : t('exercisePlannerFallback'))
-                      : tf('exercisePlannerMeta', {
-                          provider: exercise.plannerProvider || 'AI',
-                          latency: exercise.plannerLatencyMs ?? 0,
-                        })}
-                  </span>
+                  {exercise.plannerProvider?.startsWith('rules') && (
+                    <span className="planner-status fallback">
+                      {exercise.plannerProvider === 'rules'
+                        ? t('exercisePlannerLocal') : t('exercisePlannerFallback')}
+                    </span>
+                  )}
                 </div>
                 {exercise.aiPlan?.rationale && <p>{exercise.aiPlan.rationale}</p>}
                 {exercise.aiPlan?.noteAcknowledgement && (
                   <div className="note-ack">{exercise.aiPlan.noteAcknowledgement}</div>
                 )}
                 <div className="plan-facts">
-                  <span>{tf('generatedMeasures', { measures: exercise.sourceMeasures.join('、') })}</span>
+                  <span>{tf('generatedMeasures', {
+                    measures: measureLabelList(exercise.sourceMeasures),
+                  })}</span>
                   <span>{tf('generatedStrategy', {
                     strategy: EXERCISE_STRATEGIES.find(([key]) => key === exercise.ruleId)?.[1] || exercise.ruleId,
                   })}</span>
                   <span>{tf('generatedTempo', { percent: Math.round((exercise.aiPlan?.tempoRatio ?? tempoRatio) * 100) })}</span>
                   <span>{tf('generatedLoops', { count: exercise.aiPlan?.loopCount ?? loopCount })}</span>
+                  {!!exercise.cadencePlan?.length && (
+                    <span>{tf('generatedCadences', {
+                      cadences: exercise.cadencePlan.map((item) =>
+                        CADENCE_LABEL[item] ?? item).join(' → '),
+                    })}</span>
+                  )}
                 </div>
                 <div className="success-criterion">{tf('mentorSuccessCriterion', { criterion: exercise.successCriterion })}</div>
               </div>
@@ -1735,18 +2404,40 @@ export default function App() {
             <div className="strategy-select">
               <button type="button" aria-pressed={accMode === 'flexible'}
                       className={`strategy-btn ${accMode === 'flexible' ? 'active' : ''}`}
-                      disabled={loading || (!!retrySessionId && !comparison)}
+                      disabled={loading || (!!retrySessionId && !comparison) ||
+                        (inputSource === 'microphone' && !headphonesConfirmed)}
                       onClick={() => setAccMode('flexible')}>{t('flexibleFollow')}</button>
               <button type="button" aria-pressed={accMode === 'strict'}
                       className={`strategy-btn ${accMode === 'strict' ? 'active' : ''}`}
-                      disabled={loading || (!!retrySessionId && !comparison)}
+                      disabled={loading || (!!retrySessionId && !comparison) ||
+                        (inputSource === 'microphone' && !headphonesConfirmed)}
                       onClick={() => setAccMode('strict')}>{t('strictTempo')}</button>
             </div>
+            {inputSource === 'microphone' && (
+              <label className="mode-toggle headphone-warning">
+                <input type="checkbox" checked={headphonesConfirmed}
+                       disabled={loading || (!!retrySessionId && !comparison)}
+                       onChange={(event) => setHeadphonesConfirmed(event.target.checked)} />
+                {t('microphoneHeadphones')}
+              </label>
+            )}
             <button className="btn btn-primary btn-sm" onClick={startAccompaniment}
-                    disabled={loading || recording || (!!retrySessionId && !comparison)}>{t('startAccompaniment')}</button>
+                    disabled={loading || recording || (!!retrySessionId && !comparison)}>
+              {inputSource === 'microphone'
+                ? (headphonesConfirmed ? t('startMicrophoneRetryWithAccompaniment') : t('startMicrophoneRetry'))
+                : t('startAccompaniment')}
+            </button>
             <button className="btn btn-danger btn-sm" onClick={stopRetryAndCompare}
-                    disabled={loading || !retrySessionId || (uploadMode ? !retryUploadMidiRef.current : (!recording && !hasRetryRecovery))}>
-              {hasRetryRecovery ? t('analyzeRecoveredComparison') : t('stopAndCompare')}
+                    disabled={loading || !retrySessionId || (uploadMode
+                      ? !retryUploadMidiRef.current
+                      : (!recording && !hasRetryRecovery &&
+                        !microphoneRef.current?.hasTake(retrySessionId)))}>
+              {hasRetryRecovery
+                ? t('analyzeRecoveredComparison')
+                : inputSource === 'microphone' && !recording &&
+                    microphoneRef.current?.hasTake(retrySessionId)
+                  ? t('analyzeSavedTakeComparison')
+                  : t('stopAndCompare')}
             </button>
             {retrySessionId && !comparison && (
               <button className="btn btn-sm" onClick={cancelRetry} disabled={loading}>{t('cancelRetry')}</button>
@@ -1755,7 +2446,7 @@ export default function App() {
 
           {retrySessionId && !comparison && (
             <div className="retry-stage" aria-live="polite">
-              {!uploadMode && workflow.capture === 'retry' && !workflow.deviceConnected && (
+              {inputSource === 'web-midi' && workflow.capture === 'retry' && !workflow.deviceConnected && (
                 <div className="disconnect-recovery" role="alert">
                   <strong>{t('retryDisconnected')}</strong>
                   <span>{t('capturedSafe')}</span>
@@ -1775,22 +2466,50 @@ export default function App() {
                 <div className="retry-score-target">
                   <div className="retry-score-label">{t('retryGeneratedTarget')}</div>
                   <ScoreViewer xmlUrl={retryScoreXmlUrl}
-                               beatsPerMeasure={retryScoreMeta.beatsPerMeasure} cursor={cursor} />
+                               beatsPerMeasure={retryScoreMeta.beatsPerMeasure} cursor={cursor}
+                               follow={recording}
+                               liveFeedback={recording ? liveFeedback : null} />
                 </div>
               ) : (
                 <div className="alert alert-warn">{t('retryGeneratedUnavailable')}</div>
               )}
               <div className="recording-bar">
-                {!uploadMode && recording && <span className="rec-dot" />}
-                <span>{uploadMode
+                {inputSource !== 'midi-upload' && recording && <span className="rec-dot" />}
+                <span>{inputSource === 'midi-upload'
                   ? t('midiFileRetry')
-                  : (recording ? t('recordingRetry') : (hasRetryRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('waitingToRecord')))}</span>
+                  : inputSource === 'microphone' && microphoneState === 'transcribing'
+                    ? t('microphoneTranscribing')
+                    : (recording ? t('recordingRetry')
+                      : microphoneRef.current?.hasTake(retrySessionId)
+                        ? t('microphoneTakeReady')
+                        : (hasRetryRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('waitingToRecord')))}</span>
                 <span className="dim">{tf('accompanimentStatus', { bpm: retryTempo ?? '—' })}</span>
-                {cursor && <span className="dim">{tf('followerConfidence', {
-                  measure: cursor.measure, confidence: Math.round((cursor.confidence ?? 0) * 100),
+                {cursor && <span className="dim">{tf('followerPosition', {
+                  measure: measureLabel(cursor.measure),
+                  bpm: Math.round(cursor.bpm ?? 0),
                 })}</span>}
               </div>
-              {uploadMode && (
+              {inputSource !== 'midi-upload' && <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />}
+              {loading && submissionStage !== 'idle' && submissionStage !== 'complete' && (
+                <div className={`submission-progress-card ${submissionStage}`} role="status">
+                  <span className="submission-spinner" />
+                  <strong>{submissionStage === 'transcribing'
+                    ? t('submissionTranscribing')
+                    : submissionStage === 'analyzing'
+                      ? t('submissionAnalyzing') : t('submissionSaving')}</strong>
+                </div>
+              )}
+              {inputSource === 'microphone' && microphoneState === 'transcribing' && (
+                <div className="transcription-progress" role="status">
+                  <div><span style={{ width: `${Math.round(transcriptionProgress * 100)}%` }} /></div>
+                  <strong>{tf('transcriptionProgress', { value: Math.round(transcriptionProgress * 100) })}</strong>
+                  <button type="button" className="btn btn-sm"
+                          onClick={() => microphoneRef.current?.cancelTranscription()}>
+                    {t('transcriptionCancel')}
+                  </button>
+                </div>
+              )}
+              {inputSource === 'midi-upload' && (
                 <div className="mt-12">
                   <p className="dim">{t('uploadFreshRetry')}</p>
                   <UploadZone onFile={onUploadRetryMidi} accept=".mid,.midi" disabled={loading} />
@@ -1802,10 +2521,16 @@ export default function App() {
 
           {comparison && baselineReport && report && (
             <div className="mt-20">
-              <div className="table-scroll"><table className="comparison-table">
+              {report.inputQuality?.status === 'insufficient' ? (
+                <div className="limited-metrics-card">
+                  <strong>{t('limitedMetricsTitle')}</strong>
+                  <p>{t('limitedMetricsBody')}</p>
+                </div>
+              ) : <div className="table-scroll"><table className="comparison-table">
                 <thead><tr><th>{t('metric')}</th><th>{t('previousRound')}</th><th>{t('currentRound')}</th><th>{t('change')}</th></tr></thead>
                 <tbody>
-                  {(['overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore', 'timingMaeMs'] as const).map((k) => (
+                  {(['overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore',
+                    'dynamicsScore', 'timingMaeMs'] as const).map((k) => (
                     <tr key={k}>
                       <td>{METRIC_LABEL[k]}</td>
                       <td>{baselineReport.metrics[k]}</td>
@@ -1816,9 +2541,11 @@ export default function App() {
                     </tr>
                   ))}
                 </tbody>
-              </table></div>
+              </table></div>}
               <div className="alert alert-info">
-                {comparison.targetChanged
+                {report.inputQuality?.status === 'insufficient'
+                  ? t('limitedMetricsBody')
+                  : comparison.targetChanged
                   ? tf('lineageComparisonSummary', { remaining: report.errors.length })
                   : tf('comparisonSummary', {
                       resolved: comparison.resolvedErrors.length,
@@ -1844,10 +2571,14 @@ export default function App() {
               )}
               <section className="round-guidance">
                 <span className="training-kicker">{t('currentRoundAiKicker')}</span>
-                <h3>{report.errors.length
+                <h3>{report.inputQuality?.status === 'insufficient'
+                  ? t('limitedMetricsTitle')
+                  : report.errors.length
                   ? tf('roundProblemsRemain', { count: report.errors.length })
                   : t('roundPassed')}</h3>
-                <p>{mentorLoading
+                <p>{report.inputQuality?.status === 'insufficient'
+                  ? t('limitedMetricsBody')
+                  : mentorLoading
                   ? t('mentorThinking')
                   : (mentor?.summary || comparison.suggestion)}</p>
                 {mentor?.plan[0] && (
@@ -1876,8 +2607,11 @@ export default function App() {
                       ? t('generateFromCurrentRound') : t('backToExercise')}</button>
             <button className="btn btn-primary" onClick={() => {
               sendWorkflow({ type: 'RESET' }); setReport(null); setBaselineReport(null); setComparison(null)
-              setMentorChat([]); setExercise(null); setExerciseStage('design'); setGenerationNote('')
+              setMentorChat([]); setMentorMemory(null); setExercise(null); setExerciseStage('design'); setGenerationNote('')
               setExerciseScore(null); setRetrySessionId(null); setCursor(null); setRecording(false)
+              recordingRef.current = false; setSubmissionStage('idle')
+              liveRef.current.reset(); setLiveTrace([])
+              setLiveFeedback(idleLiveState('web-midi'))
               setScoreId(null); setScoreDetail(null); setNormalization(null); setMeta(null); setEvents([])
               uploadMidiRef.current = null; retryUploadMidiRef.current = null
             }} disabled={!!retrySessionId && !comparison}>{t('restart')}</button>
@@ -1885,6 +2619,7 @@ export default function App() {
         </div>
       )}
       </Suspense>
+      </div>
     </div>
   )
 }
@@ -1915,72 +2650,7 @@ function UploadZone({ onFile, accept, disabled }: { onFile: (f: File) => void; a
   )
 }
 
-function MetricsView({ report, baseline }: { report: DiagnosisReport; baseline: DiagnosisReport | null }) {
-  const m = report.metrics
-  const hasComparableBaseline = Boolean(baseline && baseline.scoreId === report.scoreId)
-  return (
-    <div className="metrics-grid">
-      {([
-        'overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore', 'timingMaeMs', 'avgBpm',
-      ] as const).map((k) => (
-        <div key={k} className="metric">
-          <div className="label">{METRIC_LABEL[k]}</div>
-          <div className="value">{m[k]}</div>
-          {baseline && hasComparableBaseline && baseline.metrics[k] !== m[k] && (
-            <div className="delta" style={{ color: (k === 'timingMaeMs' ? m[k] < baseline.metrics[k] : m[k] > baseline.metrics[k]) ? 'var(--green)' : 'var(--red)' }}>
-              {m[k] > baseline.metrics[k] ? '+' : ''}{(m[k] - baseline.metrics[k]).toFixed(1)}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function EvidenceDrawer({ report, err, onPlayCompare }: {
-  report: DiagnosisReport; err: ErrorEvent; onPlayCompare: (text: string) => void
-}) {
-  const evs = report.evidences.filter((e) => err.evidenceIds.includes(e.id))
-  return (
-    <div className="evidence-box">
-      <h3 style={{ margin: '0 0 8px' }}>{t('evidenceDetails')}</h3>
-      {evs.map((ev) => (
-        <div key={ev.id} className="fact">
-          • {ev.fact}
-          <div className="compare">
-            {ev.expected && <button className="btn btn-sm" onClick={() => onPlayCompare(ev.expected)}>{t('hearExpected')}</button>}
-            {ev.actual && <button className="btn btn-sm" onClick={() => onPlayCompare(ev.actual)}>{t('hearActual')}</button>}
-          </div>
-        </div>
-      ))}
-      {evs.length === 0 && <div className="dim">{t('noDetailedEvidence')}</div>}
-    </div>
-  )
-}
-
 // ---- 工具函数 ----
-function buildOnsets(events: ScoreEvent[], rs: number, re: number) {
-  const map = new Map<string, { onsetId: string; measureNo: number; onsetBeat: number; pitches: number[] }>()
-  for (const e of events) {
-    if (e.measureNo < rs || e.measureNo > re || e.optional) continue
-    const key = `${e.measureNo}:${e.onsetBeat}`
-    if (!map.has(key)) {
-      const token = String(e.onsetBeat).replace('.', '_')
-      map.set(key, { onsetId: `${e.eventId.split(':')[0]}:m${e.measureNo}:b${token}`, measureNo: e.measureNo, onsetBeat: e.onsetBeat, pitches: [] })
-    }
-    map.get(key)!.pitches.push(...e.pitches)
-  }
-  return [...map.values()].sort((a, b) => a.measureNo - b.measureNo || a.onsetBeat - b.onsetBeat)
-}
-
-function midiName(midi: number): string {
-  const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-  return `${NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`
-}
-
-function errColor(type: string): string {
-  return { wrong_pitch: '#e5484d', missed_note: '#8b8d98', extra_note: '#3e63dd', early_late: '#f76b15', duration_anomaly: '#12a594', tempo_instability: '#8e4ec6' }[type] ?? '#e5484d'
-}
 
 function useMemoResolvedKeys(comp: ComparisonResult | null): Set<string> {
   return new Set(comp?.resolvedErrors ?? [])

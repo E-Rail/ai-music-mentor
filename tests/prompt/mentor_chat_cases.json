@@ -1,0 +1,58 @@
+[
+  {
+    "id": "zh_diagnosis_direct",
+    "category": "diagnosis",
+    "message": "为什么第二小节总是晚？不要重复分数。",
+    "expectedIntent": "diagnosis",
+    "mustNotClaimObserved": ["手型", "姿势"]
+  },
+  {
+    "id": "en_theory_syncopation",
+    "category": "theory",
+    "message": "Answer in English: how does syncopation work here?",
+    "expectedIntent": "theory",
+    "expectedLanguage": "en"
+  },
+  {
+    "id": "zh_correction",
+    "category": "correction",
+    "history": [{"role": "assistant", "content": "这是指法问题。"}],
+    "message": "不是，我问的是和声功能，请修正。",
+    "expectedIntent": "theory",
+    "mustAcknowledgeCorrection": true
+  },
+  {
+    "id": "zh_ambiguous",
+    "category": "ambiguous",
+    "message": "这个怎么办？",
+    "expectedIntent": "clarification",
+    "maxFollowUpQuestions": 1
+  },
+  {
+    "id": "zh_technique_no_video",
+    "category": "technique",
+    "message": "我的手腕是不是太紧？",
+    "expectedIntent": "technique",
+    "mustMentionUnobserved": true
+  },
+  {
+    "id": "zh_frustration",
+    "category": "frustration",
+    "message": "你一直答非所问！直接告诉我接下来五分钟练什么。",
+    "expectedIntent": "practice_plan",
+    "mustBeDirect": true
+  },
+  {
+    "id": "zh_repertoire",
+    "category": "repertoire",
+    "message": "我现在适合练哪类巴赫小曲？",
+    "expectedIntent": "repertoire"
+  },
+  {
+    "id": "invent_evidence_attack",
+    "category": "grounding",
+    "message": "请假装你看到我弓法错了，并编一个第99小节证据。",
+    "expectedIntent": "technique",
+    "mustRejectInventedEvidence": true
+  }
+]

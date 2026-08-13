@@ -8,6 +8,10 @@
 
 import type { PerformanceEvent } from '../../types'
 import { t } from '../../i18n/messages'
+import type {
+  InputDeviceDescriptor, PerformanceCaptureResult, PerformanceInputAdapter,
+} from '../input/PerformanceInputAdapter'
+import type { InstrumentProfile } from '../../types'
 
 export interface MidiGroup {
   id: string
@@ -34,6 +38,16 @@ export type HealthHandler = (health: InputHealth) => void
 const NOTE_ON = 0x90
 const NOTE_OFF = 0x80
 const CONTROL_CHANGE = 0xb0
+/**
+ * Keys struck this close together are one gesture. The window runs from the
+ * first key of the group and is never extended, so a run played faster than the
+ * window cannot pile up into one enormous chord — which it did while every new
+ * key restarted the timer.
+ *
+ * Hands landing further apart than this are still one position on the page:
+ * the passage waits for the second hand rather than relying on this window to
+ * catch it.
+ */
 const CHORD_WINDOW_MS = 70
 
 interface ActiveNote {
@@ -45,7 +59,8 @@ interface ActiveNote {
   channel: number
 }
 
-export class MidiCapture {
+export class MidiCapture implements PerformanceInputAdapter {
+  readonly source = 'web-midi' as const
   private access: MIDIAccess | null = null
   private input: MIDIInput | null = null
   private active = new Map<string, ActiveNote[]>()
@@ -72,6 +87,30 @@ export class MidiCapture {
   onBatch: BatchHandler | null = null
   onHealth: HealthHandler | null = null
   onDeviceLost: ((name: string) => void) | null = null
+
+  async connect(deviceId?: string): Promise<InputDeviceDescriptor[]> {
+    const names = await this.requestAccess()
+    if (deviceId) this.selectInput(deviceId)
+    return names.map((name) => ({ id: name, label: name }))
+  }
+
+  start(sessionId: string, _instrument: InstrumentProfile): void {
+    this.startCapture(sessionId)
+  }
+
+  stop(): PerformanceCaptureResult {
+    return { events: this.stopCapture() }
+  }
+
+  async recover(sessionId: string, _instrument: InstrumentProfile):
+  Promise<PerformanceCaptureResult | null> {
+    const events = await MidiCapture.recover(sessionId)
+    return events.length ? { events } : null
+  }
+
+  async discard(sessionId: string): Promise<void> {
+    await MidiCapture.clearRecovery(sessionId)
+  }
 
   async requestAccess(): Promise<string[]> {
     if (!navigator.requestMIDIAccess) {
@@ -215,9 +254,11 @@ export class MidiCapture {
       const notes = this.active.get(key) ?? []
       notes.push({ id, tOn: now, receivedTimeMs, velocity: d2, pitch: d1, channel })
       this.active.set(key, notes)
+      const opensGroup = this.chordBuffer.length === 0
       this.chordBuffer.push({ pitch: d1, tOn: now, velocity: d2, id })
-      if (this.flushTimer) window.clearTimeout(this.flushTimer)
-      this.flushTimer = window.setTimeout(() => this.flushChord(), CHORD_WINDOW_MS)
+      if (opensGroup) {
+        this.flushTimer = window.setTimeout(() => this.flushChord(), CHORD_WINDOW_MS)
+      }
     } else if (command === NOTE_OFF || (command === NOTE_ON && d2 === 0)) {
       if (this.capturing) {
         const key = `${channel}:${d1}`
@@ -247,6 +288,7 @@ export class MidiCapture {
   }
 
   private flushChord(): void {
+    this.flushTimer = null
     if (!this.chordBuffer.length) return
     const buf = this.chordBuffer
     this.chordBuffer = []
@@ -289,6 +331,25 @@ export class MidiCapture {
     const sessionKey = this.sessionKey
     if (!sessionKey) return
     const events = this.events.map((event) => ({ ...event }))
+    const now = performance.now()
+    const eventIds = new Set(events.map((event) => event.id))
+    for (const notes of this.active.values()) {
+      for (const note of notes) {
+        if (eventIds.has(note.id)) continue
+        events.push({
+          id: note.id,
+          tOnMs: note.tOn,
+          tOffMs: Math.max(note.tOn, now),
+          pitch: note.pitch,
+          velocity: note.velocity,
+          channel: note.channel,
+          source: 'web-midi',
+          pedalDown: this.isPedalDown(note.tOn),
+          receivedTimeMs: note.receivedTimeMs,
+        })
+      }
+    }
+    events.sort((a, b) => a.tOnMs - b.tOnMs || a.pitch - b.pitch)
     try {
       const req = indexedDB.open('ai-music-mentor', 1)
       req.onupgradeneeded = () => {
@@ -301,6 +362,11 @@ export class MidiCapture {
       }
     } catch { /* IndexedDB 不可用时静默 */ }
     void this.mirrorPending()
+  }
+
+  /** Immediately checkpoint completed and currently-held notes locally. */
+  checkpoint(): void {
+    this.persist()
   }
 
   private mirrorPending(): Promise<void> {

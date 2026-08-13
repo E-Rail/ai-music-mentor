@@ -12,6 +12,7 @@ import hashlib
 import re
 
 import music21
+from defusedxml import ElementTree as SafeET
 
 from app import config
 from app.schemas.models import ScoreBundle, ScoreEvent, ScoreMeta
@@ -19,6 +20,51 @@ from app.schemas.models import ScoreBundle, ScoreEvent, ScoreMeta
 
 class ScoreUnsupportedError(Exception):
     pass
+
+
+_DYNAMIC_VELOCITY = {
+    "pppp": 20, "ppp": 28, "pp": 36, "p": 46,
+    "mp": 58, "mf": 72, "f": 86, "ff": 100,
+    "fff": 112, "ffff": 120,
+}
+
+
+def _dynamic_target(element) -> int | None:
+    """Return an explicit notation dynamic as a MIDI-velocity target."""
+    dynamic = element.getContextByClass(music21.dynamics.Dynamic)
+    value = str(getattr(dynamic, "value", "") or "").lower()
+    return _DYNAMIC_VELOCITY.get(value)
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _written_to_sounding_semitones(xml_bytes: bytes) -> int:
+    """Read an explicit MusicXML transpose declaration without guessing."""
+    try:
+        root = SafeET.fromstring(xml_bytes)
+    except Exception:
+        return 0
+    offsets: set[int] = set()
+    for transpose in root.iter():
+        if _local_name(transpose.tag) != "transpose":
+            continue
+        chromatic = 0
+        octave_change = 0
+        for child in transpose:
+            name = _local_name(child.tag)
+            try:
+                if name == "chromatic":
+                    chromatic = int(child.text or "0")
+                elif name == "octave-change":
+                    octave_change = int(child.text or "0")
+            except ValueError:
+                return 0
+        offsets.add(chromatic + 12 * octave_change)
+    # A single global offset is safe for the one-instrument microphone scope.
+    # Mixed transpositions are left unchanged rather than guessed.
+    return offsets.pop() if len(offsets) == 1 else 0
 
 
 def _detect_part_name(part: music21.stream.Part, index: int) -> str:
@@ -69,17 +115,39 @@ def parse_musicxml(xml_bytes: bytes, score_id: str) -> ScoreBundle:
     if note_count > config.MAX_SCORE_NOTES:
         raise ScoreUnsupportedError(f"音符数量 {note_count} 超过上限 {config.MAX_SCORE_NOTES}")
     max_beat = max(
-        (event.measureNo - 1) * meta.beatsPerMeasure + event.onsetBeat + event.durationBeat
-        for event in events
+        (event.absoluteBeat if event.absoluteBeat is not None else
+         (event.measureNo - 1) * meta.beatsPerMeasure + event.onsetBeat)
+        + event.durationBeat for event in events
     )
     if max_beat * 60 / max(meta.tempo, 1) > config.MAX_SCORE_DURATION_SECONDS:
         raise ScoreUnsupportedError("乐谱演奏时长超过上限")
+    # Only a written p/mf/f licenses grading a performance against a dynamic.
+    meta.hasNotatedDynamics = any(
+        event.dynamicTarget is not None for event in events)
     return ScoreBundle(meta=meta, events=events)
+
+
+def _score_title(score: music21.stream.Score, score_id: str) -> str:
+    """Read the name a musician would call this piece.
+
+    MusicXML carries a title in two places and publishers use either. music21
+    maps ``<work-title>`` to ``title`` and ``<movement-title>`` to
+    ``movementName``, and a file with only the latter — which is what most
+    engraving software exports — used to fall through to the internal score ID,
+    so the library showed "twinkle_star" instead of 小星星.
+    """
+    metadata = score.metadata
+    for candidate in (getattr(metadata, "title", None),
+                      getattr(metadata, "movementName", None)):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return score_id
 
 
 def _extract_meta(score: music21.stream.Score, xml_bytes: bytes, score_id: str) -> ScoreMeta:
     md = score.metadata
-    title = (md.title if md and md.title else score_id) or score_id
+    title = _score_title(score, score_id)
     composer = (md.composer if md and md.composer else "") or ""
 
     tempos = score.recurse().getElementsByClass(music21.tempo.MetronomeMark)
@@ -87,9 +155,12 @@ def _extract_meta(score: music21.stream.Score, xml_bytes: bytes, score_id: str) 
 
     ts_list = score.recurse().getElementsByClass(music21.meter.TimeSignature)
     ts_str = ts_list[0].ratioString if len(ts_list) else "4/4"
-    beats_per_measure = float(ts_list[0].numerator) if len(ts_list) else 4.0
-    if ts_list and ts_list[0].denominator == 8:
-        beats_per_measure = float(ts_list[0].numerator) / 2.0  # 6/8 → 3 拍
+    # ScoreEvent offsets and durations use quarterLength units. Keep the
+    # measure span in that same unit for every denominator (2/2 = 4, 3/8 = 1.5).
+    beats_per_measure = (
+        float(ts_list[0].numerator) * 4.0 / float(ts_list[0].denominator)
+        if len(ts_list) else 4.0
+    )
 
     parts = [p.partName or f"P{i+1}" for i, p in enumerate(score.parts)]
     measure_count = 0
@@ -102,20 +173,81 @@ def _extract_meta(score: music21.stream.Score, xml_bytes: bytes, score_id: str) 
         if not mark.number:
             continue
         measure = mark.getContextByClass(music21.stream.Measure)
-        tempo_map.append({"measureNo": int(measure.measureNumber or 1) if measure else 1,
+        tempo_map.append({"measureNo": _linear_measure_number(measure),
                           "onsetBeat": float(mark.offset), "bpm": float(mark.number)})
     meter_map = []
     for signature in ts_list:
         measure = signature.getContextByClass(music21.stream.Measure)
-        meter_map.append({"measureNo": int(measure.measureNumber or 1) if measure else 1,
+        meter_map.append({"measureNo": _linear_measure_number(measure),
                           "onsetBeat": float(signature.offset),
                           "timeSignature": signature.ratioString})
     return ScoreMeta(
         scoreId=score_id, title=title, composer=composer, tempo=bpm,
         timeSignature=ts_str, beatsPerMeasure=beats_per_measure,
         measureCount=measure_count, parts=parts,
+        measureLabels=measure_labels(score),
         tempoMap=tempo_map, meterMap=meter_map, scoreHash=score_hash,
+        writtenToSoundingSemitones=_written_to_sounding_semitones(xml_bytes),
     )
+
+
+def measure_labels(score: music21.stream.Score) -> list[str]:
+    """What each bar is called on the page, indexed by its timeline position.
+
+    ``measureNo`` is a position in the performance timeline and always counts
+    1, 2, 3…, which is what alignment and event IDs need. It is not always what
+    the page prints. A piece that opens with a pickup bar numbers that bar 0, so
+    every printed number after it is one lower than its position, and telling a
+    student to fix "第 4 小节" sends them to the wrong bar.
+
+    The printed numbers are used whenever they are trustworthy — present, never
+    repeated, and never counting backwards. Otherwise the position is used,
+    because a page numbered 0, 0, 0… is worse than one numbered 1, 2, 3.
+    """
+    parts = list(score.parts)
+    if not parts:
+        return []
+    longest = max(parts, key=lambda part: len(
+        part.getElementsByClass(music21.stream.Measure)))
+    printed: list[str] = []
+    numbers: list[int] = []
+    for measure in longest.getElementsByClass(music21.stream.Measure):
+        number = int(measure.number or 0)
+        numbers.append(number)
+        printed.append(f"{number}{measure.numberSuffix or ''}")
+    positional = [str(index) for index in range(1, len(printed) + 1)]
+    if not printed:
+        return positional
+    # music21 reports an unnumbered bar and a bar genuinely printed "0" the same
+    # way, so the sequence has to say which this is. A pickup is a 0 followed by
+    # bar 1; a 0 anywhere else, or a lone 0, means the file was never numbered.
+    leading_zero_is_a_pickup = (
+        numbers[0] != 0 or (len(numbers) > 1 and numbers[1] == 1))
+    trustworthy = (
+        len(set(printed)) == len(printed)
+        and all(later >= earlier for earlier, later in zip(numbers, numbers[1:]))
+        and all(number > 0 for number in numbers[1:])
+        and leading_zero_is_a_pickup
+    )
+    return printed if trustworthy else positional
+
+
+def _linear_measure_number(measure: music21.stream.Measure | None) -> int:
+    """Return a sequential timeline position after repeat expansion.
+
+    music21 preserves the printed number on repeated copies and adds suffixes
+    such as ``1a``. A normalized performance timeline must instead give every
+    pass a unique measure number and stable event ID.
+    """
+    if measure is None:
+        return 1
+    part = measure.getContextByClass(music21.stream.Part)
+    if part is not None:
+        for index, candidate in enumerate(
+                part.getElementsByClass(music21.stream.Measure), start=1):
+            if candidate is measure:
+                return index
+    return max(1, int(measure.measureNumber or 1))
 
 
 def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEvent]:
@@ -125,8 +257,7 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
         part_name = _detect_part_name(part, p_idx)
         # 展平到 measure 层级，按 (measure, onset) 聚合和弦
         measures = part.getElementsByClass(music21.stream.Measure)
-        for meas in measures:
-            m_no = int(meas.measureNumber or 0)
+        for m_no, meas in enumerate(measures, start=1):
             # measure 内 offset（quarterLength），转为拍
             groups: dict[tuple[float, int], dict] = {}
             for el in meas.recurse().notesAndRests:
@@ -141,7 +272,8 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                 key = (onset_q, voice)
                 if key not in groups:
                     groups[key] = {"pitches": [], "dur": 0.0,
-                                   "optional": False, "voice": voice}
+                                   "optional": False, "voice": voice,
+                                   "dynamicTargets": []}
                 g = groups[key]
                 if el.isChord:
                     g["pitches"].extend(n.pitch.midi for n in el.notes)
@@ -150,6 +282,9 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                 g["dur"] = max(g["dur"], float(el.duration.quarterLength))
                 if el.duration.isGrace:
                     g["optional"] = True
+                dynamic_target = _dynamic_target(el)
+                if dynamic_target is not None:
+                    g["dynamicTargets"].append(dynamic_target)
             for idx, (onset_q, voice) in enumerate(sorted(groups)):
                 g = groups[(onset_q, voice)]
                 if not g["pitches"]:
@@ -159,10 +294,14 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                     eventId=f"{score_id}:{part_name}:m{m_no}:b{onset_token}:{idx}",
                     measureNo=m_no,
                     onsetBeat=onset_q,
+                    absoluteBeat=float(meas.offset) + onset_q,
                     durationBeat=g["dur"],
                     pitches=sorted(set(g["pitches"])),
                     part=part_name,
                     voice=g["voice"],
+                    dynamicTarget=(round(sum(g["dynamicTargets"]) /
+                                         len(g["dynamicTargets"]))
+                                   if g["dynamicTargets"] else None),
                     optional=g["optional"],
                 ))
     # 全局按 (measure, onset, part) 排序
@@ -186,7 +325,8 @@ def export_reference_midi(bundle: ScoreBundle, out_path) -> None:
     for e in bundle.events:
         if e.optional:
             continue
-        abs_beat = (e.measureNo - 1) * bpm_ + e.onsetBeat
+        abs_beat = (e.absoluteBeat if e.absoluteBeat is not None else
+                    (e.measureNo - 1) * bpm_ + e.onsetBeat)
         for p in e.pitches:
             msgs.append((abs_beat, 1, p, 72))                      # note_on
             msgs.append((abs_beat + e.durationBeat, 0, p, 0))      # note_off

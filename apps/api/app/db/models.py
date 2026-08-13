@@ -173,6 +173,22 @@ class MentorInteractionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class MentorMemoryRecord(Base):
+    """Bounded local tutor memory shared by every round of one score lineage."""
+    __tablename__ = "mentor_memories"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "scope_id", name="uq_mentor_memory_profile_scope"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("local_profiles.id"), index=True)
+    scope_id: Mapped[str] = mapped_column(String(160), index=True)
+    turns: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                  onupdate=utcnow)
+
+
 class GeneratedItemRecord(Base):
     """Generated accompaniment metadata and compatibility-only payloads."""
     __tablename__ = "generated_items"

@@ -66,7 +66,7 @@ step "Signed in as $HF_USER."
 if curl -sf -o /dev/null "${auth[@]}" "$API/spaces/$SPACE"; then
   step "Space $SPACE already exists — updating it."
 else
-  step "Creating Space $SPACE…"
+  step "Creating Space ${SPACE}…"
   payload="{\"type\":\"space\",\"name\":\"$NAME\",\"sdk\":\"docker\",\"private\":false"
   # Only send organization when the owner is not the account itself; sending
   # your own username as an org is rejected.
@@ -114,7 +114,7 @@ esac
 ASKPASS
 chmod +x "$askpass"
 
-step "Pushing to huggingface.co/spaces/$SPACE…"
+step "Pushing to huggingface.co/spaces/${SPACE}…"
 HF_ASKPASS_USER="$HF_USER" HF_ASKPASS_TOKEN="$HF_TOKEN" \
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
   git push --force "https://huggingface.co/spaces/$SPACE" "$commit:refs/heads/main" 2>&1 \

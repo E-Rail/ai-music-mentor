@@ -575,9 +575,13 @@ input[type=checkbox] { accent-color: var(--brass); }
 }
 .score-viewer { position: relative; }
 
-/* While you are playing, the sheet is a window onto the page rather than the
-   whole page. It scrolls itself; see features/score/followScroll. */
-.score-viewer.following {
+/* On the playing screen the sheet is a window onto the page rather than the
+   whole page — always, not only while the cursor is moving. Tying this to
+   `.following` meant the box vanished the moment you stopped, the sheet sprang
+   back to its full height, and 114px of music painted outside the paper and
+   under the transport. `.following` says whether to scroll it; this says how
+   big it is. See features/score/followScroll. */
+.practice-studio .score-viewer {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -585,8 +589,8 @@ input[type=checkbox] { accent-color: var(--brass); }
   scrollbar-width: thin;
   scrollbar-color: var(--rule) transparent;
 }
-.score-viewer.following::-webkit-scrollbar { width: 9px; }
-.score-viewer.following::-webkit-scrollbar-thumb {
+.practice-studio .score-viewer::-webkit-scrollbar { width: 9px; }
+.practice-studio .score-viewer::-webkit-scrollbar-thumb {
   border: 3px solid transparent; border-radius: 99px;
   background: var(--rule) padding-box;
 }

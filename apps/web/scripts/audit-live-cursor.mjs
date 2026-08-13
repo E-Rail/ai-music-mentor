@@ -55,6 +55,22 @@ const measured = await page.evaluate(() => {
     anchorsSample: Array.isArray(anchors) ? anchors.slice(0, 2).map(a => ({ p: a.pitch, top: Math.round(a.top) })) : null,
   }
 })
+
+// The box must not depend on the cursor moving. It used to: the moment a take
+// stopped, `.following` came off, the sheet sprang back to its full height and
+// painted outside the paper and under the transport. Taking the class off by
+// hand is the same question without having to leave this screen.
+const stopped = await page.evaluate(() => {
+  const stage = document.querySelector('.score-stage')
+  const viewer = document.querySelector('.score-viewer')
+  if (!stage || !viewer) return null
+  viewer.classList.remove('following')
+  const overflowY = getComputedStyle(viewer).overflowY
+  const s = stage.getBoundingClientRect(), v = viewer.getBoundingClientRect()
+  const escapes = Math.round(v.bottom - s.bottom)
+  viewer.classList.add('following')
+  return { escapes, overflowY }
+})
 if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT })
 await browser.close()
 
@@ -77,6 +93,10 @@ check('the sheet is taller than its window, so it has somewhere to scroll',
       viewer.scroll > viewer.client, `${viewer.scroll}px of music in a ${viewer.client}px window`)
 check('the sheet followed the player',
       viewer.scrollTop > 0, `scrolled to ${viewer.scrollTop}px`)
+check('the sheet stays on the paper when it is not following',
+      !!stopped && stopped.escapes <= 0 && stopped.overflowY === 'auto',
+      stopped ? `${stopped.escapes}px past the stage, overflow ${stopped.overflowY}`
+              : 'no sheet on the page')
 
 console.log('\nThe follow cursor while playing')
 for (const c of checks) {

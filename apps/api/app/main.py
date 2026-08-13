@@ -130,5 +130,29 @@ app.include_router(router, prefix="/api/v1")
 # Temporary compatibility alias for saved demo URLs and old offline scripts.
 app.include_router(router, prefix="/api", include_in_schema=False)
 
+class _BuiltWeb(StaticFiles):
+    """Serve the built app so a rebuild is never half-visible.
+
+    Vite fingerprints every asset and deletes the previous ones, so the only
+    thing tying a browser to a build is index.html. Served without an explicit
+    Cache-Control it gets *heuristically* cached — browsers are free to reuse it
+    for a fraction of its age without asking — and after a rebuild that stale
+    copy asks for a bundle that no longer exists. The page then sits on its boot
+    message telling the reader to check a local service that is working
+    perfectly.
+
+    So: the HTML always revalidates, and the fingerprinted assets it names may
+    be kept for ever, because their names change when their contents do.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.startswith("assets/") and "." in path.rsplit("/", 1)[-1]:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 if (config.WEB_DIST_DIR / "index.html").exists():
-    app.mount("/", StaticFiles(directory=config.WEB_DIST_DIR, html=True), name="web")
+    app.mount("/", _BuiltWeb(directory=config.WEB_DIST_DIR, html=True), name="web")

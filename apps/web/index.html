@@ -28,6 +28,10 @@
       <main id="boot-message" class="boot-message" role="status">
         <h1>AI 音乐导师</h1>
         <p id="boot-status">正在启动应用…</p>
+        <div id="stale-help" hidden>
+          <p>这个页面是上一次构建留下的旧版本，它要的文件已经不在了。</p>
+          <p>按住 Shift 点刷新（或 ⌘/Ctrl + Shift + R）重新载入即可。</p>
+        </div>
         <div id="direct-file-help" hidden>
           <p>这个 index.html 需要前端编译器和分析服务，不能像普通网页一样直接双击运行。</p>
           <p>请在项目根目录运行对应系统的启动器：</p>
@@ -42,6 +46,16 @@
         const bootMessage = document.getElementById('boot-message')
         const status = document.getElementById('boot-status')
         const help = document.getElementById('direct-file-help')
+        const staleHelp = document.getElementById('stale-help')
+        // A bundle that 404s means this HTML is older than the build it names.
+        // Saying "check the local service" there sends the reader after a
+        // server that is working perfectly, so name the real problem instead.
+        document.addEventListener('error', (event) => {
+          const target = event.target
+          if (!(target instanceof HTMLScriptElement) || !bootMessage?.isConnected) return
+          status.textContent = '页面版本过旧。'
+          staleHelp.hidden = false
+        }, true)
         if (location.protocol === 'file:') {
           status.textContent = '此文件不能直接打开。'
           help.hidden = false

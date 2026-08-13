@@ -336,6 +336,12 @@ export default function App() {
   const publishLiveState = (state: LivePerformanceState) => {
     setLiveFeedback(state)
     setLiveTrace([...liveRef.current.traceNotes])
+    // The listener does better when it knows what is due. A left hand played
+    // softer than the melody is otherwise easy to lose entirely, and a note
+    // that is never heard is a note the cursor walks straight past.
+    microphoneRef.current?.expect(state.outstanding.length
+      ? state.outstanding.map((note) => note.pitch)
+      : state.target?.pitches ?? [])
     if (state.target) {
       setCursor({
         measure: state.target.measureNo, beat: state.target.onsetBeat,

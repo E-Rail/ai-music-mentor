@@ -190,6 +190,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
   private noiseFloorDb: number | null = null
   private liveDetector: LiveNoteDetector | null = null
   private detectorSampleRate = 0
+  private expected: readonly number[] = []
   private previewThrottle = 0
   /** Fires once per detected note attack while recording. */
   onDetectedNote: ((note: DetectedNote) => void) | null = null
@@ -385,9 +386,23 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
   }
 
   /** The live detector, built on first use once the sample rate is known. */
+  /**
+   * Tell the listener which notes the page is waiting for.
+   *
+   * A left hand played softer than the right — which is most playing — can sit
+   * far enough under the melody that blind listening loses it entirely. Knowing
+   * a note is due is enough to believe a quieter trace of it, and a note that
+   * was never played is still never invented.
+   */
+  expect(pitches: readonly number[]): void {
+    this.expected = pitches
+    this.liveDetector?.expect(pitches)
+  }
+
   private detector(sampleRate: number): LiveNoteDetector {
     if (!this.liveDetector || this.detectorSampleRate !== sampleRate) {
       this.liveDetector = new LiveNoteDetector({ sampleRate })
+      this.liveDetector.expect(this.expected)
       this.detectorSampleRate = sampleRate
     }
     return this.liveDetector

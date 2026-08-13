@@ -103,9 +103,29 @@ const HARMONICS = 6
  * chord from a single melody note while playing. Scoring still comes from Basic
  * Pitch after the take, where accuracy matters and latency does not.
  */
+/** A second blind voice has to be this much of the loudest one to be believed. */
+const SECOND_VOICE_SHARE = 0.42
+/**
+ * How much less evidence a note the page is waiting for needs.
+ *
+ * Not a free pass: the energy still has to be there on that pitch's harmonics.
+ * It is a prior — the page says this note is due now, so a quieter trace of it
+ * is enough to believe. An octave is the case that needs it: a left-hand C3
+ * under a right-hand C4 puts almost all its energy where C4's own harmonics
+ * already are, and blind sieving reads one note where two were played.
+ */
+const EXPECTED_VOICE_SHARE = 0.16
+
 export function detectPolyphony(
   magnitude: Float32Array, binHz: number,
   minPitchHz: number, maxPitchHz: number,
+  /**
+   * Pitches the passage is waiting for at this moment, if anything is known.
+   * Unexpected notes are still found by the blind pass above — a wrong note
+   * has to be reportable, or the app would only ever confirm what it hoped to
+   * hear.
+   */
+  expected: readonly number[] = [],
 ): number[] {
   const residual = Float32Array.from(magnitude)
   const lowest = Math.max(0, Math.ceil(frequencyToMidi(minPitchHz)))
@@ -140,7 +160,7 @@ export function detectPolyphony(
     if (bestMidi < 0) break
     if (round === 0) bestOverall = bestScore
     // A second voice has to be a real presence, not a leftover sideband.
-    else if (bestScore < bestOverall * 0.42) break
+    else if (bestScore < bestOverall * SECOND_VOICE_SHARE) break
     found.push(bestMidi)
 
     // Subtract only what this note can explain, never the whole bin. An octave
@@ -161,6 +181,16 @@ export function detectPolyphony(
           residual[bin] = Math.max(0, residual[bin] - explained)
         }
       }
+    }
+  }
+  // Second look, for the notes the page is expecting. Whatever the blind pass
+  // could explain has already been subtracted from the residual, so this asks
+  // only whether there is still energy where an owed note would be.
+  if (expected.length && bestOverall > 0) {
+    for (const midi of expected) {
+      if (found.includes(midi)) continue
+      if (midi < lowest || midi > highest) continue
+      if (scoreOf(midi) >= bestOverall * EXPECTED_VOICE_SHARE) found.push(midi)
     }
   }
   return [...new Set(found)].sort((left, right) => left - right)
@@ -240,6 +270,11 @@ export class LiveNoteDetector {
   private readonly windowed = new Float32Array(FRAME_SIZE)
   private windowedLength = 0
   private readonly bins = FFT_SIZE / 2
+  /**
+   * What the page is waiting for right now, set by whoever is following along.
+   * Empty means listen blind, which is what a free-play take does.
+   */
+  private expected: readonly number[] = []
   private noiseSum: Float32Array
   private noiseFrames = 0
   private noiseProfile: Float32Array | null = null
@@ -322,6 +357,14 @@ export class LiveNoteDetector {
   pinSensitivity(value: number): void {
     this.sensitivity = value
     this.autoTuned = true
+  }
+
+  /**
+   * Tell the detector which notes are due, so a quiet one it already has reason
+   * to expect is not lost under a louder neighbour. Cleared by passing nothing.
+   */
+  expect(pitches: readonly number[]): void {
+    this.expected = pitches
   }
 
   reset(): void {
@@ -571,7 +614,8 @@ export class LiveNoteDetector {
     if (midi < 0 || midi > 127) return null
     const binHz = this.options.sampleRate / FFT_SIZE
     const chord = detectPolyphony(
-      this.gated, binHz, this.options.minPitchHz, this.options.maxPitchHz)
+      this.gated, binHz, this.options.minPitchHz, this.options.maxPitchHz,
+      this.expected)
     // The NSDF pitch is the one the ear leads on; keep it even if the harmonic
     // search missed it, and present the rest as the other voices.
     const pitches = [...new Set([midi, ...chord])].sort((a, b) => a - b)

@@ -201,8 +201,25 @@ describe('hearing more than one note at once', () => {
   })
 
   it('reads a two-hand octave as two notes', () => {
-    // What the demo songs actually are: melody over a left-hand bass.
-    expect(detectPolyphony(spectrumOf([48, 72]), BIN_HZ, 110, 1400)).toContain(72)
+    // What the demo songs actually are: melody over a left-hand bass. Blind,
+    // the octave is the hardest case there is — the upper note sits exactly on
+    // the lower one's second harmonic — so the page's expectation is what
+    // makes it recoverable.
+    expect(detectPolyphony(spectrumOf([48, 72]), BIN_HZ, 110, 1400, [48, 72]))
+      .toEqual([48, 72])
+  })
+
+  it('still hears a note the page was not expecting', () => {
+    // The whole point of a tutor is reporting the note you did not mean to
+    // play. A prior that could only confirm the score would be worse than none.
+    const found = detectPolyphony(spectrumOf([48, 71]), BIN_HZ, 110, 1400, [48, 72])
+    expect(found).toContain(71)
+    expect(found).not.toContain(72)
+  })
+
+  it('does not invent a note it was told to expect', () => {
+    const found = detectPolyphony(spectrumOf([72]), BIN_HZ, 110, 1400, [48, 72])
+    expect(found).toEqual([72])
   })
 
   it('reads a C major triad as three notes', () => {

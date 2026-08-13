@@ -94,26 +94,36 @@ MENTOR_MAX_OUTPUT_TOKENS=1600
 
 ## 发布成网址
 
-把整个工作台（页面、API、听音模型）部署到 Hugging Face Space，免费、无需信用卡，给出一个 HTTPS 网址。
+把整个工作台（页面、API、听音模型）部署到 Google Cloud Run，得到一个 HTTPS 网址。
 
 HTTPS 不是锦上添花：麦克风和 Web MIDI 都要求安全上下文，`http://` 页面永远拿不到这两个权限。
 
+一次性准备：装上 [gcloud](https://cloud.google.com/sdk/docs/install)（macOS：`brew install --cask google-cloud-sdk`），然后
+
 ```bash
-scripts/deploy-space.sh <你的用户名>/ai-music-mentor
+gcloud auth login
+gcloud config set project <你的项目 id>
 ```
 
-需要一个有 **write** 权限的访问令牌（https://huggingface.co/settings/tokens）。脚本会在 Space 不存在时创建它，推送代码，并可选地把 `.env` 里的配置送进 Space 设置 —— 名字像凭据的（`*_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`）进只写的 Secrets，其余进普通 Variables。
+之后每次发布都是这一条：
 
-首次构建约 5-10 分钟：安装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。之后每次重跑脚本即可更新。
+```bash
+scripts/deploy-cloudrun.sh
+```
 
-推送的是 **HEAD 的提交内容**，不是工作区；`.env` 本来就不在 Git 里，因此不会随代码上传。Space 上的提交是无父提交，本仓库的历史不会跟着进入公开页面。
+脚本会打开需要的 API、把 `.env` 写成配置随服务下发、构建镜像并部署。首次约 10 分钟：装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。重跑即更新，地址不变，已经发出去的链接照常可用。
+
+用量落在 Cloud Run 的永久免费额度内，但项目本身要开通结算；镜像存在 Artifact Registry 里，超出 0.5 GB 的部分每月几分钱。
 
 几件要知道的事：
 
-- **分享 `*.hf.space` 那个地址，不是 `huggingface.co/spaces/...`。** 后者把应用嵌在框架里，而浏览器不会把麦克风和 MIDI 权限交给跨源框架。脚本结束时打印的就是前者。真有人从框架里打开时，应用会认出这一点，并直接告诉他要开哪个地址。
 - **用 Chrome 或 Edge 打开。** MIDI 键盘走 Web MIDI，Safari 和 Firefox 不支持；麦克风路径则各家都行。
-- **练习记录不持久。** 免费 Space 的磁盘是临时的，重启后 `/data` 清空。曲库、诊断、练习生成都照常，只是历史不留。
-- **网址是公开的，导师调用花的是你的额度。** 建议在 OpenRouter 给这把 key 设支出上限；或者把 Space 设为 private，只自己登录后使用。
+- **闲置会缩到零。** 静置一段时间后第一次访问要等几秒启动。演示前先打开一次，它就是热的。
+- **练习记录不持久。** 数据库在容器里，重启即清空。曲库、诊断、练习生成都照常，只是历史不留。脚本固定 `--max-instances 1`，否则第二个实例会是另一份空历史。
+- **网址是公开的，导师调用花的是你的额度。** 建议在 OpenRouter 给这把 key 设支出上限。
+- `.env` 不在 Git 里，也不在镜像里 —— 它是部署时下发的配置。
+
+Hugging Face Space 的脚本（`scripts/deploy-space.sh`）仍然可用，但 HF 现在只对 **静态** Space 免费，Docker Space 需要 PRO 订阅。
 
 本地跑同一个镜像：
 

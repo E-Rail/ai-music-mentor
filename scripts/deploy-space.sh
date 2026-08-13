@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Publish the studio to a Hugging Face Space, which builds the Dockerfile and
-# serves it over HTTPS for free.
+# serves it over HTTPS.
+#
+# Hugging Face only gives *static* Spaces away now — a Docker Space on free
+# cpu-basic is refused at creation unless the account has PRO. Without one, use
+# deploy-cloudrun.sh, which builds the same image from the same Dockerfile.
 #
 # HTTPS is not a nicety here: the microphone and the MIDI keyboard are both
 # behind browser permissions that a plain http:// page is never granted, so a

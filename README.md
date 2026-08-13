@@ -110,6 +110,7 @@ scripts/deploy-space.sh <你的用户名>/ai-music-mentor
 
 几件要知道的事：
 
+- **分享 `*.hf.space` 那个地址，不是 `huggingface.co/spaces/...`。** 后者把应用嵌在框架里，而浏览器不会把麦克风和 MIDI 权限交给跨源框架。脚本结束时打印的就是前者。真有人从框架里打开时，应用会认出这一点，并直接告诉他要开哪个地址。
 - **用 Chrome 或 Edge 打开。** MIDI 键盘走 Web MIDI，Safari 和 Firefox 不支持；麦克风路径则各家都行。
 - **练习记录不持久。** 免费 Space 的磁盘是临时的，重启后 `/data` 清空。曲库、诊断、练习生成都照常，只是历史不留。
 - **网址是公开的，导师调用花的是你的额度。** 建议在 OpenRouter 给这把 key 设支出上限；或者把 Space 设为 private，只自己登录后使用。

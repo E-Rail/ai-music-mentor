@@ -462,6 +462,7 @@ export const zhCN = {
   improved: '已改善',
   missing: '漏',
   midiUnsupported: '当前浏览器不支持 Web MIDI，请使用 Chromium 系浏览器',
+  embeddedPermissionNote: '本页被嵌在别的网站里，浏览器不会把麦克风和 MIDI 权限交给它。请在新标签页直接打开 {address} 后重试。',
   midiStateChanged: 'MIDI 设备状态发生变化',
   connected: '已连接',
   disconnected: '已断开',

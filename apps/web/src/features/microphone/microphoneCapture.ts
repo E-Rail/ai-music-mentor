@@ -5,6 +5,7 @@ import type { InstrumentProfile } from '../../types'
 import { LiveNoteDetector, type DetectedNote } from './liveDetector'
 import { transcribeAudio } from './transcription'
 import { enhancePreviewFrame } from './audioEnhancement'
+import { withEmbeddedNote } from '../shell/embedding'
 
 export type MicrophoneState =
   | 'idle' | 'requesting' | 'noise-check' | 'ready' | 'recording'
@@ -55,7 +56,9 @@ function microphoneFailure(error: unknown): MicrophoneConnectionError {
     if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
       return connectionError(
         'MIC_PERMISSION_DENIED',
-        '浏览器或 macOS 已阻止麦克风。请同时检查地址栏的网站权限，以及“系统设置 → 隐私与安全性 → 麦克风”。',
+        withEmbeddedNote(
+          '浏览器或 macOS 已阻止麦克风。请同时检查地址栏的网站权限，以及“系统设置 → 隐私与安全性 → 麦克风”。',
+        ),
       )
     }
     if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {

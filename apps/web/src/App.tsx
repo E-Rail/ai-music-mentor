@@ -42,6 +42,7 @@ import {
 import {
   CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, t, tf,
 } from './i18n/messages'
+import { withEmbeddedNote } from './features/shell/embedding'
 
 const ScoreViewer = lazy(() => import('./features/score/ScoreViewer').then((module) => ({
   default: module.ScoreViewer,
@@ -854,7 +855,7 @@ export default function App() {
       }
     } catch (e) {
       setMidiSupported(false); setUploadMode(true)
-      setAlert({ type: 'warn', msg: t('midiPermissionFallback') })
+      setAlert({ type: 'warn', msg: withEmbeddedNote(t('midiPermissionFallback')) })
     } finally {
       setLoading(false)
     }

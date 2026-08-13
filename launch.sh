@@ -22,7 +22,23 @@ fi
 
 cd "$PROJECT_DIR"
 
+# An already-running server is reused rather than restarted, which is what
+# makes a second launch instant. The catch is that it serves whatever was built
+# last, so say so plainly when that is older than the source — silently opening
+# a stale app is how an afternoon gets lost to "the change did not work".
+warn_if_stale_build() {
+  local built="$PROJECT_DIR/apps/web/dist/index.html"
+  [[ -f "$built" ]] || return 0
+  local newer
+  newer="$(find "$PROJECT_DIR/apps/web/src" -type f -newer "$built" -print -quit 2>/dev/null)"
+  if [[ -n "$newer" ]]; then
+    printf '\n  The running app was built before the current source.\n'
+    printf '  Stop it and run launch.sh again to rebuild.\n\n' >&2
+  fi
+}
+
 if curl --silent --fail --max-time 1 "$READY_URL" >/dev/null 2>&1; then
+  warn_if_stale_build
   open_app
   exit 0
 fi

@@ -46,7 +46,7 @@ build_web() {
 
   # Use the project-local executables. This avoids requiring a global pnpm
   # command after dependencies have already been installed.
-  node scripts/copy-basic-pitch-assets.mjs
+  node scripts/copy-audio-assets.mjs
   node_modules/.bin/tsc -b
   node_modules/.bin/vite build
 }

@@ -84,9 +84,16 @@ try {
   const manifest = require(new URL(manifestName, oafTarget).pathname)
   const shards = manifest.flatMap((group) => group.paths)
   let fetched = 0
-  for (const shard of shards) {
+  for (const [index, shard] of shards.entries()) {
+    // A silent 60 MB download looks like a hung launcher, so it counts itself
+    // out loud. Nothing is written on a cached run, which is every run but one.
+    if (!alreadyHave(new URL(shard, oafTarget))) {
+      process.stdout.write(
+        `\r  fetching the piano listening model… ${index + 1}/${shards.length}`)
+    }
     if (await download(shard)) fetched += 1
   }
+  if (fetched) process.stdout.write('\r'.padEnd(60) + '\r')
   console.log(fetched
     ? `onsets-frames: fetched ${fetched}/${shards.length} shards`
     : `onsets-frames: ${shards.length} shards already present`)

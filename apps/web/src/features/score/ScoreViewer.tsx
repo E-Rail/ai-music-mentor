@@ -267,8 +267,15 @@ export function ScoreViewer(props: Props) {
   }, [props.follow, cursorFraction, cursorSpan])
 
   return (
-    <div ref={followRef} className={`score-viewer ${props.follow ? 'following' : ''}`}
-         style={{ position: 'relative', minHeight: props.height ?? 260 }}>
+    // The outer element scrolls; the inner one is what the overlays are
+    // positioned against. They cannot be the same element: a scroll container
+    // that is also `position: relative` becomes the containing block, and then
+    // a `top: 33%` note resolves against the *visible* height rather than the
+    // height of the page it is written on — every mark creeps toward the top
+    // and none of them move when the sheet scrolls.
+    <div ref={followRef} className={`score-viewer ${props.follow ? 'following' : ''}`}>
+      <div className="score-sheet"
+           style={{ position: 'relative', minHeight: props.height ?? 260 }}>
       <div ref={containerRef} style={{ width: '100%', overflow: 'hidden', background: 'white', borderRadius: 8 }} />
       {loadError && <div className="score-error" role="alert">⚠️ {loadError}</div>}
 
@@ -438,6 +445,7 @@ export function ScoreViewer(props: Props) {
           </div>
         )
       })()}
+      </div>
     </div>
   )
 }

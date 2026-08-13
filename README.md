@@ -22,7 +22,23 @@ powershell -ExecutionPolicy Bypass -File .\launch.ps1
 
 不要直接双击 `apps/web/index.html` 或 `apps/web/dist/index.html`：这个产品需要 FastAPI 分析服务，并且浏览器会阻止 `file://` 页面加载 Vite 模块。现在即使误开 index，也会显示正确的启动说明，不再是一片空白。
 
-启动后会自动打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。脚本构建前端、执行 Alembic 迁移，并由 FastAPI 同源提供页面与 `/api/v1`。关闭启动脚本所在的终端即可停止本地服务。
+启动后会自动打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。脚本构建前端、执行 Alembic 迁移，并由 FastAPI 同源提供页面与 `/api/v1`。
+
+## 停止
+
+关闭启动脚本所在的终端即可停止服务。如果终端已经关掉，或者服务在后台还占着端口：
+
+```bash
+bash quit.sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\quit.ps1
+```
+
+只会停掉从当前目录启动的服务；别人占用同一个端口的进程会被指出来，但不会被结束。
+
+启动器发现服务已经在跑时会直接打开浏览器，不重新构建。所以改完代码后要先 `quit.sh` 再 `launch.sh`，否则看到的还是上一次构建的版本。
 
 完全隔离的一条命令：
 

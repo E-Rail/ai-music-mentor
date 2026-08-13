@@ -1,0 +1,67 @@
+# Render blueprint: free, no credit card, and it runs the whole studio rather
+# than just the page.
+#
+# Point Render at this repository and it builds the same Dockerfile compose and
+# CI build. Nothing here is Render-specific except the file itself.
+services:
+  - type: web
+    name: ai-music-mentor
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Render restarts the service if this stops answering. It is served before
+    # the score library finishes ingesting, which is what we want: a slow first
+    # boot should not read as a dead service.
+    healthCheckPath: /api/v1/readiness
+    envVars:
+      # Render injects PORT and the entrypoint binds to it, so nothing here
+      # needs to name a port.
+      - key: APP_ENV
+        value: production
+      - key: DATA_DIR
+        value: /data
+
+      # --- the mentor -------------------------------------------------------
+      # Chosen on measurement rather than reputation; see .env.example for the
+      # timings behind the model and the pinned hosts.
+      - key: MENTOR_API_BASE
+        value: https://openrouter.ai/api/v1
+      # sync: false means Render asks for this once, in its dashboard, and
+      # keeps it there. It must never be written into this file: the repository
+      # is public, and a key in Git is a key that has to be rotated.
+      - key: MENTOR_API_KEY
+        sync: false
+      - key: MENTOR_MODEL
+        value: openai/gpt-oss-120b
+      - key: MENTOR_RESPONSE_MODE
+        value: json_schema
+      - key: MENTOR_REASONING_EFFORT
+        value: low
+      - key: MENTOR_CONNECT_TIMEOUT_SECONDS
+        value: "8"
+      - key: MENTOR_READ_TIMEOUT_SECONDS
+        value: "25"
+      - key: MENTOR_TIMEOUT_SECONDS
+        value: "25"
+      - key: MENTOR_MAX_OUTPUT_TOKENS
+        value: "4000"
+      # One value, two hosts. Written here as a single string because it is
+      # one: splitting it would pin the mentor to a host nobody measured.
+      - key: MENTOR_PROVIDER_ORDER
+        value: cerebras,groq
+
+      # --- reading a photographed page --------------------------------------
+      # The reader falls back to the mentor's base, key and model, so it needs
+      # nothing else set to work. Named anyway, because a free instance has a
+      # tenth of a CPU and the default 180s budget is worth being explicit
+      # about when a page takes longer to come back than it does here.
+      - key: VISION_MODEL
+        value: xiaomi/mimo-v2.5
+      - key: VISION_TIMEOUT_SECONDS
+        value: "180"
+      - key: VISION_MAX_PAGES
+        value: "2"
+      - key: VISION_PAGE_PIXELS
+        value: "1600"

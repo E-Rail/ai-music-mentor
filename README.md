@@ -94,36 +94,35 @@ MENTOR_MAX_OUTPUT_TOKENS=1600
 
 ## 发布成网址
 
-把整个工作台（页面、API、听音模型）部署到 Google Cloud Run，得到一个 HTTPS 网址。
+把整个工作台（页面、API、听音模型）部署到 Render，得到一个 HTTPS 网址。免费，不要信用卡。
 
 HTTPS 不是锦上添花：麦克风和 Web MIDI 都要求安全上下文，`http://` 页面永远拿不到这两个权限。
 
-一次性准备：装上 [gcloud](https://cloud.google.com/sdk/docs/install)（macOS：`brew install --cask google-cloud-sdk`），然后
+仓库里的 `render.yaml` 已经把该填的都填好了，所以只剩点几下：
 
-```bash
-gcloud auth login
-gcloud config set project <你的项目 id>
-```
+1. 用 GitHub 账号登录 [render.com](https://render.com)（免费套餐不需要信用卡）。
+2. **New → Blueprint**，选中这个仓库。Render 会读到 `render.yaml`，认出 Docker 服务。
+3. 它只会问一个值：`MENTOR_API_KEY`。粘贴你的 OpenRouter key —— 它存在 Render 那边，不进仓库。
+4. **Apply**。首次构建约 10 分钟：装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。
 
-之后每次发布都是这一条：
-
-```bash
-scripts/deploy-cloudrun.sh
-```
-
-脚本会打开需要的 API、把 `.env` 写成配置随服务下发、构建镜像并部署。首次约 10 分钟：装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。重跑即更新，地址不变，已经发出去的链接照常可用。
-
-用量落在 Cloud Run 的永久免费额度内，但项目本身要开通结算；镜像存在 Artifact Registry 里，超出 0.5 GB 的部分每月几分钱。
+之后 `git push` 到 `main` 就会重新部署，地址不变，已经发出去的链接照常可用。
 
 几件要知道的事：
 
 - **用 Chrome 或 Edge 打开。** MIDI 键盘走 Web MIDI，Safari 和 Firefox 不支持；麦克风路径则各家都行。
-- **闲置会缩到零。** 静置一段时间后第一次访问要等几秒启动。演示前先打开一次，它就是热的。
-- **练习记录不持久。** 数据库在容器里，重启即清空。曲库、诊断、练习生成都照常，只是历史不留。脚本固定 `--max-instances 1`，否则第二个实例会是另一份空历史。
+- **闲置 15 分钟会休眠。** 之后第一次访问要等约 1 分钟冷启动。演示前先打开一次，它就是热的。
+- **免费实例只有 0.1 CPU。** 诊断、练习生成、识谱都会比本机慢上几倍；内存不是瓶颈（实测峰值 102 MB，额度 512 MB）。
+- **练习记录不持久。** 数据库在容器里，重启即清空。曲库、诊断、练习生成都照常，只是历史不留。
 - **网址是公开的，导师调用花的是你的额度。** 建议在 OpenRouter 给这把 key 设支出上限。
 - `.env` 不在 Git 里，也不在镜像里 —— 它是部署时下发的配置。
 
-Hugging Face Space 的脚本（`scripts/deploy-space.sh`）仍然可用，但 HF 现在只对 **静态** Space 免费，Docker Space 需要 PRO 订阅。
+要更快、且愿意开通结算，用同一个 Dockerfile 上 Cloud Run：
+
+```bash
+scripts/deploy-cloudrun.sh          # 需要先 gcloud auth login
+```
+
+Hugging Face Space 的脚本（`scripts/deploy-space.sh`）也在，但 HF 现在只对 **静态** Space 免费；Gradio 和 Docker Space 都要 PRO 订阅，而这个应用的后端跑不进静态 Space。
 
 本地跑同一个镜像：
 

@@ -6,13 +6,13 @@ services:
     environment:
       APP_ENV: production
       DATA_DIR: /data
-      MENTOR_API_BASE: ${MENTOR_API_BASE:-}
-      MENTOR_API_KEY: ${MENTOR_API_KEY:-}
-      MENTOR_MODEL: ${MENTOR_MODEL:-}
-      MENTOR_RESPONSE_MODE: ${MENTOR_RESPONSE_MODE:-json_object}
-      MENTOR_REASONING_EFFORT: ${MENTOR_REASONING_EFFORT:-low}
-      MENTOR_TIMEOUT_SECONDS: ${MENTOR_TIMEOUT_SECONDS:-8}
-      MENTOR_MAX_OUTPUT_TOKENS: ${MENTOR_MAX_OUTPUT_TOKENS:-1600}
+    # Everything the mentor and the score reader need comes straight from .env.
+    # Listing the keys here instead meant the list drifted: the vision reader and
+    # the provider pins were added upstream and never reached the container. The
+    # app has its own defaults, so a missing file is not an error.
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - mentor-data:/data
     healthcheck:

@@ -1,10 +1,25 @@
 .git
 .github
+.DS_Store
+**/.DS_Store
+
+# Local runtime state and the real credentials. The image must never carry
+# these: the key belongs in the host's own secret store, set at run time.
+.env
+.env.*
 data
+
+# Built or installed here, and rebuilt inside the image for the right platform.
+.venv
 **/__pycache__
 **/.pytest_cache
-apps/web/node_modules
+node_modules
+**/node_modules
+.pnpm-store
 apps/web/dist
 apps/web/test-results
 apps/web/playwright-report
-.env
+
+# Rendered takes used only by the transcription audit, which runs on a
+# developer's machine rather than in the container.
+apps/web/public/fixtures/audio

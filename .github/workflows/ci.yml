@@ -55,3 +55,69 @@ jobs:
         env:
           SKIP_MODEL_DOWNLOAD: '1'
         run: pnpm test:e2e
+
+  # The image is what anyone else actually runs, so it gets built and started
+  # here rather than trusted. The job above never touches the Dockerfile: it
+  # installs with its own pnpm and never proves the container can serve a page.
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t ai-music-mentor:ci .
+
+      - name: Start it
+        run: |
+          docker run -d --name mentor -p 8000:8000 ai-music-mentor:ci
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/api/v1/readiness >/dev/null 2>&1; then
+              echo "ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::The container never became ready."
+          docker logs mentor
+          exit 1
+
+      - name: It serves the studio, the API, and the listening model
+        run: |
+          set -euo pipefail
+
+          # The page itself, not just an API that happens to answer.
+          curl -fsS http://127.0.0.1:8000/ | grep -qi '<div id="root"' \
+            || { echo "::error::The built page was not served."; exit 1; }
+
+          # A student's first take is silent without this, and the failure
+          # shows up on stage rather than in a build log.
+          curl -fsS http://127.0.0.1:8000/models/onsets-frames/weights_manifest.json \
+            >/dev/null || { echo "::error::Onsets and Frames weights missing."; exit 1; }
+          shards=$(curl -fsS http://127.0.0.1:8000/models/onsets-frames/weights_manifest.json \
+            | grep -o 'group1-shard[0-9]*of[0-9]*' | sort -u | wc -l)
+          [ "$shards" -eq 15 ] \
+            || { echo "::error::Expected 15 weight shards, manifest names $shards."; exit 1; }
+          curl -fsS -o /dev/null http://127.0.0.1:8000/models/onsets-frames/group1-shard1of15 \
+            || { echo "::error::Weight shards are named but not served."; exit 1; }
+
+          # Basic Pitch and the WASM backend are the fallback path.
+          curl -fsS -o /dev/null http://127.0.0.1:8000/models/basic-pitch/model.json
+          curl -fsS -o /dev/null http://127.0.0.1:8000/models/tfjs-wasm/tfjs-backend-wasm.wasm
+
+          # The library students choose from is ingested from fixtures on boot.
+          curl -fsS http://127.0.0.1:8000/api/v1/scores | grep -q '\[' \
+            || { echo "::error::The score library did not load."; exit 1; }
+
+      - name: It runs unprivileged and can still write
+        run: |
+          set -euo pipefail
+          # Hosts like Hugging Face Spaces refuse a root container, and the
+          # database has to land somewhere writable once it is not root.
+          [ "$(docker exec mentor id -u)" = "1000" ] \
+            || { echo "::error::The container is not running as uid 1000."; exit 1; }
+          docker exec mentor test -f /data/app.db \
+            || { echo "::error::Migrations did not create the database."; exit 1; }
+
+      - name: Logs
+        if: always()
+        run: docker logs mentor 2>&1 | tail -40

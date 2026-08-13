@@ -92,6 +92,34 @@ MENTOR_MAX_OUTPUT_TOKENS=1600
 
 每份生成结果都会重新进入与上传文件相同的 `ScoreImporter` 校验流程，获得独立 `practiceScoreId`、规范化事件、永久乐谱/MIDI 文件和父子谱系。它不是一次性预览：可以作为下一轮会话的正式曲目继续跟谱、伴奏、诊断、导师对话和再次生成。若本轮仍有问题，新的 AI 建议只使用本轮报告证据，形成 `诊断 → 生成曲 → 再诊断 → 新建议 → 下一首生成曲` 的循环。
 
+## 发布成网址
+
+把整个工作台（页面、API、听音模型）部署到 Hugging Face Space，免费、无需信用卡，给出一个 HTTPS 网址。
+
+HTTPS 不是锦上添花：麦克风和 Web MIDI 都要求安全上下文，`http://` 页面永远拿不到这两个权限。
+
+```bash
+scripts/deploy-space.sh <你的用户名>/ai-music-mentor
+```
+
+需要一个有 **write** 权限的访问令牌（https://huggingface.co/settings/tokens）。脚本会在 Space 不存在时创建它，推送代码，并可选地把 `.env` 里的配置送进 Space 设置 —— 名字像凭据的（`*_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`）进只写的 Secrets，其余进普通 Variables。
+
+首次构建约 5-10 分钟：安装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。之后每次重跑脚本即可更新。
+
+推送的是 **HEAD 的提交内容**，不是工作区；`.env` 本来就不在 Git 里，因此不会随代码上传。Space 上的提交是无父提交，本仓库的历史不会跟着进入公开页面。
+
+几件要知道的事：
+
+- **用 Chrome 或 Edge 打开。** MIDI 键盘走 Web MIDI，Safari 和 Firefox 不支持；麦克风路径则各家都行。
+- **练习记录不持久。** 免费 Space 的磁盘是临时的，重启后 `/data` 清空。曲库、诊断、练习生成都照常，只是历史不留。
+- **网址是公开的，导师调用花的是你的额度。** 建议在 OpenRouter 给这把 key 设支出上限；或者把 Space 设为 private，只自己登录后使用。
+
+本地跑同一个镜像：
+
+```bash
+docker compose up --build     # http://localhost:8000
+```
+
 ## 测试
 
 ```bash

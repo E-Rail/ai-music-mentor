@@ -1698,7 +1698,7 @@ export default function App() {
       <Suspense fallback={<div className="panel score-loading">{t('scoreEngineLoading')}</div>}>
       {/* Step 1: 选曲 */}
       {step === 'select' && (
-        <div className={`panel ${scoreDetail ? 'fills-pane' : ''}`}>
+        <div className="panel fills-pane">
           <h2>{t('scorePickerTitle')}</h2>
           <div className={`select-workspace ${scoreDetail ? 'with-detail' : ''}`}>
           <div className="select-library scroll-pane">

@@ -200,20 +200,27 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
   padding: var(--gap) var(--gap-lg) 0;
 }
 
-/* Deliberately a block, not a flex column. Panels that centre themselves with
-   `margin-inline: auto` collapse to their content width inside a flex column,
-   because auto margins absorb the free space instead of the item stretching
-   into it — which squashed the device panel to 48px. Block layout leaves the
-   existing panel margins doing what they already did. */
+/* A flex column, so a panel can be told to take *what is left* rather than
+   `height: 100%` — which ignores the banners above it and is therefore always
+   one alert too tall. */
 .app-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
   padding-bottom: var(--gap-lg);
 }
+/* Natural height by default; the gap owns the spacing. */
+.app-body > * { flex: 0 0 auto; margin-bottom: 0; }
+/* The one panel on screen that should end exactly where the window does. */
+.app-body > .panel.fills-pane,
+.app-body > .performance-panel { flex: 1 1 auto; min-height: 0; }
 
 /* Picking a song is two jobs at once — browsing the library and checking the
    page you picked — so they sit beside each other instead of the second one
    living 700px below the first. Before a song is chosen there is no second
    column, and the library takes the whole width. */
-.select-workspace { display: grid; gap: var(--gap-lg); }
+.select-workspace { display: grid; gap: var(--gap-lg); min-height: 0; }
+.select-workspace > * { min-height: 0; }
 .select-workspace.with-detail {
   grid-template-columns: minmax(min(340px, 100%), .8fr) minmax(0, 1.4fr);
   /* Stretch, not start: a column sized to its own content never reaches the
@@ -232,7 +239,6 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .panel.fills-pane {
   display: flex;
   flex-direction: column;
-  height: 100%;
   margin-bottom: 0;
   min-height: 0;
 }
@@ -240,7 +246,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 
 @media (max-width: 1000px) {
   .select-workspace.with-detail { grid-template-columns: minmax(0, 1fr); }
-  .panel.fills-pane { height: auto; }
+  .panel.fills-pane { flex: 0 0 auto; }
 }
 
 .header {
@@ -475,7 +481,21 @@ input[type=checkbox] { accent-color: var(--brass); }
 
 /* --- input setup ---------------------------------------------------------- */
 
-.input-workspace { max-width: 1100px; margin-right: auto; margin-left: auto; }
+/* Definite width, not max-width. As a flex item, a content-sized box lets
+   `margin-inline: auto` absorb the free space and collapse — this panel went
+   to 48px wide that way. */
+.input-workspace { width: min(1100px, 100%); margin-inline: auto; }
+/* Setting up an instrument is a long form. It scrolls within the panel so the
+   window itself never does. */
+.app-body > .panel.input-workspace {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
+}
+.app-body > .panel.input-workspace::-webkit-scrollbar { width: 9px; }
+.app-body > .panel.input-workspace::-webkit-scrollbar-thumb {
+  border: 3px solid transparent; border-radius: 99px;
+  background: var(--rule) padding-box;
+}
 .input-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .input-card-heading h3 { margin: 0 0 4px; color: var(--chalk); font-size: 15px; }
 .input-card-heading p { max-width: 640px; margin: 0; color: var(--chalk-dim); font-size: 12px; }
@@ -525,11 +545,31 @@ input[type=checkbox] { accent-color: var(--brass); }
    The score is not a widget on a dashboard. It is a sheet of paper, lit, with
    the instrument hardware arranged around it.                               */
 
-.performance-panel { padding: 22px; }
-.practice-studio { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 18px; align-items: start; }
+.performance-panel { padding: var(--pad); }
+
+/* Playing is the one screen that must never ask you to scroll: your hands are
+   busy. So the panel takes the height it was given and the page inside it
+   scrolls itself, which is also what gives the sheet enough room to turn a
+   line rather than creep a few pixels. */
+.performance-panel {
+  display: flex; flex-direction: column;
+  min-height: 0; margin-bottom: 0;
+}
+.practice-studio {
+  display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: var(--gap);
+  /* Stretch, not start: a column sized to its own content never reaches the
+     height that makes its overflow scroll. */
+  align-items: stretch;
+  flex: 1 1 auto; min-height: 0;
+}
+/* Grid items default to min-height:auto, meaning "never smaller than my
+   content". That is what pushed the row to 612px inside a 532px panel and put
+   the whole studio back outside the window. Both sides scroll instead. */
+.practice-studio > * { min-height: 0; }
 
 .score-stage {
-  min-width: 0; padding: 20px 18px;
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  padding: var(--pad);
   background: var(--paper); border-radius: var(--r-paper);
   box-shadow: var(--lift-page);
 }
@@ -538,8 +578,9 @@ input[type=checkbox] { accent-color: var(--brass); }
 /* While you are playing, the sheet is a window onto the page rather than the
    whole page. It scrolls itself; see features/score/followScroll. */
 .score-viewer.following {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  max-height: min(56dvh, 620px);
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--rule) transparent;
@@ -674,7 +715,17 @@ input[type=checkbox] { accent-color: var(--brass); }
 
 /* --- the live rail -------------------------------------------------------- */
 
-.input-dock { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 12px; }
+/* The rail scrolls itself rather than stretching the row it lives in. */
+.input-dock {
+  display: flex; flex-direction: column; gap: var(--gap-sm);
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
+}
+.input-dock::-webkit-scrollbar { width: 9px; }
+.input-dock::-webkit-scrollbar-thumb {
+  border: 3px solid transparent; border-radius: 99px;
+  background: var(--rule) padding-box;
+}
 .input-status-card {
   padding: 13px 15px; background: var(--case-2);
   border: 1px solid var(--rule-soft); border-radius: var(--r);

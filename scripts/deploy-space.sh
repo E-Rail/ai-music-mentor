@@ -30,6 +30,7 @@ step() { printf '\n%s\n' "$*"; }
 [[ "$SPACE" == */* && "$SPACE" != */*/* ]] || die "A Space is named <owner>/<space-name>, got: $SPACE"
 [[ -f "$SPACE_CARD" ]] || die "Missing $SPACE_CARD — it carries the Space's sdk and port settings."
 command -v curl >/dev/null || die "curl is required."
+command -v python3 >/dev/null || die "python3 is required (it builds the JSON this sends)."
 OWNER="${SPACE%%/*}"
 NAME="${SPACE##*/}"
 
@@ -54,8 +55,11 @@ auth=(-H "Authorization: Bearer $HF_TOKEN")
 
 whoami_json="$(curl -sf "${auth[@]}" "$API/whoami-v2" || true)"
 [[ -n "$whoami_json" ]] || die "That token was rejected. Check it has write permission."
-HF_USER="$(printf '%s' "$whoami_json" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1)"
-step "Signed in as ${HF_USER:-unknown}."
+# Parsed rather than grepped: the reply also lists every org you belong to, each
+# with its own "name", and a regex reaches for the wrong one.
+HF_USER="$(printf '%s' "$whoami_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
+[[ -n "$HF_USER" ]] || die "Could not read the account name from Hugging Face."
+step "Signed in as $HF_USER."
 
 # --- create the Space if it is not there yet ---------------------------------
 
@@ -129,11 +133,16 @@ if [[ -f .env ]]; then
   read -r -p "  Send settings from .env to the Space? [y/N] " reply
   if [[ "$reply" == [yY]* ]]; then
     sent=0
-    while IFS= read -r line; do
+    # Read on fd 3 so the loop body is free to use stdin, and strip the carriage
+    # return a .env written on Windows leaves on the end of every value.
+    while IFS= read -r line <&3 || [[ -n "$line" ]]; do
+      line="${line%$'\r'}"
       [[ "$line" =~ ^[[:space:]]*# || -z "${line// }" ]] && continue
       [[ "$line" == *=* ]] || continue
       key="${line%%=*}"; key="${key//[[:space:]]/}"
       value="${line#*=}"
+      # A quoted value is quoted for the shell's benefit, not the server's.
+      [[ "$value" == \"*\" || "$value" == \'*\' ]] && value="${value:1:${#value}-2}"
       [[ -n "$value" ]] || continue
       # Anything that names itself a credential goes to the secret store, which
       # is write-only; everything else is ordinary config and stays readable so
@@ -149,17 +158,21 @@ if [[ -f .env ]]; then
       else
         printf '  could not set %s\n' "$key" >&2
       fi
-    done < .env
+    done 3< .env
     printf '\n  %s settings sent.\n' "$sent"
   fi
 fi
+
+# The served subdomain is the owner and name lowercased with everything that is
+# not a letter or digit turned into a dash — not the Space id as typed.
+slug="$(printf '%s-%s' "$OWNER" "$NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-')"
 
 cat <<DONE
 
 Deployed.
 
   Building   https://huggingface.co/spaces/$SPACE
-  Live at    https://${OWNER//./-}-${NAME//./-}.hf.space
+  Live at    https://$slug.hf.space
 
 The first build takes roughly 5-10 minutes: it installs the API's dependencies
 and downloads the 60 MB listening model so students never have to. Watch the

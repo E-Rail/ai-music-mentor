@@ -1,10 +1,14 @@
-# AI 音乐导师 · Production-shaped Demo v2
+# AI Music Mentor
 
 面向初中级钢琴学习者的中文优先桌面 Chromium 应用：导入乐谱或 MIDI，用 USB MIDI 键盘演奏，获得可核验证据、确定性诊断、微练习、伴奏重试和前后对比。
 
 这仍是单用户 Demo，但核心边界已经按真实产品设计：版本化 API、统一导入契约、SQLAlchemy/Alembic、文件存储接口、持久化分析任务、录音双重恢复、受约束的模型解释和同源发布。
 
-## 最快启动
+## 快速开始
+
+访问 [](https://ai-music-mentor.onrender.com/) 即可。
+
+## 本地运行
 
 macOS 或 Linux：
 
@@ -38,35 +42,11 @@ powershell -ExecutionPolicy Bypass -File .\quit.ps1
 
 只会停掉从当前目录启动的服务；别人占用同一个端口的进程会被指出来，但不会被结束。
 
-启动器发现服务已经在跑时会直接打开浏览器，不重新构建。所以改完代码后要先 `quit.sh` 再 `launch.sh`，否则看到的还是上一次构建的版本。
-
-完全隔离的一条命令：
-
-```bash
-cp .env.example .env
-docker compose up --build
-```
-
-开发模式：
-
-```bash
-# terminal 1
-cd apps/api
-alembic upgrade head
-uvicorn app.main:app --reload --port 8000
-
-# terminal 2
-cd apps/web
-pnpm dev
-```
-
-Web MIDI 需要 localhost 或 HTTPS，并建议使用当前桌面 Chromium。
-
 ## 支持的输入
 
 - `.musicxml` / `.xml` / `.mxl`：保留原始精确记谱。MXL 在读取前检查文件签名、解压大小、路径穿越、链接与加密条目。
 - `.mid` / `.midi`：原始 MIDI 保留为权威播放时间线；界面显示明确标注的量化简化谱。缺失速度默认 Standard MIDI 的 120 BPM，缺失拍号默认 4/4。
-- `.pdf`：已有 `PdfOmrImporter` 接口槽，但本里程碑明确拒绝并提示下一阶段，不伪装成可靠识谱。
+- `.pdf`：使用 Xiaomi-MiMo-V2.5。
 
 MIDI 导入后必须复核速度、拍号、量化网格和轨道/左右手映射。简化谱不会声称拥有原始指法或声部。
 
@@ -92,43 +72,9 @@ MENTOR_MAX_OUTPUT_TOKENS=1600
 
 每份生成结果都会重新进入与上传文件相同的 `ScoreImporter` 校验流程，获得独立 `practiceScoreId`、规范化事件、永久乐谱/MIDI 文件和父子谱系。它不是一次性预览：可以作为下一轮会话的正式曲目继续跟谱、伴奏、诊断、导师对话和再次生成。若本轮仍有问题，新的 AI 建议只使用本轮报告证据，形成 `诊断 → 生成曲 → 再诊断 → 新建议 → 下一首生成曲` 的循环。
 
-## 发布成网址
+## 网址
 
-把整个工作台（页面、API、听音模型）部署到 Render，得到一个 HTTPS 网址。免费，不要信用卡。
 
-HTTPS 不是锦上添花：麦克风和 Web MIDI 都要求安全上下文，`http://` 页面永远拿不到这两个权限。
-
-仓库里的 `render.yaml` 已经把该填的都填好了，所以只剩点几下：
-
-1. 用 GitHub 账号登录 [render.com](https://render.com)（免费套餐不需要信用卡）。
-2. **New → Blueprint**，选中这个仓库。Render 会读到 `render.yaml`，认出 Docker 服务。
-3. 它只会问一个值：`MENTOR_API_KEY`。粘贴你的 OpenRouter key —— 它存在 Render 那边，不进仓库。
-4. **Apply**。首次构建约 10 分钟：装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。
-
-之后 `git push` 到 `main` 就会重新部署，地址不变，已经发出去的链接照常可用。
-
-几件要知道的事：
-
-- **用 Chrome 或 Edge 打开。** MIDI 键盘走 Web MIDI，Safari 和 Firefox 不支持；麦克风路径则各家都行。
-- **闲置 15 分钟会休眠。** 之后第一次访问要等约 1 分钟冷启动。演示前先打开一次，它就是热的。
-- **免费实例只有 0.1 CPU。** 诊断、练习生成、识谱都会比本机慢上几倍；内存不是瓶颈（实测峰值 102 MB，额度 512 MB）。
-- **练习记录不持久。** 数据库在容器里，重启即清空。曲库、诊断、练习生成都照常，只是历史不留。
-- **网址是公开的，导师调用花的是你的额度。** 建议在 OpenRouter 给这把 key 设支出上限。
-- `.env` 不在 Git 里，也不在镜像里 —— 它是部署时下发的配置。
-
-要更快、且愿意开通结算，用同一个 Dockerfile 上 Cloud Run：
-
-```bash
-scripts/deploy-cloudrun.sh          # 需要先 gcloud auth login
-```
-
-Hugging Face Space 的脚本（`scripts/deploy-space.sh`）也在，但 HF 现在只对 **静态** Space 免费；Gradio 和 Docker Space 都要 PRO 订阅，而这个应用的后端跑不进静态 Space。
-
-本地跑同一个镜像：
-
-```bash
-docker compose up --build     # http://localhost:8000
-```
 
 ## 测试
 

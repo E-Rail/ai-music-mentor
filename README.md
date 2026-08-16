@@ -6,7 +6,11 @@
 
 ## 快速开始
 
-访问 [](https://ai-music-mentor.onrender.com/) 即可。
+打开 [ai-music-mentor.onrender.com](https://ai-music-mentor.onrender.com/)，不用装任何东西。
+
+- **用 Chrome 或 Edge。** MIDI 键盘走 Web MIDI，Safari 和 Firefox 没有这个接口；麦克风路径各家浏览器都行。
+- **闲置 15 分钟会休眠。** 之后第一次打开要等约 40 秒冷启动（实测）。演示前先打开一次，它就是热的。
+- **练习历史不跨重启。** 数据库在容器里，重新部署即清空；曲库、诊断、练习生成都照常，只是上一轮的记录不留。
 
 ## 本地运行
 
@@ -46,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\quit.ps1
 
 - `.musicxml` / `.xml` / `.mxl`：保留原始精确记谱。MXL 在读取前检查文件签名、解压大小、路径穿越、链接与加密条目。
 - `.mid` / `.midi`：原始 MIDI 保留为权威播放时间线；界面显示明确标注的量化简化谱。缺失速度默认 Standard MIDI 的 120 BPM，缺失拍号默认 4/4。
-- `.pdf`：使用 Xiaomi-MiMo-V2.5。
+- `.pdf` 和照片（`.png` / `.jpg` / `.webp` / `.heic`）：交给 Xiaomi-MiMo-V2.5 识谱，一次最多 2 页，长边压到 1600 像素再上传。识谱结果和其他导入走同一套校验，但仍要复核——调号、连音和左右手归属是最容易读错的地方。
 
 MIDI 导入后必须复核速度、拍号、量化网格和轨道/左右手映射。简化谱不会声称拥有原始指法或声部。
 
@@ -57,12 +61,23 @@ MIDI 导入后必须复核速度、拍号、量化网格和轨道/左右手映�
 ```bash
 MENTOR_API_BASE=https://openrouter.ai/api/v1
 MENTOR_API_KEY=replace-with-your-server-side-api-key
-MENTOR_MODEL=deepseek/deepseek-v4-flash-0731
-MENTOR_RESPONSE_MODE=json_schema  # json_schema | json_object | prompt_json
-MENTOR_REASONING_EFFORT=low       # OpenRouter 推理模型；为结构化导师答案保留输出预算
-MENTOR_TIMEOUT_SECONDS=15
-MENTOR_MAX_OUTPUT_TOKENS=1600
+MENTOR_MODEL=openai/gpt-oss-120b     # 实测选出：三类调用最坏 2.1s
+MENTOR_RESPONSE_MODE=json_schema     # json_schema | json_object | prompt_json
+MENTOR_REASONING_EFFORT=low          # gpt-oss 关不掉推理并拒绝 none，给它最便宜的一档
+MENTOR_CONNECT_TIMEOUT_SECONDS=8
+MENTOR_READ_TIMEOUT_SECONDS=25       # 实测最坏值的十倍
+MENTOR_TIMEOUT_SECONDS=25            # 旧的合并超时，以上面的读超时为准
+MENTOR_MAX_OUTPUT_TOKENS=4000        # 1600 会把练习计划截断，白费一次调用
+MENTOR_PROVIDER_ORDER=cerebras,groq  # 一个值，逗号是它的一部分，别拆成两条
+
+# 识谱。不填就沿用上面的 base/key/model，所以通常配好 MENTOR_API_KEY 就够。
+VISION_MODEL=xiaomi/mimo-v2.5
+VISION_TIMEOUT_SECONDS=180
+VISION_MAX_PAGES=2
+VISION_PAGE_PIXELS=1600
 ```
+
+模型和超时都是量出来的，不是挑名气：改之前先跑 `.venv/bin/python scripts/bench_mentor_models.py`。每个值背后的实测数字写在 `.env.example` 的注释里。
 
 根目录的 `.env` 会被本地启动脚本间接加载；操作系统或容器中已设置的环境变量优先。
 
@@ -74,7 +89,31 @@ MENTOR_MAX_OUTPUT_TOKENS=1600
 
 ## 网址
 
+线上这份跑在 Render 免费实例上，用的就是仓库里的 `Dockerfile`。`render.yaml` 已经把 Docker、免费套餐、新加坡区、健康检查和 15 项配置写好了，所以部署你自己的一份只剩点几下：
 
+1. 用 GitHub 账号登录 [render.com](https://render.com)，免费套餐不要信用卡。
+2. **New → Blueprint**，选中这个仓库——它会读到 `render.yaml`。走 **New → Web Service** 读不到这个文件，16 项配置得手填。
+3. 它只问一个值：`MENTOR_API_KEY`。粘贴你的 OpenRouter key，它存在 Render 那边，不进仓库。
+4. **Apply**。首次构建约 10 分钟：装后端依赖，并把 60 MB 的听音模型烘进镜像，学生那边不用再下载。
+
+之后 `git push` 到 `main` 就重新部署，地址不变，已经发出去的链接照常可用。
+
+HTTPS 不是锦上添花：麦克风和 Web MIDI 都要求安全上下文，`http://` 页面永远拿不到这两个权限。
+
+免费实例只有 0.1 CPU，诊断、练习生成和识谱都比本机慢几倍；内存不是瓶颈（实测峰值 102 MB，额度 512 MB）。网址是公开的，导师调用花的是你的额度，建议在 OpenRouter 给这把 key 设支出上限。`.env` 不在 Git 里，也不在镜像里——它是部署时下发的配置。
+
+要更快、且愿意开通结算，同一个 Dockerfile 也能上 Cloud Run：
+
+```bash
+scripts/deploy-cloudrun.sh          # 需要先 gcloud auth login
+```
+
+本地跑同一个镜像：
+
+```bash
+cp .env.example .env
+docker compose up --build           # http://localhost:8000
+```
 
 ## 测试
 

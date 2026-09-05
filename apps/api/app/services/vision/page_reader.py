@@ -370,6 +370,13 @@ def read_pages(images: list[tuple[bytes, str]], hint: str = "") -> ReadOutcome:
             raise PageReadError(f"识谱服务返回 {error.response.status_code}：{detail}") from error
         except httpx.HTTPError as error:
             raise PageReadError(f"识谱服务连接失败：{error}") from error
+        except ValueError as error:
+            # A gateway can answer 200 with an HTML error page, and a truncated
+            # stream decodes to nothing. json() raises ValueError for both, which
+            # is not an httpx error and fell through to the catch-all handler as
+            # a bare 500 — losing the actionable message every other failure in
+            # this module takes care to produce.
+            raise PageReadError(f"识谱服务返回了无法解析的内容：{error}") from error
         served_by = payload.get("provider") or served_by
         # OpenRouter answers 200 with an error body when the host it chose fails.
         upstream = payload.get("error")

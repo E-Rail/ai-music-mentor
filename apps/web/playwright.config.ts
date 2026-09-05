@@ -7,6 +7,12 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:4173',
+    // The suite is written against the Chinese product, and the app now opens
+    // in the browser's own language. Without this the harness reports en-US,
+    // the interface is English, and every Chinese selector below misses — which
+    // says nothing about the app and everything about the harness.
+    // languageDetection.spec.ts overrides it to cover the English path.
+    locale: 'zh-CN',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

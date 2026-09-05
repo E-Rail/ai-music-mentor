@@ -113,7 +113,9 @@ workerScope.onmessage = async (message: MessageEvent<TranscribeRequest>) => {
       }
     })
 
-    const profile = profileForNoise(instrument as InstrumentProfile, noiseFloorDb)
+    // Onsets and Frames hands back a velocity, not a certainty — see ConfidenceKind.
+    const profile = profileForNoise(instrument as InstrumentProfile, noiseFloorDb,
+      'velocity-proxy')
     const cleaned = cleanupTranscribedNotes(raw, {
       ...profile,
       minConfidence: Math.max(0.25,

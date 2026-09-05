@@ -35,10 +35,30 @@ export const AUDIO_PROFILES: Record<InstrumentProfile, AudioDetectionProfile> = 
   },
 }
 
+/**
+ * What an engine's confidence number actually means.
+ *
+ * Basic Pitch reports a per-note activation, so its number is the model's own
+ * certainty and a threshold on it genuinely separates a real note from a
+ * spurious one. Onsets and Frames has already made that decision — a note only
+ * exists if it crossed the model's onset threshold — and hands back a velocity
+ * instead. Thresholding that separates loud from soft, not real from spurious.
+ */
+export type ConfidenceKind = 'activation' | 'velocity-proxy'
+
 export function profileForNoise(instrument: InstrumentProfile,
-  noiseFloorDb: number | null): AudioDetectionProfile {
+  noiseFloorDb: number | null,
+  kind: ConfidenceKind = 'activation'): AudioDetectionProfile {
   const base = AUDIO_PROFILES[instrument]
   if (noiseFloorDb === null || noiseFloorDb <= -45) return base
+  // Raising the floor on a velocity proxy does not reject room noise, it
+  // rejects quiet playing — the one mistake a piano tutor must not make, and
+  // the mistake confidenceFromVelocity exists to avoid. At a -15 dB floor the
+  // penalty reaches 0.65, which is every note under velocity 38: the soft inner
+  // voices of a chord, reported by the model with confidence, thrown away for
+  // being played gently. Noise robustness on this path is the model's own onset
+  // threshold, not a loudness gate bolted on afterwards.
+  if (kind === 'velocity-proxy') return base
   // In a noisy room require stronger model activation so steady room noise is
   // less likely to survive as a playable note. The original profile is immutable.
   const penalty = Math.min(.30, Math.max(0, (noiseFloorDb + 45) / 20) * .20)

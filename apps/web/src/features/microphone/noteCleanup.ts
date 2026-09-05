@@ -22,7 +22,21 @@ export function cleanupTranscribedNotes(raw: PerformanceEvent[],
   const merged: PerformanceEvent[] = []
   for (const event of filtered) {
     const previous = [...merged].reverse().find((candidate) => candidate.pitch === event.pitch)
-    if (previous && event.tOnMs - previous.tOffMs <= profile.mergeGapMs &&
+    // Merging exists for a note the model reported in two pieces. A note struck
+    // again is a different thing that looks identical from here, and the only
+    // evidence separating them is what happened in between: if another pitch
+    // began while this one was apparently silent, the player was playing, so
+    // these are two strikes.
+    //
+    // Without this a violin trill collapses. C-D-C-D-C at 100ms a note leaves
+    // 100ms between one C and the next, inside the 120ms window, so every C
+    // folds into the first and every D into the first D — five notes become
+    // two, and the take is diagnosed as a fistful of missed notes.
+    const struckBetween = previous !== undefined && filtered.some((other) =>
+      other.pitch !== event.pitch &&
+      other.tOnMs > previous.tOnMs && other.tOnMs < event.tOnMs)
+    if (previous && !struckBetween &&
+        event.tOnMs - previous.tOffMs <= profile.mergeGapMs &&
         event.tOnMs >= previous.tOnMs) {
       const previousConfidence = confidence(previous)
       const currentConfidence = confidence(event)

@@ -252,7 +252,7 @@ describe('calibration belongs to the take it came from', () => {
         frame[index] = (sounding ? Math.sin(2 * Math.PI * 440 * t) * noteLevel : 0)
           + random() * roomLevel
       }
-      detector.process(frame)
+      detector.process(frame, (block * FRAME_SIZE / SAMPLE_RATE) * 1_000)
     }
   }
 

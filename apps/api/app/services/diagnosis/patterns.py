@@ -35,7 +35,14 @@ CAUSE_CANDIDATES = {
 }
 
 
-def aggregate_patterns(errors: list[ErrorEvent]) -> list[Pattern]:
+def aggregate_patterns(errors: list[ErrorEvent],
+                       measure_labels: list[str] | None = None) -> list[Pattern]:
+    def label(measure: int) -> str:
+        """The number printed on the page, not the timeline position."""
+        if measure_labels and 1 <= measure <= len(measure_labels):
+            return measure_labels[measure - 1]
+        return str(measure)
+
     patterns: list[Pattern] = []
     n = 0
 
@@ -75,7 +82,7 @@ def aggregate_patterns(errors: list[ErrorEvent]) -> list[Pattern]:
             n += 1
             patterns.append(Pattern(
                 id=f"pat_{n:03d}",
-                description=f"第 {m} 小节多类错误集中（{len(group)} 处），疑似难点小节",
+                description=f"第 {label(m)} 小节多类错误集中（{len(group)} 处），疑似难点小节",
                 coveredErrorIds=[e.id for e in group],
                 sampleCount=len(group)))
     return patterns

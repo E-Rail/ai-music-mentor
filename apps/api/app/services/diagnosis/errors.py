@@ -35,11 +35,26 @@ def pitch_set_str(pitches) -> str:
 
 
 class _Ctx:
-    def __init__(self):
+    def __init__(self, measure_labels: list[str] | None = None):
         self.errors: list[ErrorEvent] = []
         self.evidences: list[Evidence] = []
         self._err_n = 0
         self._ev_n = 0
+        self._labels = measure_labels or []
+
+    def label(self, measure: int) -> str:
+        """What the page calls this bar.
+
+        ``measureNo`` is a position in the timeline and always counts 1, 2, 3…,
+        which is what alignment and event IDs need. It is not what is printed:
+        a piece that opens with a pickup numbers that bar 0, so every printed
+        number after it is one lower. location.measure keeps the position — the
+        interface relabels that itself — but a sentence a student reads has to
+        say the number on their page, or it sends them to the wrong bar.
+        """
+        if 1 <= measure <= len(self._labels):
+            return self._labels[measure - 1]
+        return str(measure)
 
     def add_evidence(self, measure: int, beat: float, fact: str,
                      expected: str = "", actual: str = "",
@@ -78,8 +93,9 @@ def classify_errors(pairs: list[AlignmentPair],
                     duration_tolerance: float = .35,
                     include_dynamics_errors: bool = True,
                     has_notated_dynamics: bool = False,
+                    measure_labels: list[str] | None = None,
                     ) -> tuple[list[ErrorEvent], list[Evidence]]:
-    ctx = _Ctx()
+    ctx = _Ctx(measure_labels)
     beat_ms = 60000.0 / bpm
     timing_threshold = max(80.0, 0.12 * beat_ms)
 
@@ -155,14 +171,14 @@ def classify_errors(pairs: list[AlignmentPair],
                         expected="0 ms", actual=f"{resid:+.0f} ms", delta_ms=resid)
                     ctx.add_error(ErrorType.early_late, o.measureNo, o.onsetBeat,
                                   [m.eventId for m in o.members], sev, [ev_id],
-                                  f"第 {o.measureNo} 小节第 {o.onsetBeat + 1:g} 拍{direction}")
+                                  f"第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍{direction}")
                 continue
             for m in o.members:
                 if m.optional:
                     continue
                 ev_id = ctx.add_evidence(
                     o.measureNo, o.onsetBeat,
-                    f"第 {o.measureNo} 小节{'右手' if m.part == 'RH' else '左手'} "
+                    f"第 {ctx.label(o.measureNo)} 小节{'右手' if m.part == 'RH' else '左手'} "
                     f"{pitch_set_str(m.pitches)} 未出现",
                     expected=pitch_set_str(m.pitches), actual="（未演奏）")
                 ctx.add_error(ErrorType.missed_note, o.measureNo, o.onsetBeat,
@@ -243,7 +259,7 @@ def classify_errors(pairs: list[AlignmentPair],
                 # 期望音全弹出但多了音 → 多音
                 ev_id = ctx.add_evidence(
                     o.measureNo, o.onsetBeat,
-                    f"第 {o.measureNo} 小节第 {o.onsetBeat + 1:g} 拍多弹 "
+                    f"第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍多弹 "
                     f"{pitch_set_str(extra)}（期望 {pitch_set_str(o.pitches)}）",
                     expected=pitch_set_str(o.pitches), actual=pitch_set_str(g.pitches))
                 ctx.add_error(ErrorType.extra_note, o.measureNo, o.onsetBeat,
@@ -259,7 +275,7 @@ def classify_errors(pairs: list[AlignmentPair],
                     if len(m_missing) == len(set(m.pitches)) and not extra:
                         ev_id = ctx.add_evidence(
                             o.measureNo, o.onsetBeat,
-                            f"第 {o.measureNo} 小节{'右手' if m.part == 'RH' else '左手'} "
+                            f"第 {ctx.label(o.measureNo)} 小节{'右手' if m.part == 'RH' else '左手'} "
                             f"{pitch_set_str(m.pitches)} 未出现",
                             expected=pitch_set_str(m.pitches), actual="（未演奏）")
                         ctx.add_error(ErrorType.missed_note, o.measureNo, o.onsetBeat,
@@ -268,7 +284,7 @@ def classify_errors(pairs: list[AlignmentPair],
                         ev_id = ctx.add_evidence(
                             o.measureNo, o.onsetBeat,
                             f"期望 {pitch_set_str(m.pitches)}，实际 {pitch_set_str(g.pitches)}；"
-                            f"位置：第 {o.measureNo} 小节第 {o.onsetBeat + 1:g} 拍",
+                            f"位置：第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍",
                             expected=pitch_set_str(m.pitches),
                             actual=pitch_set_str(g.pitches))
                         sev = Severity.high if p.cost >= 0.85 else Severity.medium
@@ -300,7 +316,7 @@ def classify_errors(pairs: list[AlignmentPair],
             g, onset_index, beats_per_measure, tempo_map)
         ev_id = ctx.add_evidence(
             near_measure, near_beat,
-            f"第 {near_measure} 小节附近多弹 {pitch_set_str(remaining)}",
+            f"第 {ctx.label(near_measure)} 小节附近多弹 {pitch_set_str(remaining)}",
             expected="（无此音）", actual=pitch_set_str(remaining))
         ctx.add_error(ErrorType.extra_note, near_measure, near_beat,
                       [], Severity.medium, [ev_id],
@@ -426,7 +442,7 @@ def _maybe_timing(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
         expected="0 ms", actual=f"{resid:+.0f} ms", delta_ms=resid)
     ctx.add_error(ErrorType.early_late, o.measureNo, o.onsetBeat,
                   [m.eventId for m in o.members], sev, [ev_id],
-                  f"第 {o.measureNo} 小节第 {o.onsetBeat + 1:g} 拍{direction}")
+                  f"第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍{direction}")
     return True
 
 
@@ -474,14 +490,14 @@ def _tempo_instability(ctx: _Ctx,
     m_end = max(m for _, _, m in beats_ms)
     loc_measure = m_start
     if cv > 0.08 or slowdown > 0.12 or overall_dev > 0.10 or seg_dev > 0.12:
-        detail = f"第 {m_start}–{m_end} 小节"
+        detail = f"第 {ctx.label(m_start)}–{ctx.label(m_end)} 小节"
         if slowdown > 0.12:
-            fact = (f"第 {m_start}–{m_end} 小节速度由约 {first_third:.0f} BPM "
+            fact = (f"第 {ctx.label(m_start)}–{ctx.label(m_end)} 小节速度由约 {first_third:.0f} BPM "
                     f"降至 {last_third:.0f} BPM（连续减速 {slowdown * 100:.0f}%）")
             loc_measure = m_start
         elif seg_dev > 0.12:
             slowest = min(bpms)
-            fact = (f"第 {seg_measure} 小节附近存在局部变速："
+            fact = (f"第 {ctx.label(seg_measure)} 小节附近存在局部变速："
                     f"段落速度最慢约 {slowest:.0f} BPM，"
                     f"相对整体 {med_bpm:.0f} BPM 偏离 {seg_dev * 100:.0f}%")
             loc_measure = seg_measure
@@ -493,7 +509,7 @@ def _tempo_instability(ctx: _Ctx,
             # playing — and it is exactly what the slow-practice exercises ask
             # for. Say which one it is instead of calling both "unstable".
             detail = (f"整体比标记速度{direction} {overall_dev * 100:.0f}%"
-                      f"（第 {m_start}–{m_end} 小节；本次拍点本身是稳的）")
+                      f"（第 {ctx.label(m_start)}–{ctx.label(m_end)} 小节；本次拍点本身是稳的）")
         else:
             fact = (f"4 拍滑窗 BPM 变异系数 {cv * 100:.1f}%（>8%），"
                     f"区间 {min(bpms):.0f}–{max(bpms):.0f} BPM")

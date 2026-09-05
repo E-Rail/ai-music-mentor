@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { ScaleSwitch, useUiScale } from './features/shell/ScaleSwitch'
+import { SettingsDialog } from './features/shell/SettingsDialog'
+import { useDepth, useFinish, useLocale, useTheme } from './features/shell/useSettings'
 import { api } from './api/client'
 import {
   measureLabel, measureLabelList, setScoreMeasureLabels,
@@ -1665,7 +1666,11 @@ export default function App() {
     )
   }
 
-  const [uiScale, setUiScale] = useUiScale()
+  const [theme, setTheme] = useTheme()
+  const [finish, setFinish] = useFinish()
+  const [locale, setLocale] = useLocale()
+  const [uiScale, setUiScale] = useDepth()
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (
     <div className="app">
@@ -1673,8 +1678,20 @@ export default function App() {
         <h1>{t('appName')}</h1>
         <span className="subtitle">{t('appSubtitle')}</span>
         <span className="spacer" />
-        <ScaleSwitch scale={uiScale} onChange={setUiScale} />
+        <button type="button" className="btn btn-sm settings-open"
+                aria-haspopup="dialog" aria-expanded={settingsOpen}
+                title={t('settingsOpen')} aria-label={t('settingsOpen')}
+                onClick={() => setSettingsOpen(true)}>⚙</button>
       </div>
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme} onTheme={setTheme}
+        finish={finish} onFinish={setFinish}
+        locale={locale} onLocale={setLocale}
+        depth={uiScale} onDepth={setUiScale}
+      />
 
       <StudioStepper active={studioStage} canOpen={canOpenStudioStage}
                      onOpen={openStudioStage} />
@@ -2193,7 +2210,7 @@ export default function App() {
       {/* Step 4: 报告 */}
       {step === 'report' && report && (
         <CoachReport
-          scale={uiScale}
+          depth={uiScale}
           report={report}
           baseline={baselineReport}
           beatsPerMeasure={meta?.beatsPerMeasure}

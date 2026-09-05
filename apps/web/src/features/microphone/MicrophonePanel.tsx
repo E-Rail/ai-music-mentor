@@ -129,7 +129,7 @@ export function MicrophonePanel({
           </label>
           <div className="mic-monitor-heading">
             <strong>{t('microphoneMonitor')}</strong>
-            <span>{previewMode === 'worklet' ? 'AudioWorklet' : previewMode === 'analyser' ? '兼容模式' : '—'}</span>
+            <span>{previewMode === 'worklet' ? 'AudioWorklet' : previewMode === 'analyser' ? t('micCompatibilityMode') : '—'}</span>
           </div>
           <div className="mic-preview" aria-label={t('microphonePreviewOnly')}>
             <svg viewBox="0 0 300 80" preserveAspectRatio="none" role="img">

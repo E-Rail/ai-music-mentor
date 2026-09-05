@@ -2,6 +2,7 @@ import type { InstrumentProfile } from '../../types'
 import type {
   InputDeviceDescriptor, PerformanceCaptureResult, PerformanceInputAdapter,
 } from './PerformanceInputAdapter'
+import { t } from '../../i18n/messages'
 
 type MidiUploader = (sessionId: string, file: File) =>
   Promise<{ uploadedMidiRef: string }>
@@ -29,7 +30,7 @@ export class MidiUploadInputAdapter implements PerformanceInputAdapter {
   }
 
   async upload(file: File): Promise<PerformanceCaptureResult> {
-    if (!this.sessionId) throw new Error('MIDI 上传会话尚未开始')
+    if (!this.sessionId) throw new Error(t('midiUploadSessionMissing'))
     const result = await this.uploader(this.sessionId, file)
     this.uploadedMidiRef = result.uploadedMidiRef
     this.fileName = file.name
@@ -43,7 +44,7 @@ export class MidiUploadInputAdapter implements PerformanceInputAdapter {
   }
 
   stop(): PerformanceCaptureResult {
-    if (!this.uploadedMidiRef) throw new Error('请先上传演奏 MIDI 文件')
+    if (!this.uploadedMidiRef) throw new Error(t('midiUploadFileMissing'))
     return this.currentResult()
   }
 

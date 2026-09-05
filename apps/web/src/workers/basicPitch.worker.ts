@@ -11,6 +11,8 @@ import type { PerformanceEvent } from '../types'
 import { cleanupTranscribedNotes } from '../features/microphone/noteCleanup'
 import { profileForNoise } from '../features/microphone/profiles'
 import type { TranscribeRequest } from '../features/microphone/engineProtocol'
+// `tf` is TensorFlow here, so the formatter comes in under its own name.
+import { tf as format } from '../i18n/messages'
 
 const workerScope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope
 
@@ -85,7 +87,7 @@ workerScope.onmessage = async (message: MessageEvent<TranscribeRequest>) => {
       } catch (cpuError) {
         const wasmMessage = wasmError instanceof Error ? wasmError.message : String(wasmError)
         const cpuMessage = cpuError instanceof Error ? cpuError.message : String(cpuError)
-        throw new Error(`本地转录引擎失败（WASM: ${wasmMessage}；CPU: ${cpuMessage}）`)
+        throw new Error(format('transcriptionEnginesFailed', { wasm: wasmMessage, cpu: cpuMessage }))
       }
     }
 

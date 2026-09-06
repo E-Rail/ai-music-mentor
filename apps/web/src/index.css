@@ -66,6 +66,22 @@
   --lacquer: #8b7bc4;
   --lacquer-bright: #b3a6e2;
 
+  /* The same five materials as channels, so a tint of one can be written once
+     and follow the hue when a theme restates it. Every rgb(var(--x) / a) in
+     this file resolves through these. */
+  --brass-rgb: 214 167 86;
+  --brass-ink-rgb: 150 105 15;
+  --felt-rgb: 196 65 92;
+  --felt-ink-rgb: 165 40 64;
+  --baize-rgb: 116 160 101;
+  --lacquer-rgb: 139 123 196;
+  --ink-rgb: 23 21 28;
+  --shadow-rgb: 0 0 0;
+
+  /* What sits on a filled brass or felt chip. On the dark theme that is the
+     page's own white; a light theme keeps it, because the chip stays saturated. */
+  --on-accent: #fff;
+
   /* Latin first, Chinese behind it. Font fallback is per glyph, so Latin gets
      Inter's small-size shapes and every Chinese character still gets PingFang —
      which is what the old stack got backwards, rendering Latin in PingFang's
@@ -99,7 +115,7 @@
 
 /* Pro: about 12% tighter and a step smaller. Inter's optical axis is doing the
    work that keeps this legible rather than merely reduced. */
-:root[data-scale="pro"] {
+:root[data-depth="pro"] {
   --ui: 12.5px;
   --gap: 11px;
   --pad: 13px;
@@ -110,8 +126,8 @@
   --r-lg: 16px;
   --r-paper: 3px;
 
-  --lift: 0 18px 44px -22px rgba(0, 0, 0, .82);
-  --lift-page: 0 30px 64px -24px rgba(0, 0, 0, .78), 0 2px 6px rgba(0, 0, 0, .38);
+  --lift: 0 18px 44px -22px rgb(var(--shadow-rgb) / .82);
+  --lift-page: 0 30px 64px -24px rgb(var(--shadow-rgb) / .78), 0 2px 6px rgb(var(--shadow-rgb) / .38);
 }
 
 * { box-sizing: border-box; }
@@ -358,7 +374,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
   border-color: var(--brass); font-weight: 650;
 }
 .btn-primary:hover:not(:disabled) { background: var(--brass-bright); border-color: var(--brass-bright); }
-.btn-danger { color: #fff; background: var(--felt); border-color: var(--felt); }
+.btn-danger { color: var(--on-accent); background: var(--felt); border-color: var(--felt); }
 .btn-danger:hover:not(:disabled) { background: var(--felt-bright); border-color: var(--felt-bright); }
 .btn-sm { padding: 5px 11px; font-size: 11.5px; }
 
@@ -437,7 +453,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .generated-library-icon {
   display: grid; place-items: center; flex: 0 0 30px; height: 30px;
   border-radius: var(--r-sm); color: var(--lacquer-bright);
-  background: rgba(139, 123, 196, .14); font-size: 13px;
+  background: rgb(var(--lacquer-rgb) / .14); font-size: 13px;
 }
 .generated-library-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; }
 .generated-library-copy strong { font-size: 13px; }
@@ -466,8 +482,8 @@ input[type=checkbox] { accent-color: var(--brass); }
   flex: 0 0 auto; padding: 4px 9px; border-radius: 999px;
   font-size: 10.5px; white-space: nowrap;
 }
-.display-badge.exact { color: var(--baize-bright); background: rgba(116, 160, 101, .14); }
-.display-badge.simplified { color: var(--brass); background: rgba(214, 167, 86, .13); }
+.display-badge.exact { color: var(--baize-bright); background: rgb(var(--baize-rgb) / .14); }
+.display-badge.simplified { color: var(--brass); background: rgb(var(--brass-rgb) / .13); }
 .warning-list { margin: 10px 0; padding-left: 18px; color: var(--brass); font-size: 12px; }
 .review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(115px, 100%), 1fr)); gap: 10px; margin: 14px 0; }
 .review-grid label, .track-map, .confidence-field, .mic-device-select {
@@ -604,12 +620,12 @@ input[type=checkbox] { accent-color: var(--brass); }
   transform: translate(-50%, -50%);
   pointer-events: none;
   background: var(--brass-ink);
-  box-shadow: 0 0 0 3px rgba(150, 105, 15, .18);
+  box-shadow: 0 0 0 3px rgb(var(--brass-ink-rgb) / .18);
   animation: played-note-in .22s cubic-bezier(.2, .9, .3, 1.4) both;
 }
 .score-played-note.extra {
   background: var(--felt-ink);
-  box-shadow: 0 0 0 3px rgba(165, 40, 64, .16);
+  box-shadow: 0 0 0 3px rgb(var(--felt-ink-rgb) / .16);
 }
 .played-note-name {
   position: absolute; left: 50%; bottom: calc(100% + 6px);
@@ -675,7 +691,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .score-cursor.corrected { background: var(--brass-ink); }
 .score-cursor.partial { background: var(--brass-ink); }
 .score-cursor.different { background: var(--felt-ink); }
-.score-cursor.idle, .score-cursor.waiting { background: rgba(23, 21, 28, .35); }
+.score-cursor.idle, .score-cursor.waiting { background: rgb(var(--ink-rgb) / .35); }
 
 .cursor-tag {
   position: absolute; top: -19px; left: 50%;
@@ -691,7 +707,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   position: absolute; top: -20px; left: 50%;
   transform: translateX(-50%);
   padding: 1px 4px; border-radius: 4px;
-  color: #fff; font-size: 10px; white-space: nowrap;
+  color: var(--on-accent); font-size: 10px; white-space: nowrap;
 }
 
 .cursor-relocking {
@@ -709,7 +725,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   width: 15px; height: 15px; border-radius: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  border: 1.5px dashed rgba(23, 21, 28, .45);
+  border: 1.5px dashed rgb(var(--ink-rgb) / .45);
 }
 
 @keyframes played-note-in {
@@ -742,9 +758,9 @@ input[type=checkbox] { accent-color: var(--brass); }
 .input-status-card dd { margin: 0; overflow-wrap: anywhere; color: var(--chalk); font-size: 11.5px; }
 .input-status-pill {
   margin-top: 13px; padding: 7px 10px; border-radius: var(--r-sm);
-  color: var(--brass); background: rgba(214, 167, 86, .1); font-size: 10.5px;
+  color: var(--brass); background: rgb(var(--brass-rgb) / .1); font-size: 10.5px;
 }
-.input-status-pill.ready { color: var(--baize-bright); background: rgba(116, 160, 101, .1); }
+.input-status-pill.ready { color: var(--baize-bright); background: rgb(var(--baize-rgb) / .1); }
 
 .live-notes { display: flex; flex-wrap: wrap; gap: 4px; min-height: 26px; margin-top: 10px; }
 .dock-notes { min-height: 28px; }
@@ -778,7 +794,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   font-family: var(--font-num); font-size: 19px; font-weight: 700;
   letter-spacing: -.01em;
 }
-.played-chip.extra { color: #fff; background: var(--felt); }
+.played-chip.extra { color: var(--on-accent); background: var(--felt); }
 .played-chip.empty {
   color: var(--chalk-faint); background: transparent;
   border: 1px dashed var(--rule); font-family: var(--font-ui); font-size: 12px; font-weight: 400;
@@ -834,7 +850,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   display: flex; align-items: center; justify-content: space-between;
   gap: 16px; margin-top: 16px; padding: 13px 16px;
   background: var(--case-3); border: 1px solid var(--rule);
-  border-radius: var(--r); box-shadow: 0 18px 42px -14px rgba(0, 0, 0, .8);
+  border-radius: var(--r); box-shadow: 0 18px 42px -14px rgb(var(--shadow-rgb) / .8);
 }
 .transport-status, .recording-bar { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .transport-status strong { font-size: 13px; }
@@ -853,7 +869,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 }
 .disconnect-recovery {
   display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding: 14px;
-  color: var(--brass); background: rgba(214, 167, 86, .07);
+  color: var(--brass); background: rgb(var(--brass-rgb) / .07);
   border: 1px solid var(--brass-deep); border-radius: var(--r-sm);
 }
 .disconnect-recovery .device-grid.compact { grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }
@@ -926,7 +942,7 @@ input[type=checkbox] { accent-color: var(--brass); }
   margin-top: 9px; padding: 9px 10px; border-radius: var(--r-sm);
   color: var(--chalk-dim); background: var(--case-3); font-size: 10.5px; line-height: 1.55;
 }
-.mic-connection-note.problem { color: var(--brass); background: rgba(214, 167, 86, .08); }
+.mic-connection-note.problem { color: var(--brass); background: rgb(var(--brass-rgb) / .08); }
 .mic-monitor-column { min-width: 0; padding: 12px; background: var(--ebony); border: 1px solid var(--rule-soft); border-radius: var(--r-sm); }
 .mic-monitor-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .mic-monitor-heading strong { font-size: 11px; }
@@ -942,7 +958,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .transcription-progress strong { font-family: var(--font-num); font-size: 11px; }
 .headphone-warning {
   flex: 1 1 320px; padding: 8px 10px; color: var(--brass);
-  background: rgba(214, 167, 86, .07); border: 1px solid var(--brass-deep); border-radius: var(--r-sm);
+  background: rgb(var(--brass-rgb) / .07); border: 1px solid var(--brass-deep); border-radius: var(--r-sm);
 }
 
 /* --- report --------------------------------------------------------------- */
@@ -980,12 +996,12 @@ input[type=checkbox] { accent-color: var(--brass); }
 }
 .error-item:hover { background: var(--case-3); }
 .error-item.selected { background: var(--case-3); border-left-color: var(--brass); }
-.error-item .badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 3px; color: #fff; font-size: 10.5px; white-space: nowrap; }
+.error-item .badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 3px; color: var(--on-accent); font-size: 10.5px; white-space: nowrap; }
 .error-item .desc { flex: 1; font-size: 12.5px; }
 /* How sure the reading is. Useful once you know what it means, noise before
    that, so it belongs to Pro along with the rest of the deeper reading. */
 .error-item .conf { display: none; }
-:root[data-scale="pro"] .error-item .conf {
+:root[data-depth="pro"] .error-item .conf {
   display: block; flex: 0 0 auto; color: var(--chalk-faint);
   font-family: var(--font-num); font-size: var(--ui-xs);
 }
@@ -1001,9 +1017,9 @@ input[type=checkbox] { accent-color: var(--brass); }
 .technical-details { margin-top: 14px; border-top: 1px solid var(--rule-soft); }
 .technical-details summary { padding: 12px 2px; color: var(--chalk-faint); font-size: 12px; cursor: pointer; }
 .final-report-banner { margin: 0 0 14px; padding: 10px 14px; border-radius: var(--r-sm); font-size: 12px; }
-.final-report-banner.ready { color: var(--baize-bright); background: rgba(116, 160, 101, .08); border: 1px solid rgba(116, 160, 101, .3); }
-.final-report-banner.limited { color: var(--brass); background: rgba(214, 167, 86, .08); border: 1px solid var(--brass-deep); }
-.limited-metrics-card { margin-bottom: 15px; padding: 17px; background: rgba(214, 167, 86, .05); border: 1px solid var(--brass-deep); border-radius: var(--r-sm); }
+.final-report-banner.ready { color: var(--baize-bright); background: rgb(var(--baize-rgb) / .08); border: 1px solid rgb(var(--baize-rgb) / .3); }
+.final-report-banner.limited { color: var(--brass); background: rgb(var(--brass-rgb) / .08); border: 1px solid var(--brass-deep); }
+.limited-metrics-card { margin-bottom: 15px; padding: 17px; background: rgb(var(--brass-rgb) / .05); border: 1px solid var(--brass-deep); border-radius: var(--r-sm); }
 .limited-metrics-card strong { color: var(--brass); font-size: 16px; }
 .limited-metrics-card p { max-width: 660px; margin: 7px 0; color: var(--chalk); font-size: 12px; }
 .limited-metrics-card span { color: var(--chalk-faint); font-size: 10px; }
@@ -1057,7 +1073,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .chat-follow-up {
   display: block; width: 100%; margin-top: 8px; padding: 8px 10px; text-align: left; cursor: pointer;
   color: var(--chalk); background: var(--case-2);
-  border: 1px solid rgba(139, 123, 196, .32); border-radius: var(--r-sm);
+  border: 1px solid rgb(var(--lacquer-rgb) / .32); border-radius: var(--r-sm);
 }
 .chat-follow-up:hover { background: var(--case-3); }
 .chat-plan-action { margin-top: 8px; }
@@ -1076,10 +1092,10 @@ input[type=checkbox] { accent-color: var(--brass); }
 .generation-loop { display: flex; align-items: center; gap: 7px; color: var(--chalk-faint); font-size: 10.5px; white-space: nowrap; }
 .generation-loop span { padding: 5px 9px; border: 1px solid var(--rule); border-radius: 999px; }
 .generation-loop span.active { color: var(--chalk); background: var(--case-3); border-color: var(--lacquer); }
-.generation-loop span.done { color: var(--baize-bright); border-color: rgba(116, 160, 101, .4); }
+.generation-loop span.done { color: var(--baize-bright); border-color: rgb(var(--baize-rgb) / .4); }
 .exercise-designer, .exercise-result { padding: 22px; }
 .exercise-target { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px 14px; background: var(--case-2); border: 1px solid var(--rule-soft); border-radius: var(--r-sm); }
-.exercise-target .badge { flex: 0 0 auto; padding: 3px 8px; border-radius: 4px; color: #fff; font-size: 10.5px; }
+.exercise-target .badge { flex: 0 0 auto; padding: 3px 8px; border-radius: 4px; color: var(--on-accent); font-size: 10.5px; }
 .exercise-target div { display: flex; flex-direction: column; }
 .exercise-target strong { font-size: 12.5px; }
 .exercise-target span:last-child { color: var(--chalk-faint); font-size: 11px; }
@@ -1106,13 +1122,13 @@ input[type=checkbox] { accent-color: var(--brass); }
 .ai-generation-note > span { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border-radius: var(--r-sm); color: var(--chalk); background: var(--lacquer); font-weight: 700; }
 .ai-generation-note strong { color: var(--chalk); }
 .generate-ai-btn { min-width: min(180px, 100%); justify-content: center; }
-.generated-plan-card { padding: 16px; background: rgba(116, 160, 101, .05); border: 1px solid rgba(116, 160, 101, .32); border-radius: var(--r-sm); }
+.generated-plan-card { padding: 16px; background: rgb(var(--baize-rgb) / .05); border: 1px solid rgb(var(--baize-rgb) / .32); border-radius: var(--r-sm); }
 .generated-plan-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .generated-plan-heading h3 { margin: 4px 0 8px; color: var(--chalk); font-size: 15px; }
 .generated-plan-card p { margin: 0 0 10px; color: var(--chalk-dim); font-size: 12px; }
-.planner-status { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: var(--baize-bright); background: rgba(116, 160, 101, .12); font-size: 10px; white-space: nowrap; }
-.planner-status.fallback { color: var(--brass); background: rgba(214, 167, 86, .12); }
-.note-ack { margin: 8px 0; padding: 8px 10px; border-radius: var(--r-sm); color: var(--lacquer-bright); background: rgba(139, 123, 196, .1); font-size: 11px; }
+.planner-status { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: var(--baize-bright); background: rgb(var(--baize-rgb) / .12); font-size: 10px; white-space: nowrap; }
+.planner-status.fallback { color: var(--brass); background: rgb(var(--brass-rgb) / .12); }
+.note-ack { margin: 8px 0; padding: 8px 10px; border-radius: var(--r-sm); color: var(--lacquer-bright); background: rgb(var(--lacquer-rgb) / .1); font-size: 11px; }
 .plan-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .plan-facts span { padding: 5px 8px; border-radius: var(--r-sm); color: var(--chalk); background: var(--ebony); font-size: 11px; }
 .success-criterion { margin-top: 10px; color: var(--baize-bright); font-size: 11px; }
@@ -1126,7 +1142,7 @@ input[type=checkbox] { accent-color: var(--brass); }
 .retry-score-target { position: relative; margin-top: 12px; }
 .retry-score-label {
   display: inline-flex; align-items: center; margin-bottom: 8px; padding: 4px 10px;
-  color: var(--brass); background: rgba(214, 167, 86, .1);
+  color: var(--brass); background: rgb(var(--brass-rgb) / .1);
   border: 1px solid var(--brass-deep); border-radius: 999px;
   font-size: 11.5px; font-weight: 650;
 }
@@ -1164,13 +1180,13 @@ input[type=checkbox] { accent-color: var(--brass); }
 
 .alert { margin: 0 0 14px; padding: 10px 14px; border-radius: var(--r-sm); font-size: 12.5px; }
 .alert-info { color: var(--chalk); background: var(--case-2); border: 1px solid var(--rule); }
-.alert-warn { color: var(--brass); background: rgba(214, 167, 86, .07); border: 1px solid var(--brass-deep); }
-.alert-error { color: var(--felt-bright); background: rgba(196, 65, 92, .07); border: 1px solid var(--felt); }
-.alert-success { color: var(--baize-bright); background: rgba(116, 160, 101, .07); border: 1px solid rgba(116, 160, 101, .4); }
+.alert-warn { color: var(--brass); background: rgb(var(--brass-rgb) / .07); border: 1px solid var(--brass-deep); }
+.alert-error { color: var(--felt-bright); background: rgb(var(--felt-rgb) / .07); border: 1px solid var(--felt); }
+.alert-success { color: var(--baize-bright); background: rgb(var(--baize-rgb) / .07); border: 1px solid rgb(var(--baize-rgb) / .4); }
 .recovery-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   margin: 0 0 14px; padding: 10px 14px;
-  color: var(--brass); background: rgba(214, 167, 86, .07);
+  color: var(--brass); background: rgb(var(--brass-rgb) / .07);
   border: 1px solid var(--brass-deep); border-radius: var(--r-sm); font-size: 12.5px;
 }
 .upload-zone {
@@ -1244,3 +1260,252 @@ input[type=checkbox] { accent-color: var(--brass); }
 .mic-sensitivity-heading small { color: var(--brass); font-family: var(--font-num); font-size: 9.5px; }
 .mic-sensitivity input[type=range] { width: 100%; margin: 0; }
 .mic-sensitivity-hint { display: block; margin-top: 4px; color: var(--chalk-faint); font-size: 9.5px; line-height: 1.5; }
+
+
+/* ==========================================================================
+   Themes and finishes
+   --------------------------------------------------------------------------
+   Two independent axes, both stamped on <html> before first paint:
+
+     data-theme    light | dark   — how lit the room is
+     data-finish   the case timber
+
+   The dark palette is the one declared at :root, so a browser that never runs
+   the boot script still gets the design as drawn rather than an unstyled page.
+
+   The finish recolours the room only: the case, its rules, and the chalk that
+   sits on it. It never touches brass, felt, baize or lacquer, because those
+   four carry meaning — brass is you, felt is a mistake, baize is something you
+   fixed, lacquer is the AI — and a mistake that changes colour with the
+   furniture is a report you have to re-learn every time you change the theme.
+
+   The page itself does not change either. The score is paper in every theme,
+   which is why OSMD is told to draw on white: a lit page in a dim room is the
+   whole idea, and inverting it would mean re-teaching the reader what a stave
+   looks like.
+   ========================================================================== */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* The room, lit. Still a case rather than a white page: the score is the
+     brightest thing on screen in both themes, and these stay a step below it. */
+  --ebony: #e7e2da;
+  --case: #f2eee7;
+  --case-2: #e9e4db;
+  --case-3: #ded7cb;
+  --rule: #cec5b6;
+  --rule-soft: #ded8cc;
+
+  --paper: #fffefb;
+  --ink: #17151c;
+  --ink-soft: #5d5666;
+
+  /* Chalk is the text on the case, so on a light case it has to become ink. */
+  --chalk: #221f2a;
+  --chalk-dim: #575061;
+  --chalk-faint: #6f6779;
+
+  /* Brass, felt, baize and lacquer keep their identity but drop in lightness:
+     the same hue that reads on ebony would glare on a lit case. The -ink
+     variants already existed for exactly this, being the versions drawn on
+     paper. */
+  --brass: #8a6a2d;
+  --brass-bright: #a8823c;
+  --brass-deep: #6d5322;
+
+  --felt: #b03652;
+  --felt-bright: #c4415c;
+
+  --baize: #4f7a41;
+  --baize-bright: #5f8f4f;
+
+  --lacquer: #5f4f9c;
+  --lacquer-bright: #6e5cb0;
+
+  --brass-rgb: 138 106 45;
+  --felt-rgb: 176 54 82;
+  --baize-rgb: 79 122 65;
+  --lacquer-rgb: 95 79 156;
+  --ink-rgb: 23 21 28;
+  /* A lit room throws a far softer shadow than a dim one. */
+  --shadow-rgb: 90 78 60;
+}
+
+/* --- finishes: the timber the case is made of ----------------------------- */
+
+:root[data-finish="rosewood"] {
+  --ebony: #1a1114;
+  --case: #26191c;
+  --case-2: #302024;
+  --case-3: #3d292e;
+  --rule: #452e33;
+  --rule-soft: #332226;
+  --chalk-dim: #a8919a;
+  --chalk-faint: #7a656d;
+}
+:root[data-theme="light"][data-finish="rosewood"] {
+  --ebony: #ece0dc;
+  --case: #f6ece8;
+  --case-2: #efe2dd;
+  --case-3: #e2d0c9;
+  --rule: #d3bcb3;
+  --rule-soft: #e3d2cc;
+  --chalk-dim: #5a4641;
+  --chalk-faint: #766058;
+}
+
+:root[data-finish="walnut"] {
+  --ebony: #17130f;
+  --case: #221c15;
+  --case-2: #2c241b;
+  --case-3: #382e23;
+  --rule: #403427;
+  --rule-soft: #2f271d;
+  --chalk-dim: #a2988a;
+  --chalk-faint: #756c60;
+}
+:root[data-theme="light"][data-finish="walnut"] {
+  --ebony: #e9e1d3;
+  --case: #f4eee2;
+  --case-2: #ece4d5;
+  --case-3: #ded3bf;
+  --rule: #cdbfa5;
+  --rule-soft: #ded3bf;
+  --chalk-dim: #524838;
+  --chalk-faint: #6d6350;
+}
+
+/* Ivory is the keyboard rather than the case: pale, warm, and the one finish
+   that starts light. Its dark form is the underside of an ivory key. */
+:root[data-finish="ivory"] {
+  --ebony: #1b1a17;
+  --case: #262420;
+  --case-2: #302e28;
+  --case-3: #3c3931;
+  --rule: #464238;
+  --rule-soft: #33302a;
+  --chalk-dim: #a9a496;
+  --chalk-faint: #7b776c;
+}
+:root[data-theme="light"][data-finish="ivory"] {
+  --ebony: #eae5d8;
+  --case: #fbf8ef;
+  --case-2: #f3efe3;
+  --case-3: #e6e0cf;
+  --rule: #d6cfb9;
+  --rule-soft: #e6e0d0;
+  --chalk-dim: #4f4b3c;
+  --chalk-faint: #6b6757;
+}
+
+/* --- settings ------------------------------------------------------------
+   A modal rather than a panel: these choices change the whole room, so the
+   room stops for a moment while they are made. */
+
+.settings-open { font-size: var(--ui-lg); line-height: 1; padding: 5px 9px; }
+
+.settings-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center;
+  padding: var(--gap);
+  background: rgb(var(--ink-rgb) / .55);
+}
+
+.settings-dialog {
+  width: min(560px, 100%);
+  max-height: min(82vh, 780px);
+  display: flex; flex-direction: column;
+  background: var(--case);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lift-page);
+}
+
+.settings-header {
+  display: flex; align-items: center; gap: var(--gap-sm);
+  padding: var(--pad) var(--pad) var(--gap-sm);
+  border-bottom: 1px solid var(--rule-soft);
+}
+.settings-header h2 { flex: 1; margin: 0; font-size: var(--ui-xl); }
+
+.settings-body { overflow-y: auto; padding: var(--pad); }
+.settings-body section + section {
+  margin-top: var(--gap-lg);
+  padding-top: var(--gap);
+  border-top: 1px solid var(--rule-soft);
+}
+.settings-body h3 {
+  margin: 0 0 var(--gap-sm);
+  font-size: var(--ui-sm); font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--chalk-dim);
+}
+
+.settings-group { margin: 0 0 var(--gap-sm); padding: 0; border: 0; }
+.settings-group legend {
+  padding: 0 0 6px; font-size: var(--ui-sm); color: var(--chalk-faint);
+}
+.settings-choices { display: flex; flex-wrap: wrap; gap: var(--gap-sm); }
+
+.settings-choice {
+  flex: 1 1 auto; min-width: 120px;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 9px 11px;
+  background: var(--case-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+.settings-choice:hover { background: var(--case-3); }
+.settings-choice:has(input:checked) {
+  background: rgb(var(--brass-rgb) / .12);
+  border-color: var(--brass);
+}
+.settings-choice:has(input:focus-visible) {
+  outline: 2px solid var(--brass); outline-offset: 2px;
+}
+.settings-choice input { margin: 2px 0 0; accent-color: var(--brass); }
+.settings-choice-body { display: flex; flex-direction: column; gap: 2px; }
+.settings-choice-label { font-size: var(--ui); }
+.settings-choice-hint {
+  font-size: var(--ui-xs); line-height: 1.45; color: var(--chalk-faint);
+}
+
+.settings-note {
+  margin: var(--gap-sm) 0 0;
+  font-size: var(--ui-xs); line-height: 1.5; color: var(--chalk-faint);
+}
+.settings-about a { color: var(--brass); }
+
+/* --- pro-only report detail ---------------------------------------------- */
+
+.pro-block { margin-top: var(--gap); }
+.pro-block h3 {
+  margin: 0 0 6px; font-size: var(--ui-sm); color: var(--chalk-dim);
+}
+.pro-empty { margin: 0; font-size: var(--ui-sm); color: var(--chalk-faint); }
+
+.pro-evidence, .pro-hands, .pro-input { margin: 0; padding: 0; list-style: none; }
+.pro-evidence li {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  padding: 7px 0;
+  font-size: var(--ui-sm);
+  border-bottom: 1px solid var(--rule-soft);
+}
+.pro-evidence li:last-child { border-bottom: 0; }
+.pro-where {
+  flex: 0 0 auto; font-family: var(--font-num); font-size: var(--ui-xs);
+  color: var(--brass);
+}
+.pro-fact { flex: 1 1 100%; }
+.pro-compare { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--chalk-dim); }
+.pro-compare em { font-style: normal; color: var(--chalk-faint); }
+.pro-delta { font-family: var(--font-num); color: var(--felt-bright); }
+
+.pro-hands li, .pro-input li {
+  padding: 4px 0; font-size: var(--ui-sm); color: var(--chalk-dim);
+}
+.pro-provenance {
+  font-family: var(--font-num); font-size: var(--ui-xs) !important;
+  color: var(--chalk-faint) !important;
+}

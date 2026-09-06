@@ -295,7 +295,10 @@ export class LiveNoteDetector {
   private recentRms: number[] = []
   /** Gated spectrum of the current frame, reused for polyphony. */
   private gated: Float32Array
+  /** This take's automatic calibration, forgotten when the next one starts. */
   private autoTuned = false
+  /** A sensitivity the presenter set by hand. Outlives every take. */
+  private pinned = false
 
   /** Seed the running spectrum without treating the change as an attack. */
   private primeFrom(magnitude: Float32Array): void {
@@ -342,7 +345,7 @@ export class LiveNoteDetector {
     this.recentRms.push(frameRms)
     if (this.recentRms.length < 240) return          // ~2.5 s of audio
     this.recentRms.shift()
-    if (this.autoTuned) return
+    if (this.pinned || this.autoTuned) return
     const sorted = [...this.recentRms].sort((left, right) => left - right)
     const floor = sorted[Math.floor(sorted.length * 0.2)]
     const peak = sorted[Math.floor(sorted.length * 0.95)]
@@ -356,7 +359,7 @@ export class LiveNoteDetector {
   /** Stop adapting and hold whatever the presenter chose. */
   pinSensitivity(value: number): void {
     this.sensitivity = value
-    this.autoTuned = true
+    this.pinned = true
   }
 
   /**
@@ -377,6 +380,12 @@ export class LiveNoteDetector {
     this.pendingOnsetMs = null
     this.pendingRatio = 0
     this.recentRms = []
+    // A calibration belongs to the take it was measured from. Carrying it into
+    // the next one meant a take played in a quiet room tuned the detector one
+    // way and the next take, in a room that had filled up, kept running on the
+    // first one's reading. A sensitivity the presenter pinned by hand is a
+    // decision rather than a measurement, so that one survives.
+    this.autoTuned = false
   }
 
   /** Forget the room as well as the take. */

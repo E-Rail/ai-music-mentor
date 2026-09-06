@@ -6,6 +6,7 @@ import { LiveNoteDetector, type DetectedNote } from './liveDetector'
 import { transcribeAudio } from './transcription'
 import { enhancePreviewFrame } from './audioEnhancement'
 import { withEmbeddedNote } from '../shell/embedding'
+import { t, tf } from '../../i18n/messages'
 
 export type MicrophoneState =
   | 'idle' | 'requesting' | 'noise-check' | 'ready' | 'recording'
@@ -57,21 +58,21 @@ function microphoneFailure(error: unknown): MicrophoneConnectionError {
       return connectionError(
         'MIC_PERMISSION_DENIED',
         withEmbeddedNote(
-          '浏览器或 macOS 已阻止麦克风。请同时检查地址栏的网站权限，以及“系统设置 → 隐私与安全性 → 麦克风”。',
+          t('micBlockedBySystem'),
         ),
       )
     }
     if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-      return connectionError('MIC_NOT_FOUND', '没有找到可用麦克风。请连接设备后重新扫描。')
+      return connectionError('MIC_NOT_FOUND', t('micNotFound'))
     }
     if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
       return connectionError(
         'MIC_NOT_READABLE',
-        '麦克风正被其他应用独占，或 macOS 尚未允许当前浏览器使用它。请关闭其他录音应用后重试。',
+        t('micBusy'),
       )
     }
     if (error.name === 'OverconstrainedError') {
-      return connectionError('MIC_DEVICE_UNAVAILABLE', '之前选择的麦克风已不可用，正在尝试系统默认输入。')
+      return connectionError('MIC_DEVICE_UNAVAILABLE', t('micDeviceUnavailable'))
     }
   }
   return error instanceof Error
@@ -226,7 +227,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     if (!window.isSecureContext) {
       const error = connectionError(
         'MIC_INSECURE_CONTEXT',
-        '麦克风只能在安全页面使用。请通过 launch.sh 打开 http://127.0.0.1:8000，不要使用局域网 IP。',
+        t('micInsecureContext'),
       )
       this.setState('error', error.message)
       throw error
@@ -234,7 +235,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     if (!navigator.mediaDevices?.getUserMedia) {
       const error = connectionError(
         'MIC_UNSUPPORTED',
-        '当前浏览器没有提供麦克风接口。请使用最新版桌面 Chrome 或 Edge。',
+        t('micNoApi'),
       )
       this.setState('error', error.message)
       throw error
@@ -271,7 +272,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
         return await new Promise<MediaStream>((resolve, reject) => {
           timeoutId = window.setTimeout(() => reject(connectionError(
             'MIC_PERMISSION_TIMEOUT',
-            '浏览器没有完成麦克风授权。请查看地址栏旁的权限图标；允许后点击重试。',
+            t('micPermissionIncomplete'),
           )), PERMISSION_TIMEOUT_MS)
           request.then(resolve, reject)
         })
@@ -299,7 +300,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
       if (attempt !== this.connectionAttempt) {
         this.stream.getTracks().forEach((track) => track.stop())
         this.stream = null
-        throw connectionError('MIC_CONNECT_CANCELLED', '麦克风连接已取消')
+        throw connectionError('MIC_CONNECT_CANCELLED', t('micConnectCancelled'))
       }
     } catch (error) {
       const failure = microphoneFailure(error)
@@ -327,7 +328,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices()
       return devices.filter((device) => device.kind === 'audioinput').map((device, index) => ({
-        id: device.deviceId, label: device.label || `麦克风 ${index + 1}`,
+        id: device.deviceId, label: device.label || tf('micNumbered', { number: index + 1 }),
       }))
     } catch {
       // Device enumeration is useful for switching inputs, but it must not turn
@@ -335,7 +336,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
       const settings = track.getSettings()
       return [{
         id: settings.deviceId || track.id,
-        label: track.label || '当前麦克风',
+        label: track.label || t('micCurrent'),
       }]
     }
   }
@@ -416,10 +417,10 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     const resumeError = await Promise.race([
       resumeResult,
       new Promise<Error>((resolve) => window.setTimeout(
-        () => resolve(new Error('音频预览未能启动；录音仍可正常使用。')), 2_000)),
+        () => resolve(new Error(t('micPreviewNoStart'))), 2_000)),
     ])
     if (resumeError || this.context.state !== 'running') {
-      this.previewWarning = resumeError?.message ?? '音频预览被浏览器暂停；录音仍可正常使用。'
+      this.previewWarning = resumeError?.message ?? t('micPreviewSuspended')
       return
     }
     this.sourceNode = this.context.createMediaStreamSource(this.stream)
@@ -438,7 +439,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
       this.sourceNode.disconnect()
       this.worklet?.disconnect()
       this.worklet = null
-      this.previewWarning = `高性能预览不可用，已切换兼容模式：${microphoneFailure(error).message}`
+      this.previewWarning = tf('micPreviewFellBack', { detail: microphoneFailure(error).message })
     }
 
     try {
@@ -455,7 +456,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
       tick()
       this.previewMode = 'analyser'
     } catch (error) {
-      this.previewWarning = `实时预览不可用，但录音和停止后分析仍可使用：${microphoneFailure(error).message}`
+      this.previewWarning = tf('micPreviewUnavailableDetail', { detail: microphoneFailure(error).message })
       this.previewMode = 'unavailable'
     }
   }
@@ -467,7 +468,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     const track = this.stream?.getAudioTracks()[0]
     if (!track || track.readyState === 'ended') {
       this.setState('device-lost')
-      throw new Error('麦克风在房间噪声检查期间断开')
+      throw new Error(t('micLostDuringNoiseCheck'))
     }
     const sorted = [...this.noiseSamples].sort((a, b) => a - b)
     this.noiseFloorDb = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null
@@ -477,7 +478,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
   }
 
   start(sessionId: string, instrument: InstrumentProfile): void {
-    if (!this.stream || this.state !== 'ready') throw new Error('麦克风尚未准备好')
+    if (!this.stream || this.state !== 'ready') throw new Error(t('micNotReady'))
     const mimeType = [
       'audio/webm;codecs=opus', 'audio/webm', 'audio/mp4',
     ].find((type) => MediaRecorder.isTypeSupported(type))
@@ -516,13 +517,13 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
       return Promise.resolve(this.takeBlob)
     }
     if (!this.recorder || this.recorder.state === 'inactive') {
-      return Promise.reject(new Error('没有可转录的麦克风录音'))
+      return Promise.reject(new Error(t('micNothingToTranscribe')))
     }
     this.stopPromise = new Promise((resolve, reject) => {
       const recorder = this.recorder!
       recorder.onerror = (event) => {
         this.stopPromise = null
-        reject((event as Event & { error?: DOMException }).error ?? new Error('录音器错误'))
+        reject((event as Event & { error?: DOMException }).error ?? new Error(t('micRecorderError')))
       }
       recorder.onstop = () => {
         this.takeBlob = new Blob(this.chunks, { type: recorder.mimeType })

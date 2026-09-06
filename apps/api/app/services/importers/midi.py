@@ -194,7 +194,15 @@ class MidiScoreImporter(ScoreImporter):
             events.append(ScoreEvent(
                 eventId=f"{score_id}:{part}:m{measure}:b{str(onset).replace('.', '_')}:"
                         f"{counters[(part, measure)]}",
-                measureNo=measure, onsetBeat=onset, absoluteBeat=onset,
+                measureNo=measure, onsetBeat=onset,
+                # onset is the offset *within* the measure, which is what
+                # onsetBeat and the duration clamp below both want. The timeline
+                # beat is not that: build_onsets sorts the whole score by
+                # absoluteBeat, so handing it the in-measure offset reorders a
+                # multi-measure score beat-major across bars — every bar's
+                # beat 1, then every bar's beat 2 — and puts the last note of a
+                # three-bar piece at 1.5s instead of 5.5s.
+                absoluteBeat=(measure - 1) * measure_beats + onset,
                 durationBeat=min(float(item["duration"]), measure_beats - onset),
                 pitches=sorted(set(item["pitches"])),  # type: ignore[arg-type]
                 part=part, voice=1,

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { ScaleSwitch, useUiScale } from './features/shell/ScaleSwitch'
+import { SettingsDialog } from './features/shell/SettingsDialog'
+import { useDepth, useFinish, useLocale, useTheme } from './features/shell/useSettings'
 import { api } from './api/client'
 import {
   measureLabel, measureLabelList, setScoreMeasureLabels,
@@ -128,6 +129,13 @@ const READ_FROM_PAGE_SUFFIXES = /\.(pdf|png|jpe?g|webp|heic|heif)$/i
 /** A score that a model read off a page, rather than one someone exported. */
 function isReadFromPage(detail: { sourceType: ScoreSourceType }): boolean {
   return detail.sourceType === 'pdf' || detail.sourceType === 'image'
+}
+
+/** No key has been checked yet. Shared so the two places that reset a device
+ *  check cannot drift apart and leave one of them half-clearing it. */
+const UNCHECKED: CalibrationStatus = {
+  noteCount: 0, centerC: false, lastPitch: null, lastVelocity: null,
+  jitterMs: null, duplicateMessages: 0,
 }
 
 export default function App() {
@@ -726,7 +734,13 @@ export default function App() {
     setAlert({ type: 'info', msg: t('microphoneRequestCancelled') })
   }
 
-  const discardActiveCapture = async () => {
+  /**
+   * Throw away the take without asking.
+   *
+   * Every entry point below asks first; this is the shared body so that a
+   * caller which has already asked does not ask twice.
+   */
+  const performDiscard = async () => {
     const activeSessionId = workflow.capture === 'retry' ? retrySessionId : sessionId
     if (!activeSessionId) return
     if (recording && inputSource === 'microphone') {
@@ -747,10 +761,37 @@ export default function App() {
     setAlert({ type: 'info', msg: t('captureDiscarded') })
   }
 
+  /**
+   * Is there anything to lose?
+   *
+   * Confirming a discard that throws nothing away is a dialog for its own sake,
+   * so an untouched take goes quietly.
+   */
+  // The played notes live in the capture adapter rather than in state, so what
+  // is testable here is whether a take exists at all: one being recorded, one
+  // already transcribed, or one recovered from a previous session.
+  const captureHasSomethingToLose = () =>
+    recording || hasSavedMicrophoneTake || Boolean(captureMeta) ||
+    Boolean(recoveryContext)
+
+  /**
+   * Discarding is destructive and irreversible, so it asks — from every button
+   * that does it, not only from the one in the stepper. Three other buttons ran
+   * the same code with no prompt at all, which meant a misclick in the transport
+   * bar silently deleted a take the nav bar would have asked about.
+   */
+  const discardActiveCapture = async () => {
+    if (captureHasSomethingToLose() &&
+        !window.confirm(t('discardCaptureConfirm'))) return
+    await performDiscard()
+  }
+
   const discardCaptureAndReturnToScores = async () => {
+    if (captureHasSomethingToLose() &&
+        !window.confirm(t('discardTakeReturnConfirm'))) return
     setLoading(true)
     try {
-      await discardActiveCapture()
+      await performDiscard()
       resetPracticeBlock()
       sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
       setAlert({ type: 'info', msg: t('returnedToScoresAfterDiscard') })
@@ -842,8 +883,7 @@ export default function App() {
     }
     getPlayer()
     sendWorkflow({ type: 'START_DEVICE_SETUP' }); setAlert(null); setLiveNotes([])
-    setCalibration({ noteCount: 0, centerC: false, lastPitch: null, lastVelocity: null,
-      jitterMs: null, duplicateMessages: 0 })
+    setCalibration(UNCHECKED)
     if (inputSource === 'microphone' || inputSource === 'midi-upload') return
     setLoading(true)
     try {
@@ -866,6 +906,12 @@ export default function App() {
     if (captureRef.current!.selectInput(name)) {
       selectedInputRef.current = name
       setSelectedInput(name); setUploadMode(false)
+      // A check belongs to the keyboard that passed it. Switching devices here
+      // — because the first was the wrong one, or because it dropped and a
+      // replacement was picked from the reconnect list — used to keep the old
+      // device's ticks, so the new one was never actually verified and the
+      // whole point of this screen was skipped.
+      setCalibration(UNCHECKED)
       sendWorkflow({ type: 'DEVICE_CONNECTED' })
       setAlert({ type: 'info', msg: tf('deviceSelected', { name }) })
     }
@@ -1596,7 +1642,7 @@ export default function App() {
     if (!canOpenStudioStage(stage)) return
     if (stage === 'score') {
       if (workflow.capture !== null) {
-        if (!hasSavedMicrophoneTake || !window.confirm(t('discardTakeReturnConfirm'))) return
+        if (!hasSavedMicrophoneTake) return
         void discardCaptureAndReturnToScores()
         return
       }
@@ -1665,7 +1711,11 @@ export default function App() {
     )
   }
 
-  const [uiScale, setUiScale] = useUiScale()
+  const [theme, setTheme] = useTheme()
+  const [finish, setFinish] = useFinish()
+  const [locale, setLocale] = useLocale()
+  const [uiScale, setUiScale] = useDepth()
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (
     <div className="app">
@@ -1673,8 +1723,20 @@ export default function App() {
         <h1>{t('appName')}</h1>
         <span className="subtitle">{t('appSubtitle')}</span>
         <span className="spacer" />
-        <ScaleSwitch scale={uiScale} onChange={setUiScale} />
+        <button type="button" className="btn btn-sm settings-open"
+                aria-haspopup="dialog" aria-expanded={settingsOpen}
+                title={t('settingsOpen')} aria-label={t('settingsOpen')}
+                onClick={() => setSettingsOpen(true)}>⚙</button>
       </div>
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme} onTheme={setTheme}
+        finish={finish} onFinish={setFinish}
+        locale={locale} onLocale={setLocale}
+        depth={uiScale} onDepth={setUiScale}
+      />
 
       <StudioStepper active={studioStage} canOpen={canOpenStudioStage}
                      onOpen={openStudioStage} />
@@ -1694,9 +1756,15 @@ export default function App() {
       {workflow.lastRejection === 'CAPTURE_ACTIVE' && (
         <div className="alert alert-warn" role="alert">{t('captureActiveGuard')}</div>
       )}
-      {recoveryContext && recoveredEvents.length > 0 && (
+      {/* Gated on the context, not on the note count. A microphone take or an
+          uploaded file recovers without any MIDI events, so keying this on
+          recoveredEvents left those two with a warning on every load and no
+          button to clear it — the only way out was wiping storage by hand. */}
+      {recoveryContext && (
         <div className="recovery-banner" role="status">
-          <span>{tf('localRecovery', { count: recoveredEvents.length })}</span>
+          <span>{recoveredEvents.length > 0
+            ? tf('localRecovery', { count: recoveredEvents.length })
+            : t('localRecoveryTake')}</span>
           <button type="button" className="btn btn-sm" onClick={discardRecoveredRecording}
                   disabled={loading}>{t('discardRecovery')}</button>
         </div>
@@ -2193,7 +2261,7 @@ export default function App() {
       {/* Step 4: 报告 */}
       {step === 'report' && report && (
         <CoachReport
-          scale={uiScale}
+          depth={uiScale}
           report={report}
           baseline={baselineReport}
           beatsPerMeasure={meta?.beatsPerMeasure}

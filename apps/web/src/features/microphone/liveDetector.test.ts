@@ -231,3 +231,59 @@ describe('hearing more than one note at once', () => {
     expect(detectPolyphony(new Float32Array(2048), BIN_HZ, 110, 1400)).toEqual([])
   })
 })
+
+describe('calibration belongs to the take it came from', () => {
+  /**
+   * A take with a given signal-to-room ratio.
+   *
+   * adaptToRoom reads the *headroom* — how far the notes stand clear of the
+   * room — not the absolute level, so the two takes here differ in how much
+   * room noise sits under the note rather than in how loud the note is.
+   */
+  function play(detector: LiveNoteDetector, noteLevel: number,
+    roomLevel: number): void {
+    const frame = new Float32Array(FRAME_SIZE)
+    const random = noiseSource(11)
+    for (let block = 0; block < 300; block += 1) {
+      // Silence between the notes is what makes a floor to measure against.
+      const sounding = block % 4 !== 3
+      for (let index = 0; index < FRAME_SIZE; index += 1) {
+        const t = (block * FRAME_SIZE + index) / SAMPLE_RATE
+        frame[index] = (sounding ? Math.sin(2 * Math.PI * 440 * t) * noteLevel : 0)
+          + random() * roomLevel
+      }
+      detector.process(frame, (block * FRAME_SIZE / SAMPLE_RATE) * 1_000)
+    }
+  }
+
+  it('re-reads the room for a new take instead of reusing the last one', () => {
+    // First take in a room that swallows the note: little headroom, so the
+    // detector leans in.
+    const detector = new LiveNoteDetector({ sampleRate: SAMPLE_RATE })
+    play(detector, 0.05, 0.05)
+    const noisyTake = detector.sensitivity
+
+    // Second take, same detector, in a room that has gone quiet: the note now
+    // stands well clear and the detector can afford to be strict.
+    detector.reset()
+    play(detector, 0.5, 0.0005)
+    const quietTake = detector.sensitivity
+
+    expect(quietTake).not.toBe(noisyTake)
+    // And it lands where a detector that had only ever heard the second take
+    // would have landed.
+    const fresh = new LiveNoteDetector({ sampleRate: SAMPLE_RATE })
+    play(fresh, 0.5, 0.0005)
+    expect(quietTake).toBe(fresh.sensitivity)
+  })
+
+  it('keeps a sensitivity the presenter pinned by hand', () => {
+    const detector = new LiveNoteDetector({ sampleRate: SAMPLE_RATE })
+    detector.pinSensitivity(0.42)
+    detector.reset()
+    play(detector, 0.5, 0.0005)
+    // A pinned value is a decision, not a measurement, so a new take must not
+    // quietly overwrite it.
+    expect(detector.sensitivity).toBe(0.42)
+  })
+})

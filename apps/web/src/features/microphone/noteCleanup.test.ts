@@ -50,3 +50,37 @@ describe('microphone note cleanup', () => {
     expect(result.events.map((event) => event.pitch)).toEqual([64])
   })
 })
+
+describe('a repeated note is not a fragmented one', () => {
+  it('keeps every note of a trill', () => {
+    // C-D-C-D-C, each note about 100ms. The gap between one C ending and the
+    // next C starting is 100ms, inside violin's 120ms merge window — but a D
+    // was struck in between, so these are five strikes, not a fragmented one.
+    const trill = [
+      note('c1', 69, 0, 100, .9), note('d1', 71, 100, 200, .9),
+      note('c2', 69, 200, 300, .9), note('d2', 71, 300, 400, .9),
+      note('c3', 69, 400, 500, .9),
+    ]
+    const result = cleanupTranscribedNotes(trill, AUDIO_PROFILES.violin)
+    expect(result.events.map((event) => event.pitch))
+      .toEqual([69, 71, 69, 71, 69])
+  })
+
+  it('still merges a note the model split in two', () => {
+    // Nothing was struck in between, so these are one sustained note reported
+    // as two fragments — the case the merge exists for.
+    const result = cleanupTranscribedNotes([
+      note('a', 60, 0, 200, .8), note('b', 60, 240, 500, .7),
+    ], AUDIO_PROFILES.piano)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0].tOffMs).toBe(500)
+  })
+
+  it('keeps a repeated piano note that a chord tone separates', () => {
+    const result = cleanupTranscribedNotes([
+      note('a', 60, 0, 60, .9), note('mid', 64, 70, 130, .9),
+      note('b', 60, 100, 200, .9),
+    ], AUDIO_PROFILES.piano)
+    expect(result.events.filter((event) => event.pitch === 60)).toHaveLength(2)
+  })
+})

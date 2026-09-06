@@ -4,6 +4,7 @@ import type {
   MentorMemoryStatus,
 } from '../../types'
 import { ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, t, tf } from '../../i18n/messages'
+import { ProEvidence, ProHands, ProInputQuality } from './ProDetail'
 import { errorColor, errorDetailForDisplay } from './errorPresentation'
 import { MentorSummary } from '../mentor/MentorSummary'
 import { MentorChat, type MentorChatMessage } from '../mentor/MentorChat'
@@ -15,7 +16,7 @@ const ScoreViewer = lazy(() => import('../score/ScoreViewer').then((module) => (
 
 type CoachReportProps = {
   /** Pro opens the deeper musical reading instead of tucking it behind a click. */
-  scale: 'starter' | 'pro'
+  depth: 'standard' | 'pro'
   report: DiagnosisReport
   baseline: DiagnosisReport | null
   beatsPerMeasure?: number
@@ -40,7 +41,7 @@ type CoachReportProps = {
 }
 
 export function CoachReport({
-  scale, report, baseline, beatsPerMeasure, scoreXmlUrl, selectedError,
+  depth, report, baseline, beatsPerMeasure, scoreXmlUrl, selectedError,
   mentor, mentorLoading, chatMessages, chatLoading, question,
   mentorMemory,
   onChooseError, onPlayEvidence, onApplyPlan, onApplyChatAction, onAskMentor,
@@ -125,13 +126,23 @@ export function CoachReport({
           {selectedError && (
             <EvidenceDrawer report={report} error={selectedError} onPlayCompare={onPlayEvidence} />
           )}
-          <details className="technical-details" open={scale === 'pro'}>
+          <details className="technical-details" open={depth === 'pro'}>
             <summary>{t('musicalDetails')}</summary>
             <div className="evidence-layers">
               <section>
                 <h3>{t('verifiableFacts')}</h3>
                 <p>{tf('evidenceCount', { count: report.evidences.length })}</p>
               </section>
+              {/* Standard says how many things were noticed; Pro says what they
+                  were. The list, the hands and the reading quality are all
+                  already in this report — they were simply never drawn. */}
+              {depth === 'pro' && (
+                <>
+                  <ProEvidence report={report} measureLabel={measureLabel} />
+                  <ProHands report={report} />
+                  <ProInputQuality report={report} />
+                </>
+              )}
               <section>
                 <h3>{t('repeatedPatterns')}</h3>
                 <p>{report.patterns.length

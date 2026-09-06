@@ -298,8 +298,9 @@ def run_analysis(bundle: ScoreBundle,
                                         include_duration_errors=profile.include_duration_errors,
                                         duration_tolerance=profile.duration_tolerance,
                                         include_dynamics_errors=input_measures_dynamics,
-                                        has_notated_dynamics=has_dynamics)
-    patterns = aggregate_patterns(errors)
+                                        has_notated_dynamics=has_dynamics,
+                                        measure_labels=bundle.meta.measureLabels)
+    patterns = aggregate_patterns(errors, bundle.meta.measureLabels)
     metrics: Metrics = calculate_metrics(pairs, onset_index, group_index,
                                          bpm_per_measure, bpm, grade_dynamics)
     hypotheses = build_hypotheses(errors, patterns)

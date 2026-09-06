@@ -29,7 +29,7 @@ async function req<T>(path: string, init?: RequestInit,
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       if (init?.signal?.aborted) {
-        throw Object.assign(new Error('请求已取消'), { code: 'REQUEST_CANCELLED' })
+        throw Object.assign(new Error(t('requestCancelled')), { code: 'REQUEST_CANCELLED' })
       }
       throw Object.assign(new Error(t('requestTimeout')), { code: 'REQUEST_TIMEOUT' })
     }

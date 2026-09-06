@@ -12,6 +12,7 @@ import {
   BASIC_PITCH_SAMPLE_RATE, OAF_SAMPLE_RATE,
   type TranscribeRequest, type TranscriptionEngineId, type WorkerResponse,
 } from './engineProtocol'
+import { t, tf } from '../../i18n/messages'
 
 export interface EngineSpec {
   id: TranscriptionEngineId
@@ -101,12 +102,12 @@ export interface EngineRun {
 }
 
 export function transcriptionCancelledError(): Error & { code: string } {
-  return Object.assign(new Error('转录已取消'), { code: 'TRANSCRIPTION_CANCELLED' })
+  return Object.assign(new Error(t('transcriptionCancelledError')), { code: 'TRANSCRIPTION_CANCELLED' })
 }
 
 function stalledError(): Error & { code: string } {
   return Object.assign(
-    new Error('本地转录长时间没有进度，录音已保留。请点击“分析已保存录音”重试。'),
+    new Error(t('transcriptionStalled')),
     { code: 'TRANSCRIPTION_STALLED' },
   )
 }
@@ -179,7 +180,7 @@ export function runEngine(
     signal?.addEventListener('abort', cancel, { once: true })
     armStallTimer()
     worker.onerror = (event) => {
-      fail(new Error(event.message || `${spec.id} 转录工作线程启动失败`))
+      fail(new Error(event.message || tf('transcriptionWorkerFailed', { engine: spec.id })))
     }
     worker.onmessage = (message: MessageEvent<WorkerResponse>) => {
       const payload = message.data
@@ -192,7 +193,7 @@ export function runEngine(
         return
       }
       if (payload.type === 'error') {
-        fail(new Error(payload.message || `${spec.id} 转录失败`))
+        fail(new Error(payload.message || tf('transcriptionEngineFailed', { engine: spec.id })))
         return
       }
       if (settled) return

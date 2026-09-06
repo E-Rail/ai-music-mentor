@@ -3,41 +3,80 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI 音乐导师 · 技术 Demo</title>
+    <title>AI 音乐导师 · AI Music Mentor</title>
+    <script>
+      /* Runs before the first paint, so a player on the light theme never sees
+         a dark frame and an English reader never sees a Chinese boot line.
+         Everything here is duplicated from features/shell/preferences.ts on
+         purpose: this has to run before any module loads, and a wrong guess
+         costs a visible flash. Keep the storage keys in step with that file. */
+      (() => {
+        const get = (key, allowed, fallback) => {
+          try {
+            const value = localStorage.getItem('studio.' + key)
+            return allowed.includes(value) ? value : fallback
+          } catch { return fallback }
+        }
+        const root = document.documentElement
+        const theme = get('theme', ['light', 'dark', 'system'], 'system')
+        const resolved = theme === 'system'
+          ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+          : theme
+        root.dataset.theme = resolved
+        root.style.colorScheme = resolved
+        root.dataset.finish = get('finish', ['ebony', 'rosewood', 'walnut', 'ivory'], 'ebony')
+        const choice = get('locale', ['zh-Hans', 'en-US', 'system'], 'system')
+        const language = choice !== 'system' ? choice
+          : ((navigator.languages || [navigator.language || 'en'])
+              .some((tag) => String(tag).toLowerCase().startsWith('zh')) ? 'zh-Hans' : 'en-US')
+        root.lang = language === 'zh-Hans' ? 'zh-Hans' : 'en'
+        window.__bootLocale = language
+      })()
+    </script>
     <style>
+      /* The boot screen paints before the stylesheet loads, so it carries its
+         own copy of the few colours it needs. Same two themes as the app. */
+      :root {
+        --boot-ebony: #14121a; --boot-case: #1e1a26; --boot-rule: #383043;
+        --boot-ink: #ece8e2; --boot-dim: #9a91a5; --boot-brass: #d6a756;
+      }
+      :root[data-theme="light"] {
+        --boot-ebony: #e7e2da; --boot-case: #f2eee7; --boot-rule: #cec5b6;
+        --boot-ink: #221f2a; --boot-dim: #575061; --boot-brass: #8a6a2d;
+      }
       .boot-message {
         box-sizing: border-box;
         width: min(680px, calc(100% - 32px));
         margin: 12vh auto 0;
         padding: 28px;
-        color: #ece8e2;
-        background: #1e1a26;
-        border: 1px solid #383043;
+        color: var(--boot-ink);
+        background: var(--boot-case);
+        border: 1px solid var(--boot-rule);
         border-radius: 16px;
         font: 15px/1.65 "PingFang SC", "Noto Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
       }
       .boot-message h1 { margin: 0 0 10px; font-size: 24px; letter-spacing: -.01em; }
-      .boot-message p { margin: 8px 0; color: #9a91a5; }
-      .boot-message code { display: block; margin: 16px 0; padding: 12px; overflow-x: auto; color: #d6a756; background: #14121a; border-radius: 8px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-      .boot-message a { color: #d6a756; }
-      body { margin: 0; min-height: 100vh; background: #14121a; }
+      .boot-message p { margin: 8px 0; color: var(--boot-dim); }
+      .boot-message code { display: block; margin: 16px 0; padding: 12px; overflow-x: auto; color: var(--boot-brass); background: var(--boot-ebony); border-radius: 8px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .boot-message a { color: var(--boot-brass); }
+      body { margin: 0; min-height: 100vh; background: var(--boot-ebony); }
     </style>
   </head>
   <body>
     <div id="root">
       <main id="boot-message" class="boot-message" role="status">
-        <h1>AI 音乐导师</h1>
+        <h1 id="boot-title">AI 音乐导师</h1>
         <p id="boot-status">正在启动应用…</p>
         <div id="stale-help" hidden>
-          <p>这个页面是上一次构建留下的旧版本，它要的文件已经不在了。</p>
-          <p>按住 Shift 点刷新（或 ⌘/Ctrl + Shift + R）重新载入即可。</p>
+          <p id="stale-1">这个页面是上一次构建留下的旧版本，它要的文件已经不在了。</p>
+          <p id="stale-2">按住 Shift 点刷新（或 ⌘/Ctrl + Shift + R）重新载入即可。</p>
         </div>
         <div id="direct-file-help" hidden>
-          <p>这个 index.html 需要前端编译器和分析服务，不能像普通网页一样直接双击运行。</p>
-          <p>请在项目根目录运行对应系统的启动器：</p>
+          <p id="file-1">这个 index.html 需要前端编译器和分析服务，不能像普通网页一样直接双击运行。</p>
+          <p id="file-2">请在项目根目录运行对应系统的启动器：</p>
           <code>bash launch.sh</code>
           <code>powershell -ExecutionPolicy Bypass -File .\launch.ps1</code>
-          <p>服务启动后，访问 <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>。</p>
+          <p id="file-3">服务启动后，访问 <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>。</p>
         </div>
       </main>
     </div>
@@ -47,23 +86,56 @@
         const status = document.getElementById('boot-status')
         const help = document.getElementById('direct-file-help')
         const staleHelp = document.getElementById('stale-help')
+
+        /* This screen exists before any module has loaded, so it cannot reach
+           the app's message catalogue and carries the handful of lines it needs.
+           They are the only strings in the product kept in two places; if one
+           is edited, edit i18n/en-US.ts to match. */
+        const EN = {
+          'boot-title': 'AI Music Mentor',
+          'boot-status': 'Starting…',
+          'stale-1': 'This page is left over from an earlier build, and the files it wants are gone.',
+          'stale-2': 'Hold Shift and click reload (or press ⌘/Ctrl + Shift + R).',
+          'file-1': 'This index.html needs the front-end compiler and the analysis service; it cannot be opened directly like an ordinary web page.',
+          'file-2': 'Run the launcher for your system from the project root:',
+          'file-3': 'Once it is running, open <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>.',
+        }
+        const EN_STATUS = {
+          stale: 'This page is out of date.',
+          file: 'This file cannot be opened directly.',
+          failed: 'The application script did not start. Check the local service is running, then reload.',
+        }
+        const ZH_STATUS = {
+          stale: '页面版本过旧。',
+          file: '此文件不能直接打开。',
+          failed: '应用脚本未能启动。请检查本地服务是否完整运行后刷新页面。',
+        }
+        const english = window.__bootLocale === 'en-US'
+        const STATUS = english ? EN_STATUS : ZH_STATUS
+        if (english) {
+          for (const id in EN) {
+            const node = document.getElementById(id)
+            if (node) node.innerHTML = EN[id]
+          }
+          document.title = 'AI Music Mentor'
+        }
         // A bundle that 404s means this HTML is older than the build it names.
         // Saying "check the local service" there sends the reader after a
         // server that is working perfectly, so name the real problem instead.
         document.addEventListener('error', (event) => {
           const target = event.target
           if (!(target instanceof HTMLScriptElement) || !bootMessage?.isConnected) return
-          status.textContent = '页面版本过旧。'
+          status.textContent = STATUS.stale
           staleHelp.hidden = false
         }, true)
         if (location.protocol === 'file:') {
-          status.textContent = '此文件不能直接打开。'
+          status.textContent = STATUS.file
           help.hidden = false
           return
         }
         window.setTimeout(() => {
           if (bootMessage?.isConnected) {
-            status.textContent = '应用脚本未能启动。请检查本地服务是否完整运行后刷新页面。'
+            status.textContent = STATUS.failed
             help.hidden = false
           }
         }, 5000)

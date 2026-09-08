@@ -3,7 +3,7 @@ set -eu
 
 cd /app/apps/api
 
-# CloudStudio (and most PaaS) inject a PORT env var; fall back to 8000 locally.
+# Render and most PaaS providers inject a PORT env var; fall back to 8000 locally.
 export PORT="${PORT:-8000}"
 export HOST="${HOST:-0.0.0.0}"
 

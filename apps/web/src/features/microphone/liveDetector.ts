@@ -28,10 +28,10 @@
  * after you stop, and remains the only thing that feeds scoring.
  */
 
-/** Analysis window. 2048 samples is ~43 ms at 48 kHz. */
-export const FRAME_SIZE = 2048
+/** Analysis window. 4096 samples is ~85 ms at 48 kHz; resolves close chord voices. */
+export const FRAME_SIZE = 4096
 /** Zero-padded transform size, so the autocorrelation is circular-safe. */
-const FFT_SIZE = 4096
+const FFT_SIZE = 8192
 /** Frames of flux history behind the adaptive threshold (~0.5 s). */
 const FLUX_HISTORY = 48
 /** How much of the learned noise spectrum to remove. Above 1 to be decisive. */
@@ -55,7 +55,7 @@ const PITCH_SETTLE_MS = 160
  * this, a note struck while the previous one is still ringing gets named after
  * its predecessor, which still dominates the window at the attack.
  */
-const PITCH_MIN_SETTLE_MS = 42
+const PITCH_MIN_SETTLE_MS = 64
 /** Decay applied to the running peak energy, per frame. */
 const PEAK_DECAY = 0.985
 
@@ -127,71 +127,74 @@ export function detectPolyphony(
    */
   expected: readonly number[] = [],
 ): number[] {
-  const residual = Float32Array.from(magnitude)
-  const lowest = Math.max(0, Math.ceil(frequencyToMidi(minPitchHz)))
-  const highest = Math.min(127, Math.floor(frequencyToMidi(maxPitchHz)))
+  // Match interpolated spectral peaks, not arbitrary neighbouring bins. A
+  // Hann lobe spans several bins; treating each bin as a new note used to
+  // confirm unplayed semitone neighbours, especially with score hints.
+  const peaks: { hz: number; amplitude: number }[] = []
+  let maximum = 0
+  for (const value of magnitude) maximum = Math.max(maximum, value)
+  if (!(maximum > 0) || !(binHz > 0)) return []
+  for (let bin = 1; bin < magnitude.length - 1; bin += 1) {
+    const centre = magnitude[bin]
+    if (centre < maximum * 0.025 || centre <= magnitude[bin - 1] ||
+        centre < magnitude[bin + 1]) continue
+    const background = Math.max(magnitude[Math.max(0, bin - 4)],
+      magnitude[Math.min(magnitude.length - 1, bin + 4)])
+    if (centre < background * 2) continue
+    const left = Math.log(Math.max(1e-12, magnitude[bin - 1]))
+    const middle = Math.log(Math.max(1e-12, centre))
+    const right = Math.log(Math.max(1e-12, magnitude[bin + 1]))
+    const denominator = left - 2 * middle + right
+    const shift = denominator ? Math.max(-0.5, Math.min(0.5,
+      0.5 * (left - right) / denominator)) : 0
+    peaks.push({ hz: (bin + shift) * binHz, amplitude: centre })
+  }
+  const residual = peaks.map(peak => peak.amplitude)
+  const lowest = Math.max(0, Math.ceil(69 + 12 * Math.log2(minPitchHz / 440)))
+  const highest = Math.min(127, Math.floor(69 + 12 * Math.log2(maxPitchHz / 440)))
   const found: number[] = []
-  let bestOverall = 0
-
-  const scoreOf = (midi: number): number => {
+  const candidates = Array.from({ length: Math.max(0, highest - lowest + 1) }, (_, i) => {
+    const midi = lowest + i
     const fundamental = 440 * 2 ** ((midi - 69) / 12)
-    let score = 0
-    for (let harmonic = 1; harmonic <= HARMONICS; harmonic += 1) {
-      const bin = Math.round((fundamental * harmonic) / binHz)
-      if (bin <= 0 || bin >= residual.length) break
-      // Take the strongest of the three bins around the harmonic so a slightly
-      // sharp or flat instrument is not penalised.
-      const local = Math.max(residual[bin - 1] ?? 0, residual[bin], residual[bin + 1] ?? 0)
-      score += local / harmonic
-    }
-    return score
+    const matches = Array.from({ length: HARMONICS }, (_, h) => {
+      const hz = fundamental * (h + 1)
+      const tolerance = Math.max(binHz * 0.55, hz * 0.018)
+      let best = -1
+      for (let p = 0; p < peaks.length; p += 1) {
+        if (Math.abs(peaks[p].hz - hz) <= tolerance &&
+            (best < 0 || peaks[p].amplitude > peaks[best].amplitude)) best = p
+      }
+      return best
+    })
+    return { midi, matches }
+  })
+  const scoreOf = (candidate: typeof candidates[number]): number => {
+    const amplitudes = candidate.matches.map(p => p < 0 ? 0 : residual[p])
+    // Require a fundamental, or at least two independent upper partials.
+    // Expected notes must meet the same acoustic evidence requirement.
+    const support = amplitudes.filter(value => value > maximum * 0.04).length
+    if (amplitudes[0] < maximum * 0.04 && support < 2) return 0
+    return amplitudes.reduce((sum, value, h) => sum + value / (h + 1), 0)
   }
-
+  let bestOverall = 0
   for (let round = 0; round < MAX_POLYPHONY; round += 1) {
-    let bestMidi = -1
+    let winner: typeof candidates[number] | undefined
     let bestScore = 0
-    for (let midi = lowest; midi <= highest; midi += 1) {
-      const score = scoreOf(midi)
-      if (score > bestScore) {
-        bestScore = score
-        bestMidi = midi
-      }
+    for (const candidate of candidates) {
+      if (found.includes(candidate.midi)) continue
+      const score = scoreOf(candidate)
+      const share = expected.includes(candidate.midi) ? EXPECTED_VOICE_SHARE : SECOND_VOICE_SHARE
+      if (round > 0 && score < bestOverall * share) continue
+      if (score > bestScore) { bestScore = score; winner = candidate }
     }
-    if (bestMidi < 0) break
+    if (!winner || bestScore <= 0) break
     if (round === 0) bestOverall = bestScore
-    // A second voice has to be a real presence, not a leftover sideband.
-    else if (bestScore < bestOverall * SECOND_VOICE_SHARE) break
-    found.push(bestMidi)
-
-    // Subtract only what this note can explain, never the whole bin. An octave
-    // above shares its fundamental with this note's 2nd harmonic, so wiping the
-    // series would erase the very evidence that the octave is being played —
-    // which is exactly the left-hand/right-hand case in the demo songs.
-    const fundamental = 440 * 2 ** ((bestMidi - 69) / 12)
-    const rootBin = Math.round(fundamental / binHz)
-    const rootAmplitude = rootBin > 0 && rootBin < residual.length
-      ? Math.max(residual[rootBin - 1] ?? 0, residual[rootBin],
-        residual[rootBin + 1] ?? 0)
-      : 0
-    for (let harmonic = 1; harmonic <= HARMONICS; harmonic += 1) {
-      const centre = Math.round((fundamental * harmonic) / binHz)
-      const explained = rootAmplitude / harmonic
-      for (let bin = centre - 1; bin <= centre + 1; bin += 1) {
-        if (bin > 0 && bin < residual.length) {
-          residual[bin] = Math.max(0, residual[bin] - explained)
-        }
-      }
-    }
-  }
-  // Second look, for the notes the page is expecting. Whatever the blind pass
-  // could explain has already been subtracted from the residual, so this asks
-  // only whether there is still energy where an owed note would be.
-  if (expected.length && bestOverall > 0) {
-    for (const midi of expected) {
-      if (found.includes(midi)) continue
-      if (midi < lowest || midi > highest) continue
-      if (scoreOf(midi) >= bestOverall * EXPECTED_VOICE_SHARE) found.push(midi)
-    }
+    found.push(winner.midi)
+    const root = winner.matches[0]
+    const rootAmplitude = root >= 0 ? residual[root] : bestScore
+    winner.matches.forEach((p, h) => {
+      if (p >= 0) residual[p] = Math.max(0, residual[p] - rootAmplitude / (h + 1))
+    })
   }
   return [...new Set(found)].sort((left, right) => left - right)
 }
@@ -288,6 +291,7 @@ export class LiveNoteDetector {
   private belowGate = true
   /** An attack that has been seen but not yet named. */
   private pendingOnsetMs: number | null = null
+  private pendingChord = ''
   private pendingRatio = 0
   private sensitivityValue = 0.5
   private riseThreshold = ONSET_RISE
@@ -378,6 +382,7 @@ export class LiveNoteDetector {
     this.peakEnergy = 0
     this.belowGate = true
     this.pendingOnsetMs = null
+    this.pendingChord = ''
     this.pendingRatio = 0
     this.recentRms = []
     // A calibration belongs to the take it was measured from. Carrying it into
@@ -537,8 +542,16 @@ export class LiveNoteDetector {
     // learned, so a loud hall does not permanently look like playing.
     const frameRms = this.windowedRms()
     this.adaptToRoom(frameRms)
-    const gate = Math.max(ABSOLUTE_RMS_FLOOR, this.noiseRms * this.gateMultiplier)
-    if (frameRms < gate) {
+    let cleanPower = 0
+    for (let bin = 0; bin < this.bins; bin += 1) {
+      this.gated[bin] = Math.max(0, magnitude[bin] -
+        (this.noiseProfile?.[bin] ?? 0) * OVER_SUBTRACTION)
+      cleanPower += this.gated[bin] ** 2 * (bin === 0 ? 1 : 2)
+    }
+    const cleanRms = Math.sqrt(cleanPower / (FFT_SIZE * this.windowedLength))
+    const gate = Math.max(ABSOLUTE_RMS_FLOOR,
+      this.noiseRms * this.gateMultiplier * 0.2)
+    if (cleanRms < gate) {
       this.peakEnergy = 0
       this.pendingOnsetMs = null
       this.armed = true
@@ -603,6 +616,7 @@ export class LiveNoteDetector {
     this.lastOnsetMs = atMs
     // The attack sits behind the window, not at its trailing edge.
     this.pendingOnsetMs = atMs - (FRAME_SIZE / this.options.sampleRate) * 500
+    this.pendingChord = ''
     this.pendingRatio = rise / threshold
     return this.resolvePending(atMs)
   }
@@ -613,27 +627,38 @@ export class LiveNoteDetector {
     if (onsetMs === null) return null
     // Give the window time to fill with the new note before naming it.
     if (atMs - onsetMs < PITCH_MIN_SETTLE_MS) return null
+    const chord = detectPolyphony(
+      this.gated, this.options.sampleRate / FFT_SIZE,
+      this.options.minPitchHz, this.options.maxPitchHz, this.expected)
     const pitch = this.pitchFromLastSpectrum()
-    if (!pitch) {
+    // A chord need not have a single periodic waveform. Do not gate all its
+    // voices on monophonic NSDF clarity or append a spurious common subharmonic.
+    if (!chord.length) {
       if (atMs - onsetMs > PITCH_SETTLE_MS) this.pendingOnsetMs = null
       return null
     }
-    const midi = frequencyToMidi(pitch.hz)
+    const signature = chord.join(',')
+    if (signature !== this.pendingChord) {
+      this.pendingChord = signature
+      if (atMs - onsetMs > PITCH_SETTLE_MS) this.pendingOnsetMs = null
+      return null
+    }
+    const nsdfMidi = pitch ? frequencyToMidi(pitch.hz) : -1
+    const midi = chord.includes(nsdfMidi) ? nsdfMidi : chord.reduce((best, candidate) => {
+      const amplitude = (note: number) => {
+        const bin = Math.round(440 * 2 ** ((note - 69) / 12) * FFT_SIZE / this.options.sampleRate)
+        return this.gated[bin] ?? 0
+      }
+      return amplitude(candidate) > amplitude(best) ? candidate : best
+    })
     this.pendingOnsetMs = null
-    if (midi < 0 || midi > 127) return null
-    const binHz = this.options.sampleRate / FFT_SIZE
-    const chord = detectPolyphony(
-      this.gated, binHz, this.options.minPitchHz, this.options.maxPitchHz,
-      this.expected)
-    // The NSDF pitch is the one the ear leads on; keep it even if the harmonic
-    // search missed it, and present the rest as the other voices.
-    const pitches = [...new Set([midi, ...chord])].sort((a, b) => a - b)
+    const pitches = chord
     return {
       pitch: midi,
       pitches,
-      frequencyHz: pitch.hz,
+      frequencyHz: midi === nsdfMidi && pitch ? pitch.hz : 440 * 2 ** ((midi - 69) / 12),
       atMs: onsetMs,
-      clarity: pitch.clarity,
+      clarity: pitch?.clarity ?? 0,
       fluxRatio: this.pendingRatio,
     }
   }

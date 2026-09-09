@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  FRAME_SIZE, LiveNoteDetector, detectPolyphony, frequencyToMidi,
+  FRAME_SIZE, LiveNoteDetector, detectPolyphony, frequencyToMidi, type DetectedNote,
 } from './liveDetector'
 
 const SAMPLE_RATE = 48_000
@@ -71,13 +71,13 @@ function mixInto(target: Float32Array, source: Float32Array, atSample: number): 
 
 /** Run a signal through the detector exactly as the worklet would. */
 function detect(detector: LiveNoteDetector, signal: Float32Array) {
-  const found: { pitch: number; atMs: number }[] = []
+  const found: DetectedNote[] = []
   const buffer = new Float32Array(FRAME_SIZE)
   for (let end = HOP; end <= signal.length; end += HOP) {
     buffer.copyWithin(0, HOP)
     buffer.set(signal.subarray(end - HOP, end), FRAME_SIZE - HOP)
     const result = detector.process(buffer, (end / SAMPLE_RATE) * 1_000)
-    if (result) found.push({ pitch: result.pitch, atMs: result.atMs })
+    if (result) found.push(result)
   }
   return found
 }
@@ -285,5 +285,48 @@ describe('calibration belongs to the take it came from', () => {
     // A pinned value is a decision, not a measurement, so a new take must not
     // quietly overwrite it.
     expect(detector.sensitivity).toBe(0.42)
+  })
+})
+
+
+describe('microphone chord audio regressions', () => {
+  it.each([[60, 64, 67], [60, 66], [48, 60, 64, 67]])(
+    'hears every played voice in %j without score hints', (...pitches) => {
+      const detector = build(0.006)
+      const signal = roomNoise(1.5, 0.006, 41)
+      for (const midi of pitches) {
+        mixInto(signal, note(midiToHz(midi), 0.7, 0.16), SAMPLE_RATE * 0.4)
+      }
+      const found = detect(detector, signal)
+      expect(found).toHaveLength(1)
+      expect(found[0].pitches).toEqual([...pitches].sort((a, b) => a - b))
+      expect(pitches).toContain(found[0].pitch)
+    },
+  )
+
+  it('does not add expected neighbours or harmonics to a single played note', () => {
+    const detector = build(0.002)
+    detector.expect([59, 60, 61, 72, 79])
+    const signal = roomNoise(1.5, 0.002, 43)
+    mixInto(signal, note(midiToHz(60), 0.7), SAMPLE_RATE * 0.4)
+    expect(detect(detector, signal).map(item => item.pitches)).toEqual([[60]])
+  })
+
+  it('finds a quiet chord underneath loud calibrated mains hum', () => {
+    const detector = new LiveNoteDetector({ sampleRate: SAMPLE_RATE })
+    const hum = (seconds: number) => Float32Array.from(
+      { length: SAMPLE_RATE * seconds }, (_, i) => 0.12 * Math.sin(2 * Math.PI * 120 * i / SAMPLE_RATE))
+    const room = hum(2)
+    for (let end = FRAME_SIZE; end <= room.length; end += HOP) {
+      detector.learnNoiseFrame(room.subarray(end - FRAME_SIZE, end))
+    }
+    detector.sealNoiseProfile()
+    expect(detect(detector, hum(1))).toEqual([])
+    detector.reset()
+    const signal = hum(1.5)
+    for (const midi of [60, 64, 67]) {
+      mixInto(signal, note(midiToHz(midi), 0.7, 0.09), SAMPLE_RATE * 0.4)
+    }
+    expect(detect(detector, signal).map(item => item.pitches)).toEqual([[60, 64, 67]])
   })
 })

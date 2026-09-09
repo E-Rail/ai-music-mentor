@@ -2,7 +2,7 @@ import type {
   InputDeviceDescriptor, PerformanceCaptureResult, PerformanceInputAdapter,
 } from '../input/PerformanceInputAdapter'
 import type { InstrumentProfile } from '../../types'
-import { LiveNoteDetector, type DetectedNote } from './liveDetector'
+import { FRAME_SIZE, LiveNoteDetector, type DetectedNote } from './liveDetector'
 import { transcribeAudio } from './transcription'
 import { enhancePreviewFrame } from './audioEnhancement'
 import { withEmbeddedNote } from '../shell/embedding'
@@ -444,7 +444,7 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
 
     try {
       this.analyser = this.context.createAnalyser()
-      this.analyser.fftSize = 2048
+      this.analyser.fftSize = FRAME_SIZE
       this.sourceNode.connect(this.analyser).connect(this.silentGain).connect(this.context.destination)
       const samples = new Float32Array(this.analyser.fftSize)
       const tick = () => {
@@ -637,6 +637,10 @@ export class MicrophoneCapture implements PerformanceInputAdapter {
     this.analyser = null
     this.silentGain = null
     this.context = null
+    this.liveDetector = null
+    this.detectorSampleRate = 0
+    this.noiseFloorDb = null
+    this.previewGainDb = 0
   }
 
   dispose(): void {

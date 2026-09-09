@@ -9,7 +9,7 @@ class MicPreviewProcessor extends AudioWorkletProcessor {
   constructor() {
     super()
     this.framesSincePost = 0
-    this.preview = new Float32Array(2048)
+    this.preview = new Float32Array(4096)
   }
 
   process(inputs) {

@@ -92,6 +92,42 @@ export async function transcribeAudio(blob: Blob, instrument: InstrumentProfile,
     result = await attempt(fallback)
   }
 
+  // Onsets and Frames is excellent for isolated piano attacks, but it can
+  // under-report soft inner voices in dense chords. When its output is
+  // suspiciously sparse, run the complementary polyphonic Basic Pitch pass on
+  // the same decoded take and keep the richer transcription. This is a
+  // deliberate quality fallback (rather than an engine failure fallback), so
+  // a valid take is not silently scored from one missing voice.
+  if (chosen === 'onsets-frames') {
+    try {
+      const alternate = await attempt('basic-pitch')
+      // Fuse the two decoders instead of selecting one globally. OAF gives
+      // better attack timing; Basic Pitch supplies soft inner voices. Events
+      // within 70 ms of the same MIDI pitch are one note, with the stronger
+      // confidence retained. This is the same complementary strategy used by
+      // practical AMT ensembles and is much more reliable than thresholding a
+      // single model's output.
+      const fused = [...result.run.events]
+      for (const event of alternate.run.events) {
+        const duplicate = fused.find(candidate => candidate.pitch === event.pitch &&
+          Math.abs(candidate.tOnMs - event.tOnMs) <= 70)
+        if (duplicate) {
+          duplicate.tOnMs = Math.min(duplicate.tOnMs, event.tOnMs)
+          duplicate.tOffMs = Math.max(duplicate.tOffMs, event.tOffMs)
+          duplicate.transcriptionConfidence = Math.max(
+            duplicate.transcriptionConfidence ?? 0, event.transcriptionConfidence ?? 0)
+        } else fused.push(event)
+      }
+      result = {
+        ...result,
+        run: { ...result.run, events: fused, rejectedCount: result.run.rejectedCount + alternate.run.rejectedCount },
+      }
+    } catch {
+      // The specialist result remains usable when the optional second engine
+      // cannot initialize (for example, WebGL is unavailable).
+    }
+  }
+
   const { spec, run, enhanced } = result
   const profile = AUDIO_PROFILES[instrument]
   const duration = enhanced.samples.length / spec.sampleRate

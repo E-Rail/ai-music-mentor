@@ -1,6 +1,6 @@
 # AI 音乐导师
 
-[English](README.md) | [中文](README-zh.md)
+[English](README.md) | 中文
 
 面向初中级钢琴学习者的中文钢琴练习应用。导入乐谱或 MIDI，用 MIDI 键盘或麦克风弹一遍，得到诊断、针对性微练习、伴奏重弹和前后对比。
 

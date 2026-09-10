@@ -1,6 +1,6 @@
 # AI Music Mentor
 
-[English](README.md) | [中文](README-zh.md)
+English | [中文](README-zh.md)
 
 An AI-assisted piano practice app for beginner-to-intermediate players. Import sheet music or MIDI, play it once with a MIDI keyboard or microphone, and get a diagnosis, targeted micro-exercises, accompaniment playback, and before-and-after comparisons.
 

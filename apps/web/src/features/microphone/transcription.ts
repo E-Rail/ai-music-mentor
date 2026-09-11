@@ -98,7 +98,17 @@ export async function transcribeAudio(blob: Blob, instrument: InstrumentProfile,
   // the same decoded take and keep the richer transcription. This is a
   // deliberate quality fallback (rather than an engine failure fallback), so
   // a valid take is not silently scored from one missing voice.
-  if (chosen === 'onsets-frames') {
+  // Do not blindly pay for a second neural pass on every short take. A
+  // desktop with enough parallelism can afford the ensemble, while phones and
+  // low-memory browsers should only request it when the specialist result is
+  // clearly sparse. This keeps the common path responsive.
+  const durationSeconds = result.enhanced.samples.length / result.spec.sampleRate
+  const cores = typeof navigator === 'undefined' ? 4 : navigator.hardwareConcurrency || 4
+  const memoryGb = typeof navigator === 'undefined' ? 4 :
+    ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4)
+  const likelyMissedVoices = result.run.events.length < Math.max(2, durationSeconds * 0.45)
+  const ensembleAllowed = cores >= 8 && memoryGb >= 4
+  if (chosen === 'onsets-frames' && (likelyMissedVoices || ensembleAllowed)) {
     try {
       const alternate = await attempt('basic-pitch')
       // Fuse the two decoders instead of selecting one globally. OAF gives

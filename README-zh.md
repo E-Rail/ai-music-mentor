@@ -106,4 +106,4 @@ pnpm test:e2e                      # mocked Web MIDI 流程；首次先运行：
 
 ## 许可证
 
-[MIT](LICENSE)
+GPL-3.0

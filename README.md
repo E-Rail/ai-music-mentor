@@ -107,4 +107,4 @@ pnpm test:e2e                      # mocked Web MIDI flow; first run:
 
 ## License
 
-[MIT](LICENSE)
+GPL-3.0

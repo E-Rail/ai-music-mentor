@@ -85,7 +85,11 @@ export const ENGINES: Record<TranscriptionEngineId, EngineSpec> = {
  * which is genuinely better at them than a piano model would be.
  */
 export function engineFor(instrument: InstrumentProfile): TranscriptionEngineId {
-  return instrument === 'piano' ? 'onsets-frames' : 'basic-pitch'
+  // Basic Pitch is the practical default in the browser: it is polyphonic,
+  // requires less model memory, and is substantially faster on machines where
+  // TensorFlow.js WebGL falls back to a slow shader path. Onsets and Frames
+  // remains registered for explicit benchmark/comparison use.
+  return 'basic-pitch'
 }
 
 /** Where a failed engine sends the take rather than stranding the recording. */

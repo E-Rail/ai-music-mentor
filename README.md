@@ -52,7 +52,7 @@ Two things to remember:
 The gear menu in the top-right corner contains four settings, all applied immediately:
 
 - **Theme** — Light, dark, or follow the system setting.
-- **Piano finish** — Ebony, mahogany, walnut, or ivory. This changes the piano and background only: notation remains paper-like and wrong notes remain red, so reports stay visually consistent across themes.
+- **Piano finish** — Ebony, rosewood, walnut, or ivory. This changes the piano and background only: notation remains paper-like and wrong notes remain red, so reports stay visually consistent across themes.
 - **Language** — Simplified Chinese, English, or follow the system setting. The initial language is detected from the browser; Traditional Chinese falls back to Simplified Chinese. Changing the language during a recording does not interrupt the take.
 - **Detail level** — Standard focuses on what to practise. Pro adds itemised evidence, per-note confidence, separate left- and right-hand statistics, and recording-quality details such as room noise and accepted versus discarded notes.
 

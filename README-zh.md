@@ -47,6 +47,20 @@ powershell -ExecutionPolicy Bypass -File .\quit.ps1
 - 改完代码要先 `quit` 再 `launch`，否则打开的还是上一次的构建。
 - 别直接双击 `apps/web/index.html`，它需要后端服务才能工作。
 
+## 自己部署
+
+用在服务器上，或者任何想把每一步记下来而不是塞进脚本的地方。需要 Python 3.12+ 和带 pnpm 11 的 Node.js（`corepack enable` 即可）。
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt                        # API 导入的全部 Python 包
+(cd apps/web && pnpm install --frozen-lockfile && pnpm build)    # API 一并提供的页面
+(cd apps/api && ../../.venv/bin/python -m alembic upgrade head)  # 创建或更新数据库
+(cd apps/api && ../../.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000)
+```
+
+一个进程就是整个应用：API 在同一个端口把构建好的页面一起发出去，地址是 <http://你的主机:8000>。Windows 上的解释器是 `.venv\Scripts\python`。容器跑的是同样的步骤，`compose.yaml` 和 `render.yaml` 只是把它们包起来。
+
 ## 设置
 
 右上角的齿轮里有四项，都是立刻生效的：

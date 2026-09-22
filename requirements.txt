@@ -1,0 +1,7 @@
+# Self-deployment entry point: everything the API imports, for hosts that
+# install with `pip install -r requirements.txt`.
+#
+# The list itself lives in apps/api/requirements.txt, which the launcher, the
+# Dockerfile and CI all install from. Pointing at it here means a deployment
+# gets the same set as everything else, with no second list to keep in step.
+-r apps/api/requirements.txt

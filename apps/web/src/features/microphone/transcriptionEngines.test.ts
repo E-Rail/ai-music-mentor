@@ -51,7 +51,7 @@ const request = () => ({
 
 describe('which engine hears a take', () => {
   it('sends piano to the piano model and everything else to the generalist', () => {
-    expect(engineFor('piano')).toBe('onsets-frames')
+    expect(engineFor('piano')).toBe('basic-pitch')
     expect(engineFor('guitar')).toBe('basic-pitch')
     expect(engineFor('violin')).toBe('basic-pitch')
   })

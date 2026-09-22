@@ -47,12 +47,26 @@ Two things to remember:
 - After changing code, run `quit` and then `launch` so the browser is using a fresh build.
 - Do not open `apps/web/index.html` directly; the app needs the API server.
 
+## Deploy it yourself
+
+On a server, or anywhere you want the steps on the record rather than inside a script. Needs Python 3.12 or newer and Node.js with pnpm 11 (`corepack enable` provides it).
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt                        # every Python package the API imports
+(cd apps/web && pnpm install --frozen-lockfile && pnpm build)    # the page the API serves
+(cd apps/api && ../../.venv/bin/python -m alembic upgrade head)  # create or update the database
+(cd apps/api && ../../.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000)
+```
+
+One process is the whole app: the API serves the built page on the same port, at <http://your-host:8000>. On Windows the interpreter is `.venv\Scripts\python`. A container runs the same steps; `compose.yaml` and `render.yaml` wrap them.
+
 ## Settings
 
 The gear menu in the top-right corner contains four settings, all applied immediately:
 
 - **Theme** — Light, dark, or follow the system setting.
-- **Piano finish** — Ebony, mahogany, walnut, or ivory. This changes the piano and background only: notation remains paper-like and wrong notes remain red, so reports stay visually consistent across themes.
+- **Piano finish** — Ebony, rosewood, walnut, or ivory. This changes the piano and background only: notation remains paper-like and wrong notes remain red, so reports stay visually consistent across themes.
 - **Language** — Simplified Chinese, English, or follow the system setting. The initial language is detected from the browser; Traditional Chinese falls back to Simplified Chinese. Changing the language during a recording does not interrupt the take.
 - **Detail level** — Standard focuses on what to practise. Pro adds itemised evidence, per-note confidence, separate left- and right-hand statistics, and recording-quality details such as room noise and accepted versus discarded notes.
 

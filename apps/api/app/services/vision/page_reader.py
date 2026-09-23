@@ -29,6 +29,7 @@ from pydantic import (AliasChoices, BaseModel, Field, ValidationError,
                       field_validator)
 
 from app import config
+from app.i18n import say
 
 logger = logging.getLogger(__name__)
 
@@ -278,18 +279,18 @@ def _image_part(image: bytes, media_type: str) -> dict:
 
 def _extract_json(content: str | None) -> dict:
     if not content:
-        raise PageReadError("模型没有返回内容")
+        raise PageReadError(say("read.empty"))
     text = content.strip()
     fenced = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1).strip()
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
-        raise PageReadError("模型返回的不是 JSON")
+        raise PageReadError(say("read.notJson"))
     try:
         return json.loads(text[start:end + 1])
     except json.JSONDecodeError as error:
-        raise PageReadError(f"模型返回的 JSON 无法解析：{error}") from error
+        raise PageReadError(say("read.badJson", detail=str(error))) from error
 
 
 def _response_format() -> dict:
@@ -346,10 +347,9 @@ def read_pages(images: list[tuple[bytes, str]], hint: str = "") -> ReadOutcome:
     better on the third try — it will only make the student wait.
     """
     if not available():
-        raise VisionUnavailable(
-            "未配置识谱模型。请在 .env 设置 MENTOR_API_KEY（或 VISION_API_KEY）后重试")
+        raise VisionUnavailable(say("read.unconfigured"))
     if not images:
-        raise PageReadError("没有可识别的页面")
+        raise PageReadError(say("read.noPages"))
 
     instruction = (
         f"Transcribe this page of music into JSON. Source file: {hint or 'a photo'}. "
@@ -367,16 +367,17 @@ def read_pages(images: list[tuple[bytes, str]], hint: str = "") -> ReadOutcome:
             payload = _post(messages)
         except httpx.HTTPStatusError as error:
             detail = error.response.text[:200] if error.response is not None else ""
-            raise PageReadError(f"识谱服务返回 {error.response.status_code}：{detail}") from error
+            raise PageReadError(say("read.httpStatus", status=error.response.status_code,
+                                      detail=detail)) from error
         except httpx.HTTPError as error:
-            raise PageReadError(f"识谱服务连接失败：{error}") from error
+            raise PageReadError(say("read.connection", detail=str(error))) from error
         except ValueError as error:
             # A gateway can answer 200 with an HTML error page, and a truncated
             # stream decodes to nothing. json() raises ValueError for both, which
             # is not an httpx error and fell through to the catch-all handler as
             # a bare 500 — losing the actionable message every other failure in
             # this module takes care to produce.
-            raise PageReadError(f"识谱服务返回了无法解析的内容：{error}") from error
+            raise PageReadError(say("read.unparseable", detail=str(error))) from error
         served_by = payload.get("provider") or served_by
         # OpenRouter answers 200 with an error body when the host it chose fails.
         upstream = payload.get("error")
@@ -400,4 +401,4 @@ def read_pages(images: list[tuple[bytes, str]], hint: str = "") -> ReadOutcome:
             page=page, model=config.VISION_MODEL, served_by=served_by,
             latency_ms=int((time.monotonic() - started) * 1000), attempts=attempt,
         )
-    raise PageReadError(f"识谱结果无法使用：{last_error}")
+    raise PageReadError(say("read.unusable", detail=last_error))

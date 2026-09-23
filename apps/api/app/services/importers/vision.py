@@ -18,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from app import config
+from app.i18n import Msg, localized, msg, say
 from app.schemas.models import (NormalizedScore, ScoreDisplayMode, ScoreEvent,
                                 ScoreMeta, ScoreNormalization, ScoreSourceType)
 from app.services.generation.score_build import events_to_musicxml
@@ -63,16 +64,14 @@ def _rasterise_pdf(content: bytes) -> list[tuple[bytes, str]]:
     try:
         import pymupdf
     except ImportError as error:  # pragma: no cover - depends on the install
-        raise ScoreImportError(
-            "服务器缺少 PDF 渲染组件（pymupdf）。请改为上传乐谱照片或 MusicXML/MIDI"
-        ) from error
+        raise ScoreImportError(say("import.noPdfRenderer")) from error
     try:
         document = pymupdf.open(stream=content, filetype="pdf")
     except Exception as error:  # noqa: BLE001 - any malformed PDF lands here
-        raise ScoreImportError(f"PDF 无法打开：{error}") from error
+        raise ScoreImportError(say("import.pdfUnreadable", detail=str(error))) from error
     with document:
         if document.needs_pass:
-            raise ScoreImportError("PDF 已加密，无法读取")
+            raise ScoreImportError(say("import.pdfEncrypted"))
         pages = []
         for index, page in enumerate(document):
             if index >= config.VISION_MAX_PAGES:
@@ -82,7 +81,7 @@ def _rasterise_pdf(content: bytes) -> list[tuple[bytes, str]]:
             pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
             pages.append((pixmap.tobytes("png"), "image/png"))
     if not pages:
-        raise ScoreImportError("PDF 中没有可读取的页面")
+        raise ScoreImportError(say("import.pdfNoPages"))
     return pages
 
 
@@ -141,11 +140,11 @@ def read_page_to_events(page: ReadPage, score_id: str,
                 durationBeat=group["duration"],
                 pitches=sorted(group["pitches"]), part=staff, voice=1,
             ))
-    notices: list[str] = []
+    notices: list[Msg] = []
     if notes_dropped:
-        notices.append(f"有 {notes_dropped} 个音符超出所在小节或音高越界，已跳过。")
+        notices.append(msg("import.readNotesDropped", count=notes_dropped))
     if bars_dropped:
-        notices.append(f"有 {bars_dropped} 个小节没有识别出音符，已跳过。")
+        notices.append(msg("import.readBarsDropped", count=bars_dropped))
     return events, notices
 
 
@@ -168,13 +167,10 @@ class VisionScoreImporter(ScoreImporter):
         # the answer is the same for every file, and the person uploading should
         # be told what is missing rather than what their file looks like.
         if not vision_available():
-            raise ScoreImportError(
-                "未配置识谱模型，暂时无法读取照片或 PDF。"
-                "请在 .env 设置 MENTOR_API_KEY（或 VISION_API_KEY），"
-                "或改为上传 MusicXML / MIDI")
+            raise ScoreImportError(say("import.noReader"))
         if len(content) > config.MAX_SCORE_IMAGE_BYTES:
-            raise ScoreLimitError(
-                f"图片超过 {config.MAX_SCORE_IMAGE_BYTES // (1024 * 1024)} MB 上限")
+            raise ScoreLimitError(say("import.imageTooLarge",
+                                      mb=config.MAX_SCORE_IMAGE_BYTES // (1024 * 1024)))
         if suffix == ".pdf":
             pages = _rasterise_pdf(content)
             source_media_type = "application/pdf"
@@ -189,7 +185,7 @@ class VisionScoreImporter(ScoreImporter):
         except VisionUnavailable as error:
             raise ScoreImportError(str(error)) from error
         except PageReadError as error:
-            raise ScoreImportError(f"识谱失败：{error}") from error
+            raise ScoreImportError(say("import.readFailed", detail=str(error))) from error
         page = outcome.page
         logger.info("score read from %s: model=%s servedBy=%s latencyMs=%d attempts=%d "
                     "bars=%d confidence=%.2f", Path(filename).name, outcome.model,
@@ -200,10 +196,10 @@ class VisionScoreImporter(ScoreImporter):
         beats_per_measure = numerator * 4.0 / denominator
         events, notices = read_page_to_events(page, score_id, beats_per_measure)
         if not events:
-            raise ScoreImportError("识谱没有得到任何可练习的音符，请换一张更清晰的照片")
+            raise ScoreImportError(say("import.readNothing"))
         measure_count = max(event.measureNo for event in events)
         if measure_count > config.MAX_MEASURES:
-            raise ScoreLimitError(f"识别到 {measure_count} 小节，超过上限 {config.MAX_MEASURES}")
+            raise ScoreLimitError(say("import.readTooManyBars", count=measure_count, limit=config.MAX_MEASURES))
 
         title = page.title.strip() or Path(filename).stem
         draft_meta = ScoreMeta(
@@ -228,14 +224,14 @@ class VisionScoreImporter(ScoreImporter):
         })
         bundle = result.normalized.bundle.model_copy(update={"meta": meta})
         warnings = [
-            f"这份乐谱由 {outcome.model} 从图片识别，不是原始记谱文件。开始练习前请对照原谱检查。",
+            msg("import.readByModel", model=outcome.model),
             *notices,
-            *[f"未能识别：{item}" for item in page.unreadable[:5]],
+            *[msg("import.unreadable", item=item) for item in page.unreadable[:5]],
         ]
         normalized = NormalizedScore(
             scoreId=score_id, sourceType=source_type,
             displayMode=ScoreDisplayMode.simplified_quantized_staff,
-            bundle=bundle, warnings=warnings,
+            bundle=bundle, **localized(warnings=warnings),
             # The model's own estimate, held below 0.9: no reading of a
             # photograph is as trustworthy as a file someone exported.
             confidence=max(0.2, min(0.9, page.confidence)),

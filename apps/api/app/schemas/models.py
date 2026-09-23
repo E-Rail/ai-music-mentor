@@ -14,6 +14,16 @@ ALGORITHM_VERSION = "1.2.0"
 DEFAULT_THRESHOLD_PROFILE = "default-v3-velocity"
 
 
+class Voiced(BaseModel):
+    """A model whose text fields can be said again in another language.
+
+    ``i18n`` maps a field name to the message it was made from (see
+    ``app.i18n``). It is stored with the document so a report written in one
+    language can be read in the other.
+    """
+    i18n: dict[str, Any] = Field(default_factory=dict)
+
+
 class ScoreSourceType(str, Enum):
     musicxml = "musicxml"
     mxl = "mxl"
@@ -101,7 +111,7 @@ class ScoreNormalization(BaseModel):
     confirmed: bool = False
 
 
-class NormalizedScore(BaseModel):
+class NormalizedScore(Voiced):
     scoreId: str
     sourceType: ScoreSourceType
     displayMode: ScoreDisplayMode
@@ -185,18 +195,23 @@ class Severity(str, Enum):
     low = "low"
 
 
-class Evidence(BaseModel):
+class Evidence(Voiced):
     id: str
     fact: str                        # 直接陈述 + 具体数值
     measureNo: int
     beat: float
     expected: str = ""
     actual: str = ""
+    # The notes behind expected/actual, for playing them back. Parsing them out
+    # of the sentence stopped working the moment the sentence could be English,
+    # and never worked for evidence that is not about pitches at all.
+    expectedPitches: list[int] = Field(default_factory=list)
+    actualPitches: list[int] = Field(default_factory=list)
     deltaMs: Optional[float] = None
     deltaVelocity: Optional[float] = None
 
 
-class ErrorEvent(BaseModel):
+class ErrorEvent(Voiced):
     id: str
     type: ErrorType
     location: dict                   # {measure, beat, eventId}
@@ -206,7 +221,7 @@ class ErrorEvent(BaseModel):
     detail: str = ""
 
 
-class Pattern(BaseModel):
+class Pattern(Voiced):
     """模式判断：规则基于多个事实聚合。"""
     id: str
     description: str
@@ -263,7 +278,14 @@ class InputQuality(BaseModel):
     transcriptionVersion: str = ""
 
 
-class DiagnosisReport(BaseModel):
+class TempoPoint(BaseModel):
+    """The played tempo around one matched note: what the tempo curve draws."""
+    beat: float
+    measure: int
+    bpm: float
+
+
+class DiagnosisReport(Voiced):
     reportId: str
     sessionId: str
     scoreId: str
@@ -271,13 +293,18 @@ class DiagnosisReport(BaseModel):
     errors: list[ErrorEvent] = Field(default_factory=list)
     evidences: list[Evidence] = Field(default_factory=list)
     patterns: list[Pattern] = Field(default_factory=list)
-    hypotheses: list[dict] = Field(default_factory=list)  # {cause, confidence, limitation}
+    hypotheses: list[dict] = Field(default_factory=list)  # {cause, confidence, limitation, i18n}
     algorithmVersion: str = ALGORITHM_VERSION
     thresholdProfile: str = DEFAULT_THRESHOLD_PROFILE
     scoreHash: str = ""
     sourceReferences: list[SourceReference] = Field(default_factory=list)
     inputQuality: InputQuality = Field(default_factory=InputQuality)
     warnings: list[str] = Field(default_factory=list)
+    # How the take was measured rather than what is wrong with it. Kept apart
+    # from warnings so a report does not flag its own method as a problem.
+    notes: list[str] = Field(default_factory=list)
+    tempoCurve: list[TempoPoint] = Field(default_factory=list)
+    targetBpm: Optional[float] = None
     createdAt: str = ""
 
 
@@ -294,7 +321,7 @@ class ExerciseParams(BaseModel):
     errorIds: list[str] = Field(default_factory=list)
 
 
-class Exercise(BaseModel):
+class Exercise(Voiced):
     exerciseId: str
     sourceScoreId: str
     practiceScoreId: str = ""
@@ -303,7 +330,7 @@ class Exercise(BaseModel):
     params: ExerciseParams
     musicXmlPath: str = ""
     midiPath: str = ""
-    successCriterion: str = "连续两次 pitchScore ≥ 95 且 timing MAE ≤ 120 ms"
+    successCriterion: str = "pitchScore ≥ 95, timing MAE ≤ 120 ms"
     tempoPlan: list[float] = Field(default_factory=list)
     variationIndex: int = Field(default=0, ge=0)
     musicalFingerprint: str = ""

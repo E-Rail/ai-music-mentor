@@ -15,6 +15,7 @@ import music21
 from defusedxml import ElementTree as SafeET
 
 from app import config
+from app.i18n import say
 from app.schemas.models import ScoreBundle, ScoreEvent, ScoreMeta
 
 
@@ -70,9 +71,9 @@ def _written_to_sounding_semitones(xml_bytes: bytes) -> int:
 def _detect_part_name(part: music21.stream.Part, index: int) -> str:
     """根据五线谱行/名称粗分 RH/LH（钢琴惯例：P1=RH，P2=LH）。"""
     name = (part.partName or "").lower()
-    if any(k in name for k in ("left", "lh", "bass", "左")):
+    if any(k in name for k in ("left", "lh", "bass", "左")):  # i18n: deliberate
         return "LH"
-    if any(k in name for k in ("right", "rh", "treble", "右")):
+    if any(k in name for k in ("right", "rh", "treble", "右")):  # i18n: deliberate
         return "RH"
     # 钢琴 Grand Staff：第一个 part 右手，第二个左手
     return "RH" if index == 0 else "LH"
@@ -92,10 +93,10 @@ def parse_musicxml(xml_bytes: bytes, score_id: str) -> ScoreBundle:
     try:
         score = music21.converter.parse(xml_bytes, format="musicxml")
     except Exception as e:  # noqa: BLE001
-        raise ScoreUnsupportedError(f"MusicXML 解析失败: {e}") from e
+        raise ScoreUnsupportedError(say("import.xmlParseFailed", detail=str(e))) from e
 
     if _has_complex_repeats(score):
-        raise ScoreUnsupportedError("含 D.C./D.S./Coda 等复杂跳转，MVP 不支持，请导出简化 MusicXML")
+        raise ScoreUnsupportedError(say("import.complexRepeats"))
 
     # 展开反复记号，得到线性演奏顺序
     try:
@@ -106,21 +107,21 @@ def parse_musicxml(xml_bytes: bytes, score_id: str) -> ScoreBundle:
     meta = _extract_meta(expanded, xml_bytes, score_id)
     if meta.measureCount > config.MAX_MEASURES:
         raise ScoreUnsupportedError(
-            f"小节数 {meta.measureCount} 超过上限 {config.MAX_MEASURES}")
+            say("import.tooManyBars", count=meta.measureCount, limit=config.MAX_MEASURES))
 
     events = _extract_events(expanded, score_id)
     if not events:
-        raise ScoreUnsupportedError("乐谱中没有可练习的音符")
+        raise ScoreUnsupportedError(say("import.noNotes"))
     note_count = sum(len(event.pitches) for event in events)
     if note_count > config.MAX_SCORE_NOTES:
-        raise ScoreUnsupportedError(f"音符数量 {note_count} 超过上限 {config.MAX_SCORE_NOTES}")
+        raise ScoreUnsupportedError(say("import.tooManyNotesCount", count=note_count, limit=config.MAX_SCORE_NOTES))
     max_beat = max(
         (event.absoluteBeat if event.absoluteBeat is not None else
          (event.measureNo - 1) * meta.beatsPerMeasure + event.onsetBeat)
         + event.durationBeat for event in events
     )
     if max_beat * 60 / max(meta.tempo, 1) > config.MAX_SCORE_DURATION_SECONDS:
-        raise ScoreUnsupportedError("乐谱演奏时长超过上限")
+        raise ScoreUnsupportedError(say("import.tooLong"))
     # Only a written p/mf/f licenses grading a performance against a dynamic.
     meta.hasNotatedDynamics = any(
         event.dynamicTarget is not None for event in events)

@@ -17,6 +17,7 @@ import json
 import uuid
 from pathlib import Path
 
+from app.i18n import Msg, localized, msg, say
 from app.schemas.models import (DiagnosisReport, ErrorType, Exercise,
                                 ExerciseParams, ScoreBundle, ScoreEvent)
 
@@ -32,7 +33,9 @@ STRATEGY_RULES = {
 
 
 class ExerciseGenerationError(Exception):
-    pass
+    def __init__(self, message: Msg):
+        super().__init__(say(message))
+        self.message = message
 
 
 def suggest_strategy(report: DiagnosisReport) -> str:
@@ -104,12 +107,8 @@ _CADENCE_ORDERS = [
     ["plagal", "half", "deceptive", "authentic"],
 ]
 
-_CADENCE_LABELS = {
-    "half": "半终止",
-    "deceptive": "阻碍终止",
-    "plagal": "变格终止",
-    "authentic": "正格终止",
-}
+def _cadence_title(plan: list[str]) -> str:
+    return " → ".join(say(f"cadence.{item}") for item in plan)
 
 # Scale-degree triads. The first interval is the harmonic root and is used for
 # monophonic material; chordal source events retain their original note count.
@@ -351,7 +350,7 @@ def generate_exercise(report: DiagnosisReport,
         measures = select_measures(report, params.errorIds, bundle, lead_in=1)
         fragment = _slice(bundle, measures)
         if not fragment:
-            raise ExerciseGenerationError("目标小节没有可练习事件")
+            raise ExerciseGenerationError(msg("exercise.noEventsInBars"))
 
         strategy = params.strategy
         tempo = meta.tempo
@@ -371,7 +370,7 @@ def generate_exercise(report: DiagnosisReport,
             target_part = params.hands or _dominant_part(report, bundle)
             fragment = [e for e in fragment if e.part == target_part]
             if not fragment:
-                raise ExerciseGenerationError("目标声部在所选小节没有事件")
+                raise ExerciseGenerationError(msg("exercise.noEventsInPart"))
             repeat = max(1, params.loopCount)
         elif strategy == "rhythm_variant":
             fragment = _apply_rhythm_variant(fragment)
@@ -400,23 +399,20 @@ def generate_exercise(report: DiagnosisReport,
             report.inputQuality.instrument.value, bundle.events)
         cadence_plan = cadence_plan_for_variation(variation_index)
         if not validate_well_formed(practice_events):
-            raise ExerciseGenerationError("生成的乐谱结构不合法")
-        cadence_title = " → ".join(_CADENCE_LABELS[item]
-                                   for item in cadence_plan)
+            raise ExerciseGenerationError(msg("exercise.malformed"))
         events_to_musicxml(practice_events, meta, tempo,
-                           f"多终止式练习 · {cadence_title}",
+                           say("exercise.fileTitle", cadences=_cadence_title(cadence_plan)),
                            xml_path, report.inputQuality.instrument)
         events_to_midi(practice_events, meta, tempo, midi_path, repeat=repeat)
         fingerprint = musical_fingerprint(practice_events)
         selected_errors = ([error for error in report.errors
                             if error.id in params.errorIds]
                            if params.errorIds else report.errors[:1])
-        success_criterion = (
-            "连续两次 pitchScore ≥ 95、timing MAE ≤ 120 ms 且 dynamicsScore ≥ 85"
+        success_criterion = msg(
+            "exercise.criterionDynamics"
             if any(error.type == ErrorType.dynamics_anomaly
                    for error in selected_errors)
-            else "连续两次 pitchScore ≥ 95 且 timing MAE ≤ 120 ms"
-        )
+            else "exercise.criterion")
 
         return Exercise(
             exerciseId=exercise_id,
@@ -427,15 +423,15 @@ def generate_exercise(report: DiagnosisReport,
             musicXmlPath=str(xml_path),
             midiPath=str(midi_path),
             tempoPlan=tempo_plan,
-            successCriterion=success_criterion,
             variationIndex=variation_index,
             musicalFingerprint=fingerprint,
-            cadencePlan=cadence_plan)
+            cadencePlan=cadence_plan,
+            **localized(successCriterion=success_criterion))
     except Exception as e:  # noqa: BLE001 —— 降级：原片段+慢速+循环
         if isinstance(e, ExerciseGenerationError):
-            reason = str(e)
+            reason = e.message
         else:
-            reason = f"生成异常: {e}"
+            reason = msg("exercise.generationError", detail=str(e))
         return _fallback(
             report, bundle, params, out_dir, reason, variation_index)
 
@@ -454,7 +450,7 @@ def _dominant_part(report: DiagnosisReport, bundle: ScoreBundle) -> str:
 
 def _fallback(report: DiagnosisReport, bundle: ScoreBundle,
               params: ExerciseParams, out_dir: Path,
-              reason: str, variation_index: int = 0) -> Exercise:
+              reason: Msg, variation_index: int = 0) -> Exercise:
     """EXERCISE_GENERATION_FAILED 降级：原片段 + 慢速 + 循环。"""
     from app.services.generation.score_build import (
         events_to_midi, events_to_musicxml)
@@ -469,10 +465,9 @@ def _fallback(report: DiagnosisReport, bundle: ScoreBundle,
     exercise_id = f"ex_{uuid.uuid4().hex[:10]}"
     xml_path = out_dir / f"{exercise_id}.musicxml"
     midi_path = out_dir / f"{exercise_id}.mid"
-    cadence_title = " → ".join(_CADENCE_LABELS[item]
-                               for item in cadence_plan)
     events_to_musicxml(practice_events, meta, tempo,
-                       f"多终止式降级练习 · {cadence_title}", xml_path,
+                       say("exercise.fallbackFileTitle", cadences=_cadence_title(cadence_plan)),
+                       xml_path,
                        report.inputQuality.instrument)
     events_to_midi(practice_events, meta, tempo, midi_path,
                    repeat=max(1, params.loopCount))
@@ -482,7 +477,7 @@ def _fallback(report: DiagnosisReport, bundle: ScoreBundle,
         sourceMeasures=measures, ruleId="loop_fallback",
         params=fb_params, musicXmlPath=str(xml_path),
         midiPath=str(midi_path),
-        successCriterion=f"降级输出（{reason}）；达标：连续两次 pitchScore ≥ 95 且 MAE ≤ 120 ms",
         variationIndex=variation_index,
         musicalFingerprint=musical_fingerprint(practice_events),
-        cadencePlan=cadence_plan)
+        cadencePlan=cadence_plan,
+        **localized(successCriterion=msg("exercise.fallbackCriterion", reason=reason)))

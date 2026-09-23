@@ -1,6 +1,7 @@
 """MIDI 文件 ↔ PerformanceEvent（上传 MIDI 降级路径 & 测试加载）。"""
 from __future__ import annotations
 
+from app.i18n import say
 from io import BytesIO
 
 import mido
@@ -21,9 +22,9 @@ def validate_midi_bytes(content: bytes) -> None:
             for track in midi.tracks for message in track
         )
     except Exception as exc:  # mido 会按损坏位置抛出多种解析异常
-        raise MidiFileValidationError("无法解析 MIDI 文件") from exc
+        raise MidiFileValidationError(say("import.midiUnreadable")) from exc
     if not has_note:
-        raise MidiFileValidationError("MIDI 文件中没有音符事件")
+        raise MidiFileValidationError(say("import.midiNoNotes"))
 
 
 def load_midi_events(path: str) -> list[PerformanceEvent]:

@@ -18,9 +18,10 @@ from __future__ import annotations
 import statistics
 
 from app.schemas.models import (AlignmentPair, AlignOp, ErrorEvent, ErrorType,
-                                Evidence, PerformanceGroup, Severity)
+                                Evidence, PerformanceGroup, Severity, TempoPoint)
 from app.services.alignment.onset import ScoreOnset, score_onset_beat
 from app.services.alignment.tempo import TempoMap, local_bpm_series
+from app.i18n import Msg, localized, msg
 from app.services.diagnosis.confidence import confidence
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -56,21 +57,24 @@ class _Ctx:
             return self._labels[measure - 1]
         return str(measure)
 
-    def add_evidence(self, measure: int, beat: float, fact: str,
-                     expected: str = "", actual: str = "",
+    def add_evidence(self, measure: int, beat: float, fact: Msg,
+                     expected: Msg | str = "", actual: Msg | str = "",
                      delta_ms: float | None = None,
-                     delta_velocity: float | None = None) -> str:
+                     delta_velocity: float | None = None,
+                     expected_pitches=(), actual_pitches=()) -> str:
         self._ev_n += 1
         ev_id = f"ev_{self._ev_n:04d}"
-        self.evidences.append(Evidence(id=ev_id, fact=fact, measureNo=measure,
-                                       beat=beat, expected=expected,
-                                       actual=actual, deltaMs=delta_ms,
-                                       deltaVelocity=delta_velocity))
+        self.evidences.append(Evidence(
+            id=ev_id, measureNo=measure, beat=beat, deltaMs=delta_ms,
+            deltaVelocity=delta_velocity,
+            expectedPitches=sorted(expected_pitches),
+            actualPitches=sorted(actual_pitches),
+            **localized(fact=fact, expected=expected, actual=actual)))
         return ev_id
 
     def add_error(self, err_type: ErrorType, measure: int, beat: float,
                   event_ids: list[str], severity: Severity,
-                  evidence_ids: list[str], detail: str = "") -> None:
+                  evidence_ids: list[str], detail: Msg | str = "") -> None:
         self._err_n += 1
         conf = confidence(err_type, len(evidence_ids), 1)
         self.errors.append(ErrorEvent(
@@ -79,7 +83,11 @@ class _Ctx:
                       "eventId": event_ids[0] if event_ids else None,
                       "eventIds": event_ids},
             severity=severity, evidenceIds=evidence_ids, confidence=conf,
-            detail=detail))
+            **localized(detail=detail)))
+
+    def at(self, o: ScoreOnset) -> dict[str, str]:
+        """The printed bar and beat of an onset, as message parameters."""
+        return {"bar": self.label(o.measureNo), "beat": f"{o.onsetBeat + 1:g}"}
 
 
 def classify_errors(pairs: list[AlignmentPair],
@@ -163,24 +171,12 @@ def classify_errors(pairs: list[AlignmentPair],
                 # 被合并组重分配认领：音弹了但时间偏移
                 _, resid = reassigned[o.onsetId]
                 if abs(resid) > timing_threshold:
-                    direction = "提前" if resid < 0 else "延后"
-                    sev = Severity.high if abs(resid) > 200 else Severity.medium
-                    ev_id = ctx.add_evidence(
-                        o.measureNo, o.onsetBeat,
-                        f"相对局部速度{direction} {abs(resid):.0f} ms",
-                        expected="0 ms", actual=f"{resid:+.0f} ms", delta_ms=resid)
-                    ctx.add_error(ErrorType.early_late, o.measureNo, o.onsetBeat,
-                                  [m.eventId for m in o.members], sev, [ev_id],
-                                  f"第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍{direction}")
+                    _report_timing(ctx, o, resid)
                 continue
             for m in o.members:
                 if m.optional:
                     continue
-                ev_id = ctx.add_evidence(
-                    o.measureNo, o.onsetBeat,
-                    f"第 {ctx.label(o.measureNo)} 小节{'右手' if m.part == 'RH' else '左手'} "
-                    f"{pitch_set_str(m.pitches)} 未出现",
-                    expected=pitch_set_str(m.pitches), actual="（未演奏）")
+                ev_id = _missed_evidence(ctx, o, m)
                 ctx.add_error(ErrorType.missed_note, o.measureNo, o.onsetBeat,
                               [m.eventId], Severity.high, [ev_id])
             continue
@@ -240,12 +236,14 @@ def classify_errors(pairs: list[AlignmentPair],
                               if set(m.pitches) & set(worst_pitches)]
                 ev_id = ctx.add_evidence(
                     o.measureNo, o.onsetBeat,
-                    f"和弦音 {pitch_set_str(worst_pitches)} 相对和弦主体"
-                    f"{'延后' if worst_delta > 0 else '提前'} {abs(worst_delta):.0f} ms",
-                    expected="和弦同时发声", actual=f"偏移 {worst_delta:+.0f} ms",
+                    msg("fact.chordSpread", pitches=pitch_set_str(worst_pitches),
+                        direction=_direction(worst_delta), ms=f"{abs(worst_delta):.0f}"),
+                    expected=msg("word.chordTogether"),
+                    actual=msg("word.offsetMs", ms=f"{worst_delta:+.0f}"),
                     delta_ms=worst_delta)
                 ctx.add_error(ErrorType.early_late, o.measureNo, o.onsetBeat,
-                              member_ids, Severity.low, [ev_id], "和弦不同步")
+                              member_ids, Severity.low, [ev_id],
+                              msg("detail.chordSpread"))
             if absorbed and not missing and not extra:
                 flagged_timing = _maybe_timing(ctx, o, p, timing_threshold, adjusted)
                 if not flagged_timing:
@@ -259,9 +257,10 @@ def classify_errors(pairs: list[AlignmentPair],
                 # 期望音全弹出但多了音 → 多音
                 ev_id = ctx.add_evidence(
                     o.measureNo, o.onsetBeat,
-                    f"第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍多弹 "
-                    f"{pitch_set_str(extra)}（期望 {pitch_set_str(o.pitches)}）",
-                    expected=pitch_set_str(o.pitches), actual=pitch_set_str(g.pitches))
+                    msg("fact.extraInChord", **ctx.at(o), extra=pitch_set_str(extra),
+                        expected=pitch_set_str(o.pitches)),
+                    expected=pitch_set_str(o.pitches), actual=pitch_set_str(g.pitches),
+                    expected_pitches=o.pitches, actual_pitches=g.pitches)
                 ctx.add_error(ErrorType.extra_note, o.measureNo, o.onsetBeat,
                               [m.eventId for m in o.members], Severity.medium, [ev_id])
             else:
@@ -273,20 +272,18 @@ def classify_errors(pairs: list[AlignmentPair],
                     if not m_missing:
                         continue
                     if len(m_missing) == len(set(m.pitches)) and not extra:
-                        ev_id = ctx.add_evidence(
-                            o.measureNo, o.onsetBeat,
-                            f"第 {ctx.label(o.measureNo)} 小节{'右手' if m.part == 'RH' else '左手'} "
-                            f"{pitch_set_str(m.pitches)} 未出现",
-                            expected=pitch_set_str(m.pitches), actual="（未演奏）")
+                        ev_id = _missed_evidence(ctx, o, m)
                         ctx.add_error(ErrorType.missed_note, o.measureNo, o.onsetBeat,
                                       [m.eventId], Severity.high, [ev_id])
                     else:
                         ev_id = ctx.add_evidence(
                             o.measureNo, o.onsetBeat,
-                            f"期望 {pitch_set_str(m.pitches)}，实际 {pitch_set_str(g.pitches)}；"
-                            f"位置：第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍",
+                            msg("fact.wrongPitch", **ctx.at(o),
+                                expected=pitch_set_str(m.pitches),
+                                actual=pitch_set_str(g.pitches)),
                             expected=pitch_set_str(m.pitches),
-                            actual=pitch_set_str(g.pitches))
+                            actual=pitch_set_str(g.pitches),
+                            expected_pitches=m.pitches, actual_pitches=g.pitches)
                         sev = Severity.high if p.cost >= 0.85 else Severity.medium
                         ctx.add_error(ErrorType.wrong_pitch, o.measureNo, o.onsetBeat,
                                       [m.eventId], sev, [ev_id])
@@ -316,11 +313,13 @@ def classify_errors(pairs: list[AlignmentPair],
             g, onset_index, beats_per_measure, tempo_map)
         ev_id = ctx.add_evidence(
             near_measure, near_beat,
-            f"第 {ctx.label(near_measure)} 小节附近多弹 {pitch_set_str(remaining)}",
-            expected="（无此音）", actual=pitch_set_str(remaining))
+            msg("fact.extraNear", bar=ctx.label(near_measure),
+                pitches=pitch_set_str(remaining)),
+            expected=msg("word.noSuchNote"), actual=pitch_set_str(remaining),
+            actual_pitches=remaining)
         ctx.add_error(ErrorType.extra_note, near_measure, near_beat,
                       [], Severity.medium, [ev_id],
-                      f"实际多弹 {pitch_set_str(remaining)}")
+                      msg("detail.extra", pitches=pitch_set_str(remaining)))
 
     # ---------- 速度不稳 ----------
     _tempo_instability(ctx, matched_onsets, onset_beat_abs, bpm)
@@ -383,11 +382,12 @@ def _dynamics_anomalies(
             delta = actual - target
             if abs(delta) < target_tolerance:
                 continue
-            direction = "偏强" if delta > 0 else "偏弱"
+            direction = msg("word.louder" if delta > 0 else "word.softer")
             severity = Severity.high if abs(delta) >= 30 else Severity.medium
             evidence_id = ctx.add_evidence(
                 onset.measureNo, onset.onsetBeat,
-                f"力度目标 {target:.0f}，实际中位力度 {actual:.0f}（{delta:+.0f}，{direction}）",
+                msg("fact.dynamicsTarget", target=f"{target:.0f}", actual=f"{actual:.0f}",
+                    delta=f"{delta:+.0f}", direction=direction),
                 expected=f"MIDI velocity {target:.0f}",
                 actual=f"MIDI velocity {actual:.0f}",
                 delta_velocity=round(delta, 1),
@@ -395,7 +395,8 @@ def _dynamics_anomalies(
             ctx.add_error(
                 ErrorType.dynamics_anomaly, onset.measureNo, onset.onsetBeat,
                 [member.eventId for member in onset.members], severity,
-                [evidence_id], f"力度{direction} {abs(delta):.0f}",
+                [evidence_id],
+                msg("detail.dynamics", direction=direction, amount=f"{abs(delta):.0f}"),
             )
         return
 
@@ -412,19 +413,20 @@ def _dynamics_anomalies(
         delta = actual - centre
         if abs(delta) < threshold:
             continue
-        direction = "突然偏强" if delta > 0 else "突然偏弱"
+        direction = msg("word.suddenlyLouder" if delta > 0 else "word.suddenlySofter")
         evidence_id = ctx.add_evidence(
             onset.measureNo, onset.onsetBeat,
-            f"乐谱无明确力度标记；本次演奏中位力度 {centre:.0f}，"
-            f"此音 {actual:.0f}（{delta:+.0f}，{direction}）",
-            expected=f"相邻演奏中位 velocity {centre:.0f}",
+            msg("fact.dynamicsOutlier", centre=f"{centre:.0f}", actual=f"{actual:.0f}",
+                delta=f"{delta:+.0f}", direction=direction),
+            expected=msg("word.takeMedianVelocity", value=f"{centre:.0f}"),
             actual=f"MIDI velocity {actual:.0f}",
             delta_velocity=round(delta, 1),
         )
         ctx.add_error(
             ErrorType.dynamics_anomaly, onset.measureNo, onset.onsetBeat,
             [member.eventId for member in onset.members], Severity.low,
-            [evidence_id], f"相对本轮力度{direction} {abs(delta):.0f}",
+            [evidence_id],
+            msg("detail.dynamicsOutlier", direction=direction, amount=f"{abs(delta):.0f}"),
         )
 
 
@@ -434,16 +436,38 @@ def _maybe_timing(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
     resid = (adjusted or {}).get(p.scoreEventId or "", p.onsetResidualMs)
     if abs(resid) <= threshold:
         return False
-    direction = "提前" if resid < 0 else "延后"
+    _report_timing(ctx, o, resid)
+    return True
+
+
+def _direction(delta_ms: float) -> Msg:
+    return msg("word.early" if delta_ms < 0 else "word.late")
+
+
+def _report_timing(ctx: _Ctx, o: ScoreOnset, resid: float) -> None:
     sev = Severity.high if abs(resid) > 200 else Severity.medium
     ev_id = ctx.add_evidence(
         o.measureNo, o.onsetBeat,
-        f"相对局部速度{direction} {abs(resid):.0f} ms",
+        msg("fact.timing", direction=_direction(resid), ms=f"{abs(resid):.0f}"),
         expected="0 ms", actual=f"{resid:+.0f} ms", delta_ms=resid)
     ctx.add_error(ErrorType.early_late, o.measureNo, o.onsetBeat,
                   [m.eventId for m in o.members], sev, [ev_id],
-                  f"第 {ctx.label(o.measureNo)} 小节第 {o.onsetBeat + 1:g} 拍{direction}")
-    return True
+                  msg("detail.timingAt", **ctx.at(o), direction=_direction(resid)))
+
+
+def _missed_evidence(ctx: _Ctx, o: ScoreOnset, member) -> str:
+    return ctx.add_evidence(
+        o.measureNo, o.onsetBeat,
+        msg("fact.missed", bar=ctx.label(o.measureNo),
+            hand=msg("word.rightHand" if member.part == "RH" else "word.leftHand"),
+            pitches=pitch_set_str(member.pitches)),
+        expected=pitch_set_str(member.pitches), actual=msg("word.notPlayed"),
+        expected_pitches=member.pitches)
+
+
+def _beats(value: float, fmt: str) -> Msg:
+    shown = format(value, fmt)
+    return msg("word.beatOne" if shown == "1" else "word.beats", n=shown)
 
 
 def _maybe_duration(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
@@ -453,8 +477,9 @@ def _maybe_duration(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
         return
     ev_id = ctx.add_evidence(
         o.measureNo, o.onsetBeat,
-        f"期望 {o.durationBeat:g} 拍，实际约 {o.durationBeat * ratio:.2f} 拍",
-        expected=f"{o.durationBeat:g} 拍", actual=f"{o.durationBeat * ratio:.2f} 拍")
+        msg("fact.duration", expected=_beats(o.durationBeat, "g"),
+            actual=_beats(o.durationBeat * ratio, ".2f")),
+        expected=_beats(o.durationBeat, "g"), actual=_beats(o.durationBeat * ratio, ".2f"))
     ctx.add_error(ErrorType.duration_anomaly, o.measureNo, o.onsetBeat,
                   [m.eventId for m in o.members], Severity.low, [ev_id])
 
@@ -490,31 +515,31 @@ def _tempo_instability(ctx: _Ctx,
     m_end = max(m for _, _, m in beats_ms)
     loc_measure = m_start
     if cv > 0.08 or slowdown > 0.12 or overall_dev > 0.10 or seg_dev > 0.12:
-        detail = f"第 {ctx.label(m_start)}–{ctx.label(m_end)} 小节"
+        span = {"start": ctx.label(m_start), "end": ctx.label(m_end)}
+        detail = msg("detail.barSpan", **span)
         if slowdown > 0.12:
-            fact = (f"第 {ctx.label(m_start)}–{ctx.label(m_end)} 小节速度由约 {first_third:.0f} BPM "
-                    f"降至 {last_third:.0f} BPM（连续减速 {slowdown * 100:.0f}%）")
+            fact = msg("fact.slowdown", **span, **{"from": f"{first_third:.0f}"},
+                       to=f"{last_third:.0f}", pct=f"{slowdown * 100:.0f}")
             loc_measure = m_start
         elif seg_dev > 0.12:
-            slowest = min(bpms)
-            fact = (f"第 {ctx.label(seg_measure)} 小节附近存在局部变速："
-                    f"段落速度最慢约 {slowest:.0f} BPM，"
-                    f"相对整体 {med_bpm:.0f} BPM 偏离 {seg_dev * 100:.0f}%")
+            fact = msg("fact.localTempo", bar=ctx.label(seg_measure),
+                       slowest=f"{min(bpms):.0f}", median=f"{med_bpm:.0f}",
+                       pct=f"{seg_dev * 100:.0f}")
             loc_measure = seg_measure
         elif overall_dev > 0.10:
-            direction = "慢" if mean_bpm < bpm else "快"
-            fact = (f"整体速度约 {mean_bpm:.0f} BPM，比乐谱标记 "
-                    f"{bpm:.0f} BPM {direction} {overall_dev * 100:.0f}%")
+            direction = msg("word.slower" if mean_bpm < bpm else "word.faster")
+            fact = msg("fact.overallTempo", mean=f"{mean_bpm:.0f}", marked=f"{bpm:.0f}",
+                       direction=direction, pct=f"{overall_dev * 100:.0f}")
             # A steady take at a slower tempo is a tempo *choice*, not shaky
             # playing — and it is exactly what the slow-practice exercises ask
             # for. Say which one it is instead of calling both "unstable".
-            detail = (f"整体比标记速度{direction} {overall_dev * 100:.0f}%"
-                      f"（第 {ctx.label(m_start)}–{ctx.label(m_end)} 小节；本次拍点本身是稳的）")
+            detail = msg("detail.overallTempo", **span, direction=direction,
+                         pct=f"{overall_dev * 100:.0f}")
         else:
-            fact = (f"4 拍滑窗 BPM 变异系数 {cv * 100:.1f}%（>8%），"
-                    f"区间 {min(bpms):.0f}–{max(bpms):.0f} BPM")
+            fact = msg("fact.tempoSpread", cv=f"{cv * 100:.1f}",
+                       low=f"{min(bpms):.0f}", high=f"{max(bpms):.0f}")
         ev_id = ctx.add_evidence(loc_measure, 0.0, fact,
-                                 expected=f"{bpm:.0f} BPM 稳定",
+                                 expected=msg("word.steadyBpm", bpm=f"{bpm:.0f}"),
                                  actual=f"{min(bpms):.0f}–{max(bpms):.0f} BPM")
         ctx.add_error(ErrorType.tempo_instability, loc_measure, 0.0, [],
                       Severity.medium, [ev_id], detail)
@@ -558,3 +583,28 @@ def _adjusted_residuals(pairs: list[AlignmentPair],
         med = statistics.median(local) if len(local) >= 3 else global_med
         out[oid] = resid - med
     return out
+
+
+def played_tempo_curve(pairs: list[AlignmentPair],
+                       onset_index: dict[str, ScoreOnset],
+                       group_index: dict[str, PerformanceGroup],
+                       beats_per_measure: float) -> list[TempoPoint]:
+    """The tempo the player actually kept, note by note.
+
+    The same 4-beat sliding median the tempo-instability check reads, so the
+    curve a player sees is the evidence that check judged — not a second,
+    differently smoothed opinion of the same take.
+    """
+    anchors = []
+    for pair in pairs:
+        if pair.operation not in (AlignOp.match, AlignOp.substitute):
+            continue
+        onset = onset_index.get(pair.scoreEventId or "")
+        group = group_index.get(pair.performanceId or "")
+        if onset and group:
+            anchors.append((score_onset_beat(onset, beats_per_measure),
+                            group.tOnMs, onset.measureNo))
+    measure_at = {beat: measure for beat, _, measure in anchors}
+    return [TempoPoint(beat=round(beat, 3), measure=measure_at.get(beat, 1),
+                       bpm=round(bpm, 1))
+            for beat, bpm in local_bpm_series([(b, ms) for b, ms, _ in anchors])]

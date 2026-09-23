@@ -40,11 +40,3 @@ def confidence(err_type: ErrorType, n_evidences: int, same_type_count: int) -> f
          + 0.35 * consistency_score(same_type_count)
          + 0.20 * RULE_SPECIFICITY.get(err_type, 0.6))
     return round(max(0.0, min(1.0, c)), 3)
-
-
-def confidence_label(c: float) -> str:
-    if c >= 0.75:
-        return "高"
-    if c >= 0.45:
-        return "中"
-    return "低"

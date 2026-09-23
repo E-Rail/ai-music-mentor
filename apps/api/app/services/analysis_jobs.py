@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import storage
 from app.db import repositories
+from app.i18n import Msg, msg, say
 from app.schemas.models import DiagnosisReport, PerformanceEvent, ScoreBundle
 from app.services.diagnosis.pipeline import (LowConfidenceAlignmentError,
                                              run_analysis)
@@ -129,16 +130,19 @@ def _run_job(job_id: str) -> None:
     except Exception as exc:  # Persist failures; never strand the UI in "running".
         if isinstance(exc, LowConfidenceAlignmentError):
             code = "ALIGNMENT_LOW_CONFIDENCE"
-            message = str(exc)
+            message = exc.message
         else:
             code = str(exc) if str(exc) in {
                 "SESSION_NOT_FOUND", "SCORE_NOT_FOUND", "NO_PERFORMANCE_EVENTS",
             } else "ANALYSIS_FAILED"
-            message = ("没有演奏事件，请重录" if code == "NO_PERFORMANCE_EVENTS" else
-                       "分析失败，录音已保留，可重新提交")
+            message = msg("analysis.noEvents" if code == "NO_PERFORMANCE_EVENTS"
+                          else "analysis.failed")
         repositories.save_job(job_id, {
             "sessionId": session_id, "status": "failed", "progress": 100,
-            "errorCode": code, "errorMessage": message,
+            # The message is stored as its recipe, not as a sentence: the job
+            # ran on a worker thread with no reader, and whoever polls it next
+            # decides the language. See public_job().
+            "errorCode": code, "errorMessage": message.model_dump_json(),
             "attempts": int(job.get("attempts") or 0) + 1,
         })
         session = storage.get("session", session_id)
@@ -148,6 +152,21 @@ def _run_job(job_id: str) -> None:
         logger.exception(json.dumps({"event": "analysis_job_failed", "jobId": job_id,
                                      "sessionId": session_id, "errorCode": code},
                                     ensure_ascii=False))
+
+
+def public_job(job: dict) -> dict:
+    """A job as a client should see it, its failure said in the reader's language.
+
+    Rows written before messages were stored as recipes hold a plain sentence
+    and pass through unchanged.
+    """
+    raw = job.get("errorMessage")
+    if raw and raw.lstrip().startswith("{"):
+        try:
+            return {**job, "errorMessage": say(Msg.model_validate_json(raw))}
+        except ValueError:
+            pass
+    return job
 
 
 def resume_pending_jobs() -> None:

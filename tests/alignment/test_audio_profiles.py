@@ -76,7 +76,10 @@ def test_guitar_microphone_uses_written_pitch_for_marked_score():
     )
     assert report.metrics.pitchScore == 100
     assert not report.errors
-    assert any("书写音高" in warning for warning in report.warnings)
+    # How the pitches were read is method, not a problem with the take, so it
+    # is a note rather than a warning.
+    assert any("书写音高" in note for note in report.notes)
+    assert not any("书写音高" in warning for warning in report.warnings)
 
 
 def test_generated_guitar_score_preserves_octave_transposition(tmp_path):

@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import config
 from app.db import initialize_database, repositories
+from app.i18n import negotiate, say, speaking
 from app.routes.api import register_builtin_scores, router
 from app.services import analysis_jobs
 from app.services.file_store import local_file_store
@@ -84,7 +85,7 @@ async def request_log(request: Request, call_next):
 async def validation_error(_request: Request, exc: RequestValidationError):
     first = exc.errors()[0] if exc.errors() else {}
     location = ".".join(str(part) for part in first.get("loc", []))
-    message = first.get("msg", "请求参数不合法")
+    message = first.get("msg", say("error.requestInvalid"))
     if location:
         message = f"{location}: {message}"
     return JSONResponse(status_code=422, content={
@@ -96,7 +97,10 @@ async def validation_error(_request: Request, exc: RequestValidationError):
 async def unhandled(request: Request, exc: Exception):
     logger.exception("Unhandled API error on %s", request.url.path, exc_info=exc)
     return JSONResponse(status_code=500, content={
-        "detail": {"code": "INTERNAL_ERROR", "message": "服务器暂时无法处理请求，请稍后重试"},
+        # This handler runs outside every middleware, where the request's
+        # language is no longer set, so it reads the header itself.
+        "detail": {"code": "INTERNAL_ERROR", "message": say(
+            "error.internal", locale=negotiate(request.headers.get("accept-language")))},
     })
 
 
@@ -125,6 +129,30 @@ def readiness() -> JSONResponse:
                  "checks": {"database": database, "fileStore": file_store}},
     )
 
+
+class _SpeakTheRequestedLanguage:
+    """Say everything in this request in the language it asked for.
+
+    Pure ASGI rather than @app.middleware: the language is a context variable,
+    and a context variable set here is seen by everything the request runs —
+    sync endpoints in the thread pool, exception handlers, importers several
+    calls deep — without any of them taking a parameter.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        header = next((value.decode("latin-1") for name, value in scope.get("headers", [])
+                       if name == b"accept-language"), None)
+        with speaking(negotiate(header)):
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_SpeakTheRequestedLanguage)
 
 app.include_router(router, prefix="/api/v1")
 # Temporary compatibility alias for saved demo URLs and old offline scripts.

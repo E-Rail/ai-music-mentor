@@ -14,6 +14,10 @@ class ScoreLimitError(ScoreImportError):
     code = "SCORE_LIMIT_EXCEEDED"
 
 
+class ScoreNotFoundError(ScoreImportError):
+    code = "SCORE_NOT_FOUND"
+
+
 @dataclass(frozen=True)
 class ImportResult:
     normalized: NormalizedScore

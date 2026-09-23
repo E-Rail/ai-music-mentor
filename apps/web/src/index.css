@@ -332,7 +332,8 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
    Defaults everywhere are the narrow layout; @container widens them. A missing
    container then costs a column, never an overflow.                          */
 
-.panel, .input-dock, .coach-mentor-column, .generated-plan-card, .mic-monitor-column {
+.panel, .stage-main, .stage-aside, .input-dock, .coach-mentor-column, .generated-plan-card,
+.mic-monitor-column {
   container-type: inline-size;
 }
 .panel > h2 {

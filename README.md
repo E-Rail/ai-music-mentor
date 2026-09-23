@@ -67,8 +67,8 @@ The gear menu in the top-right corner contains four settings, all applied immedi
 
 - **Theme** — Light, dark, or follow the system setting.
 - **Piano finish** — Ebony, rosewood, walnut, or ivory. This changes the piano and background only: notation remains paper-like and wrong notes remain red, so reports stay visually consistent across themes.
-- **Language** — Simplified Chinese, English, or follow the system setting. The initial language is detected from the browser; Traditional Chinese falls back to Simplified Chinese. Changing the language during a recording does not interrupt the take.
-- **Detail level** — Standard focuses on what to practise. Pro adds itemised evidence, per-note confidence, separate left- and right-hand statistics, and recording-quality details such as room noise and accepted versus discarded notes.
+- **Language** — Simplified Chinese, English, or follow the system setting. The initial language is detected from the browser; Traditional Chinese falls back to Simplified Chinese. Everything follows it, including the report and the AI mentor's replies; an open report switches language on the spot, and an AI summary written before the switch can be rewritten with one click. Changing the language during a recording does not interrupt the take.
+- **Detail level** — Both modes look the same; Pro only shows more. Standard focuses on what to practise. Pro adds itemised evidence, per-note confidence, separate left- and right-hand statistics, recording quality (room noise, accepted versus discarded notes) and a curve of the tempo you actually kept.
 
 ## Supported inputs
 

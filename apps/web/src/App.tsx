@@ -2083,7 +2083,6 @@ export default function App() {
             </button>
           ))}
         </div>
-        <p className="dim input-source-note">{t('microphoneHint')}</p>
       </>}
       aside={<>
         {inputSource === 'web-midi' && (

@@ -1,4 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import {
+  Fragment, lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState, type ReactNode,
+} from 'react'
 import { SettingsDialog } from './features/shell/SettingsDialog'
 import { useDepth, useFinish, useLocale, useTheme } from './features/shell/useSettings'
 import { api } from './api/client'
@@ -999,8 +1001,9 @@ export default function App() {
           rangeStart, rangeEnd, inputSource, instrument, savedAt: Date.now(),
         })
         setRecording(true)
-        notify('info', () => inputSource === 'microphone'
-            ? t('microphoneRecording') : t('recordingDeterministic'))
+        // The action bar already says a microphone take is recording; only
+        // the MIDI path has something more to tell (when its clock starts).
+        if (inputSource !== 'microphone') notify('info', () => t('recordingDeterministic'))
       }
     } catch (e) {
       recordingRef.current = false
@@ -1421,13 +1424,13 @@ export default function App() {
           onEnd: () => notify('info', () => t('accompanimentEnded')),
         })
       }
-      notify('info', () => inputSource === 'microphone' && !headphonesConfirmed
-          ? t('microphoneRecording')
-          : uploadMode
+      if (!(inputSource === 'microphone' && !headphonesConfirmed)) {
+        notify('info', () => uploadMode
           ? t('accompanimentUploadStarted')
           : tf('accompanimentStarted', {
               mode: accMode === 'flexible' ? t('flexibleTempoDescription') : t('fixedTempoDescription'),
             }))
+      }
     } catch (e) {
       if (captureStarted && inputSource === 'microphone' && createdSessionId) {
         await microphoneRef.current?.cancelTake(createdSessionId)
@@ -1813,6 +1816,10 @@ export default function App() {
     uploadMidiRef.current = null; retryUploadMidiRef.current = null
   }
 
+  /** Only a head row with something in it: an empty fragment is still "something". */
+  const headExtras = (...parts: ReactNode[]) =>
+    parts.some(Boolean) ? <>{parts.map((part, index) => <Fragment key={index}>{part}</Fragment>)}</> : undefined
+
   // A generated round says which round it is, wherever it is open.
   const roundBadge = (scoreDetail?.generated || exerciseScore?.generated) ? (
     <span className="round-context" role="status">
@@ -1887,6 +1894,18 @@ export default function App() {
     scoreDetail.sourceType === 'midi' || scoreDetail.displayMode !== 'exact_notation' ||
     scoreDetail.warnings.length > 0))
   const nextBlockedByReview = scoreDetail?.sourceType === 'midi' && !normalization?.confirmed
+  // A left-over take is announced everywhere except on the stage that already
+  // shows it with its own "analyse" and "discard" — there the banner only
+  // repeated the buttons underneath it.
+  const recoveryOnItsOwnStage = Boolean(recoveryContext && (
+    (recoveryContext.kind === 'baseline' && step === 'perform') ||
+    (recoveryContext.kind === 'retry' && step === 'compare')))
+  const discardRecoveredButton = recoveryContext?.kind === 'baseline' ? (
+    <button className="btn" onClick={discardRecoveredRecording} disabled={loading}>
+      {t('discardRecovery')}
+    </button>
+  ) : null
+
   const renderSelect = () => (
     <Stage id="score" layout="library" headExtra={roundBadge}
       main={<>
@@ -2177,7 +2196,7 @@ export default function App() {
   )
   const renderPerform = () => (
     <Stage id="perform" layout="desk"
-      headExtra={<>{uploadMode && <span className="tag">{t('uploadModeSuffix')}</span>}{roundBadge}</>}
+      headExtra={headExtras(uploadMode && <span className="tag">{t('uploadModeSuffix')}</span>, roundBadge)}
       main={meta && scoreId ? (
         <div className="score-stage">
           <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
@@ -2190,8 +2209,10 @@ export default function App() {
           disconnectRecovery('baseline')}
         {inputSource === 'microphone' && (
           <>
-            {microphonePanel}
+            {/* What you are playing leads the rail, as it does for MIDI; the
+                setup it came through is reference while you play. */}
             <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
+            {microphonePanel}
           </>
         )}
         {inputSource === 'web-midi' && (
@@ -2223,8 +2244,11 @@ export default function App() {
         back: <button className="btn" onClick={() => setStep('calibrate')} disabled={loading}>{t('back')}</button>,
         status: submissionStatus,
         primary: (
-          <button className="btn btn-primary" onClick={stopAndAnalyze}
-                  disabled={loading || !uploadMidiRef.current}>{t('submitAnalysis')}</button>
+          <>
+            {discardRecoveredButton}
+            <button className="btn btn-primary" onClick={stopAndAnalyze}
+                    disabled={loading || !uploadMidiRef.current}>{t('submitAnalysis')}</button>
+          </>
         ),
       } : inputSource === 'microphone' ? {
         status: submissionStatus ?? (
@@ -2274,6 +2298,7 @@ export default function App() {
           )),
         primary: (
           <>
+            {hasBaselineRecovery && discardRecoveredButton}
             <button className="btn" disabled={hasBaselineRecovery} onClick={async () => {
               try {
                 const player = getPlayer()
@@ -2307,7 +2332,7 @@ export default function App() {
 
   const renderExerciseDesign = () => (
     <Stage id="practice" layout="bench" heading={t('exerciseDesignTitle')}
-      headExtra={<>{practiceTrail}{roundBadge}</>}
+      headExtra={headExtras(practiceTrail, roundBadge)}
       main={<div className="exercise-designer">
         <p className="dim stage-lede">{t('exerciseDesignSubtitle')}</p>
         {selectedError && (
@@ -2399,7 +2424,7 @@ export default function App() {
   const renderExerciseResult = () => exercise && (
     <Stage id="practice" layout="bench"
       heading={exercise.aiPlan?.title || t('exerciseGeneratedTitle')}
-      headExtra={<>{practiceTrail}{roundBadge}</>}
+      headExtra={headExtras(practiceTrail, roundBadge)}
       main={scoreId && meta ? (
         <div className="generated-score score-stage">
           <ScoreViewer xmlUrl={exercise.musicXmlUrl} title={pieceTitleOf(exerciseScore)}
@@ -2470,7 +2495,7 @@ export default function App() {
   const retryLocked = !!retrySessionId && !comparison
   const renderCompare = () => (
     <Stage id="practice" layout="desk" heading={t('comparisonTitle')}
-      headExtra={<>{practiceTrail}{roundBadge}</>}
+      headExtra={headExtras(practiceTrail, roundBadge)}
       main={comparison && baselineReport && report ? (
         retryScoreMeta && retryScoreXmlUrl ? (
           <div className="retry-score-target score-stage">
@@ -2693,7 +2718,7 @@ export default function App() {
           uploaded file recovers without any MIDI events, so keying this on
           recoveredEvents left those two with a warning on every load and no
           button to clear it — the only way out was wiping storage by hand. */}
-      {recoveryContext && (
+      {recoveryContext && !recoveryOnItsOwnStage && (
         <div className="recovery-banner" role="status">
           <span>{recoveredEvents.length > 0
             ? tf('localRecovery', { count: recoveredEvents.length })

@@ -24,7 +24,7 @@ const HAND_TEXT: Record<Hand, 'liveHandLeft' | 'liveHandRight' | 'liveHandUnknow
 /** "左手 C3 · 右手 E4" — a student needs the hand, not just the pitch. */
 export function describeExpected(notes: ExpectedNote[]): string {
   return notes
-    .map((note) => `${t(HAND_TEXT[note.hand])}${noteName(note.pitch)}`.trim())
+    .map((note) => `${t(HAND_TEXT[note.hand])} ${noteName(note.pitch)}`.trim())
     .join(' · ')
 }
 

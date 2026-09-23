@@ -67,12 +67,14 @@ export function MicrophonePanel({
         : null
   return (
     <section className="microphone-panel" aria-labelledby="microphone-title">
+      {/* Flat on purpose: the grid places these beside or under each other by
+          the width of the box, so a 380px rail stacks them instead of
+          squeezing the sentence into a column beside the icon. */}
       <div className="mic-panel-heading">
-        <div className="mic-title-lockup">
-          <span className="mic-symbol" aria-hidden="true">MIC</span>
-          <div><h3 id="microphone-title">{t('microphoneTitle')}</h3><p>{t('microphoneHint')}</p></div>
-        </div>
+        <span className="mic-symbol" aria-hidden="true">MIC</span>
+        <h3 id="microphone-title">{t('microphoneTitle')}</h3>
         <span className={`mic-state ${state}`}>{t(STATE_KEYS[state])}</span>
+        <p>{t('microphoneHint')}</p>
       </div>
       <div className="mic-panel-grid">
         <div className="mic-setup-column">

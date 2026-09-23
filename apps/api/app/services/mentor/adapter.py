@@ -583,7 +583,8 @@ def _local_exercise_plan(report: DiagnosisReport, user_note: str,
                          if candidate not in recent_strategies), candidates[0])
     measures = sorted({int(error.location["measure"]) for error in errors
                        if error.id in chosen_ids})
-    title = (say("planner.titleBars", bars=say("mentor.listSeparator").join(
+    title = (say("planner.titleBar", bar=measures[0]) if len(measures) == 1
+             else say("planner.titleBars", bars=say("mentor.listSeparator").join(
                  str(measure) for measure in measures))
              if measures else say("planner.titlePassage"))
     note = user_note.strip()

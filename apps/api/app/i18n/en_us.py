@@ -284,4 +284,7 @@ MESSAGES: dict[str, str] = {
     "read.connection": "couldn't reach the score-reading service: {detail}",
     "read.unparseable": "the score-reading service sent something unreadable: {detail}",
     "read.unusable": "the reading couldn't be used: {detail}",
+
+    # ---- exercise planner title, one bar -----------------------------------
+    "planner.titleBar": "Developing the motif in bar {bar}",
 }

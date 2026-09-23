@@ -281,4 +281,7 @@ MESSAGES: dict[str, str] = {
     "read.connection": "识谱服务连接失败：{detail}",
     "read.unparseable": "识谱服务返回了无法解析的内容：{detail}",
     "read.unusable": "识谱结果无法使用：{detail}",
+
+    # ---- exercise planner title, one bar -----------------------------------
+    "planner.titleBar": "第 {bar} 小节动机发展练习",
 }

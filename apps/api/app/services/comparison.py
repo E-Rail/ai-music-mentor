@@ -10,8 +10,10 @@ from typing import Any
 from app.i18n import localized, msg
 
 
+# Every metric the comparison table shows needs a change here; dynamics was
+# missing, so its row always read blank.
 METRIC_KEYS = (
-    "pitchScore", "rhythmScore", "fluencyScore", "overallScore",
+    "pitchScore", "rhythmScore", "fluencyScore", "dynamicsScore", "overallScore",
     "timingMaeMs", "avgBpm",
 )
 SCORE_KEYS = ("pitchScore", "rhythmScore", "fluencyScore", "overallScore")
@@ -41,6 +43,7 @@ def compare_reports(baseline: dict[str, Any], retry: dict[str, Any],
     delta = {
         key: round(float(retry_metrics[key]) - float(baseline_metrics[key]), 1)
         for key in METRIC_KEYS
+        if key in retry_metrics and key in baseline_metrics
     }
 
     if target_changed:

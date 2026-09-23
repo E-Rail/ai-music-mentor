@@ -1,5 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
 
+/** Which stage the studio is on, as the player sees it: the step marked current. */
+async function expectStage(page: Page, name: string) {
+  await expect(page.getByRole('navigation', { name: '工作区' })
+    .getByRole('button', { name: new RegExp(`^${name}`) })).toHaveAttribute('aria-current', 'step')
+}
+
 const SCORE = {
   scoreId: 'test-score', title: '测试练习', composer: '', tempo: 120,
   timeSignature: '4/4', beatsPerMeasure: 4, measureCount: 1,
@@ -498,11 +504,11 @@ test('a cancelled microphone transcription restores without restarting and can r
   await expect(page.getByText(/还没分析的录音/)).toBeVisible()
   await expect(page.getByRole('button', { name: '分析已保存录音 →' })).toBeEnabled()
   await expect(page.getByRole('button', { name: '放弃录音并返回曲目' })).toBeVisible()
-  const scoreStage = page.getByRole('button', { name: /^曲目/ })
+  const scoreStage = page.getByRole('button', { name: /^选曲/ })
   await expect(scoreStage).toBeEnabled()
   page.once('dialog', (dialog) => dialog.accept())
   await scoreStage.click()
-  await expect(page.getByRole('heading', { name: '选择练习曲目' })).toBeVisible()
+  await expectStage(page, '选曲')
   await expect(page.getByText('已放弃本次录音并返回曲目。')).toBeVisible()
 })
 
@@ -532,7 +538,7 @@ test('AI chat keeps context and exercise generation loops back to design', async
   })
   await page.getByRole('button', { name: /停止并分析/ }).click()
 
-  await expect(page.getByRole('heading', { name: '诊断报告' })).toBeVisible()
+  await expectStage(page, '诊断')
   await expect(page.getByText('先处理第 1 小节的拍点延后。')).toBeVisible()
   await page.getByRole('button', { name: '根据证据，我现在应该先怎么练？' }).click()
   await expect(page.getByText(/回答：根据证据/)).toBeVisible()
@@ -547,7 +553,7 @@ test('AI chat keeps context and exercise generation loops back to design', async
   await page.getByPlaceholder(/我左手比较弱/).fill('只练左手，控制在 5 分钟。')
   await page.getByRole('button', { name: /让 AI 设计并生成/ }).click()
 
-  await expect(page.getByRole('heading', { name: '练习已经生成' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '五分钟慢速节拍练习' })).toBeVisible()
   await expect(page.getByText('五分钟慢速节拍练习')).toBeVisible()
   await expect(page.getByText(
     '终止式组合：半终止 → 阻碍终止 → 变格终止 → 正格终止',
@@ -558,18 +564,22 @@ test('AI chat keeps context and exercise generation loops back to design', async
   await expect(page.getByPlaceholder(/我左手比较弱/)).toHaveValue('只练左手，控制在 5 分钟。')
 
   await page.getByRole('button', { name: /让 AI 设计并生成/ }).click()
-  await expect(page.getByRole('heading', { name: '练习已经生成' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '五分钟慢速节拍练习' })).toBeVisible()
+  // The page to play along with is on the desk as soon as the step opens, so
+  // the player sees what they are about to play before starting.
+  const generatedRetryScore = page.waitForRequest((request) =>
+    request.url().endsWith('/api/v1/scores/practice-ex-browser/render.musicxml'))
   await page.getByRole('button', { name: /进入合奏验证/ }).click()
+  await generatedRetryScore
   const generatedRetrySession = page.waitForRequest((request) =>
     request.url().endsWith('/api/v1/sessions') &&
     request.method() === 'POST' &&
     request.postDataJSON().scoreId === 'practice-ex-browser')
-  const generatedRetryScore = page.waitForRequest((request) =>
-    request.url().endsWith('/api/v1/scores/practice-ex-browser/render.musicxml'))
   await page.getByRole('button', { name: '启动伴奏并演奏' }).click()
-  await Promise.all([generatedRetrySession, generatedRetryScore])
-  await expect(page.getByText('本轮演奏目标 · AI 生成练习')).toBeVisible()
-  await expect(page.locator('.retry-stage .score-viewer')).toContainText('AI 生成练习谱')
+  await generatedRetrySession
+  // The page on the desk is the generated round, engraved under the name the
+  // library gives it, not the original piece.
+  await expect(page.locator('.stage-practice .score-viewer')).toContainText('AI 微练习 · 第 1 轮')
 
   await page.evaluate(() => {
     (window as unknown as { __midiNote: (note: number, time: number) => void }).__midiNote(60, 9000)
@@ -598,12 +608,12 @@ test('switching songs clears the previous generated page before the next report'
   await page.getByRole('button', { name: /停止并分析/ }).click()
   await page.getByRole('button', { name: '生成练习 →', exact: true }).click()
   await page.getByRole('button', { name: /让 AI 设计并生成/ }).click()
-  await expect(page.getByRole('heading', { name: '练习已经生成' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '五分钟慢速节拍练习' })).toBeVisible()
 
   await page.getByRole('navigation', { name: '工作区' })
-    .getByRole('button', { name: /曲目/ }).click()
-  await expect(page.getByRole('heading', { name: '选择练习曲目' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '练习已经生成' })).toHaveCount(0)
+    .getByRole('button', { name: /^选曲/ }).click()
+  await expectStage(page, '选曲')
+  await expect(page.getByRole('heading', { name: '五分钟慢速节拍练习' })).toHaveCount(0)
 
   await page.getByRole('button', { name: /用户夜曲/ }).click()
   await page.getByRole('button', { name: /下一步：设备检查/ }).click()
@@ -619,9 +629,9 @@ test('switching songs clears the previous generated page before the next report'
     (window as unknown as { __midiNote: (note: number, time: number) => void }).__midiNote(60, 7000)
   })
   await page.getByRole('button', { name: /停止并分析/ }).click()
-  await expect(page.getByRole('heading', { name: '诊断报告' })).toBeVisible()
+  await expectStage(page, '诊断')
 
   await page.getByRole('button', { name: '生成练习 →', exact: true }).click()
   await expect(page.getByRole('heading', { name: '告诉 AI 你想怎么练' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '练习已经生成' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '五分钟慢速节拍练习' })).toHaveCount(0)
 })

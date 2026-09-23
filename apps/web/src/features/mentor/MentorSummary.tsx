@@ -1,5 +1,5 @@
 import type { MentorPlanItem, MentorResponse } from '../../types'
-import { t, tf } from '../../i18n/messages'
+import { labelled, percent, t, tf } from '../../i18n/messages'
 import { measureLabel, measureLabelList } from '../score/measureLabels'
 
 type MentorSummaryProps = {
@@ -69,8 +69,8 @@ export function MentorSummary({
           {response.hypotheses.map((hypothesis, index) => (
             <div key={`${hypothesis.cause}:${index}`} className="hyp">
               • {tf('hypothesisConfidence', {
-                cause: hypothesis.cause, confidence: hypothesis.confidence,
-              })}<br />{t('limitation')}{hypothesis.limitation}
+                cause: hypothesis.cause, confidence: percent(hypothesis.confidence),
+              })}<br />{labelled(t('limitationLabel'), hypothesis.limitation)}
             </div>
           ))}
         </section>

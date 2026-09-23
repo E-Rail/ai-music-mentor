@@ -72,10 +72,22 @@ test.describe('settings', () => {
 
   test('pro is a real change, not a bigger font', async ({ page }) => {
     await page.goto('/')
+    // Standard and Pro are one studio: the same type, the same corners, the
+    // same shadows. They once differed in all three, and in Standard the
+    // corner radius and shadow were not defined at all.
+    const look = () => page.evaluate(() => {
+      const button = document.querySelector('.settings-open')!
+      return [getComputedStyle(document.body).fontSize,
+        getComputedStyle(button).borderRadius,
+        getComputedStyle(document.documentElement).getPropertyValue('--lift').trim() !== '']
+    })
+    const standard = await look()
+    expect(standard[2]).toBe(true)
     await page.getByRole('button', { name: '设置' }).click()
     const dialog = page.getByRole('dialog')
     await dialog.getByRole('radio', { name: '专业' }).check()
     await expect(page.locator('html')).toHaveAttribute('data-depth', 'pro')
+    expect(await look()).toEqual(standard)
     await page.keyboard.press('Escape')
 
     await page.reload()

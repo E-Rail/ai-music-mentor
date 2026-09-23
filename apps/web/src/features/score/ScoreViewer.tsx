@@ -268,6 +268,17 @@ export function ScoreViewer(props: Props) {
     })
   }, [props.follow, cursorFraction, cursorSpan])
 
+  // Choosing a mistake in the list brings its mark into view on the page, so
+  // the list and the score can sit side by side without the player hunting.
+  useEffect(() => {
+    if (!props.selectedErrorId) return
+    const mark = followRef.current?.querySelector<HTMLElement>('.score-marker[data-selected="true"]')
+    mark?.scrollIntoView({
+      block: 'nearest', inline: 'nearest',
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    })
+  }, [props.selectedErrorId, layout])
+
   return (
     // The outer element scrolls; the inner one is what the overlays are
     // positioned against. They cannot be the same element: a scroll container
@@ -393,6 +404,8 @@ export function ScoreViewer(props: Props) {
           <button
             key={err.id}
             className="score-marker"
+            data-selected={selected ? 'true' : undefined}
+            aria-pressed={selected}
             data-measure={err.location.measure}
             data-beat={err.location.beat}
             title={`${ERROR_TYPE_LABEL[err.type] ?? err.type} · ${tf('errorPosition', {

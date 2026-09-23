@@ -1,29 +1,32 @@
-import { lazy } from 'react'
+import { lazy, useState, type ReactNode } from 'react'
 import type {
   DiagnosisReport, ErrorEvent, MentorChatResponse, MentorPlanItem, MentorResponse,
   MentorMemoryStatus,
 } from '../../types'
 import {
-  ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, joinClauses, labelled, t, tf,
+  ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, labelled, percent, t, tf,
 } from '../../i18n/messages'
-import { ProEvidence, ProHands, ProInputQuality } from './ProDetail'
+import { ProEvidence, ProHands, ProInputQuality, ProMethod, ProTempo } from './ProDetail'
 import { errorColor, errorDetailForDisplay, evidenceNotes } from './errorPresentation'
 import { MentorSummary } from '../mentor/MentorSummary'
 import { MentorChat, type MentorChatMessage } from '../mentor/MentorChat'
 import { measureLabel } from '../score/measureLabels'
+import { Stage } from '../practice/Stage'
+import { read, write, type Depth, type Preference } from '../shell/preferences'
 
 const ScoreViewer = lazy(() => import('../score/ScoreViewer').then((module) => ({
   default: module.ScoreViewer,
 })))
 
 type CoachReportProps = {
-  /** Pro opens the deeper musical reading instead of tucking it behind a click. */
-  depth: 'standard' | 'pro'
+  /** Pro adds rows to this page; it never changes how the page looks. */
+  depth: Depth
   report: DiagnosisReport
   baseline: DiagnosisReport | null
   beatsPerMeasure?: number
   scoreXmlUrl?: string
   scoreTitle?: string
+  headExtra?: ReactNode
   selectedError: ErrorEvent | null
   mentor: MentorResponse | null
   mentorLoading: boolean
@@ -45,188 +48,223 @@ type CoachReportProps = {
   onGenerateExercise: () => void
 }
 
+/**
+ * Whether "A closer look" is open — Standard starts it closed, Pro open, and
+ * after that it stays the way the player last left it, per mode.
+ */
+const CLOSER_LOOK: Record<Depth, Preference<'open' | 'closed'>> = {
+  standard: { key: 'closerLook.standard', fallback: 'closed', values: ['open', 'closed'] },
+  pro: { key: 'closerLook.pro', fallback: 'open', values: ['open', 'closed'] },
+}
+
+/**
+ * The reading of one take, beside the mentor.
+ *
+ * Left, in the order a player asks: how did it go, where on the page, what
+ * exactly, and — folded — why. Right, the mentor. Both scroll on their own, and
+ * the two ways forward stay pinned underneath, so nothing the player came here
+ * to do is ever below the fold.
+ */
 export function CoachReport({
-  depth, report, baseline, beatsPerMeasure, scoreXmlUrl, scoreTitle, selectedError,
+  depth, report, baseline, beatsPerMeasure, scoreXmlUrl, scoreTitle, headExtra, selectedError,
   mentor, mentorLoading, mentorInOtherLanguage, onRewriteMentor,
   chatMessages, chatLoading, question,
   mentorMemory,
   onChooseError, onPlayEvidence, onApplyPlan, onApplyChatAction, onAskMentor,
   onQuestionChange, onCancelChat, onForgetMemory, onRerecord, onGenerateExercise,
 }: CoachReportProps) {
-  const primary = report.errors[0]
-  const limitedEvidence = report.inputQuality?.status === 'insufficient'
+  const [closerOpen, setCloserOpen] = useState(() => read(CLOSER_LOOK[depth]) === 'open')
+  const [seenDepth, setSeenDepth] = useState(depth)
+  if (seenDepth !== depth) {
+    setSeenDepth(depth)
+    setCloserOpen(read(CLOSER_LOOK[depth]) === 'open')
+  }
+  const pro = depth === 'pro'
+  const warnings = report.warnings ?? []
   return (
-    <div className="panel coach-panel">
-      <h2>{t('reportTitle')}</h2>
-      <div className={`final-report-banner ${limitedEvidence ? 'limited' : 'ready'}`}>
-        <strong>{limitedEvidence ? t('finalReportLimited') : t('finalReportReady')}</strong>
-      </div>
-      <MetricsView report={report} baseline={baseline} />
-      <div className="primary-issue-card">
-        <span className="training-kicker">{t('currentRoundAiKicker')}</span>
-        <h3>{limitedEvidence
-          ? t('limitedMetricsTitle')
-          : primary
-          ? `${ERROR_TYPE_LABEL[primary.type] ?? primary.type} · ${tf('errorPosition', {
-              measure: measureLabel(primary.location.measure),
-              beat: primary.location.beat + 1,
-              severity: SEVERITY_LABEL[primary.severity],
-            })}`
-          : t('noErrors')}</h3>
-        {report.inputQuality && (
-          <div className={`input-quality ${report.inputQuality.status}`}>
-            <strong>{labelled(t('inputQualityTitle'), {
-              high: t('inputQualityHigh'), medium: t('inputQualityMedium'),
-              low: t('inputQualityLow'), insufficient: t('inputQualityInsufficient'),
-            }[report.inputQuality.status])}</strong>
-            <span>{tf('inputQualityConfidence', {
-              value: Math.round(report.inputQuality.confidence * 100) })}</span>
-          </div>
+    <Stage id="review" layout="review" headExtra={headExtra}
+      main={<div className="review-main">
+        <Scoreline report={report} baseline={baseline} />
+        {warnings.length > 0 && (
+          <ul className="report-warnings" role="note">
+            {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+          </ul>
         )}
-      </div>
-      {!!report.warnings?.length && (
-        <div className="report-warnings">
-          {report.warnings.map((warning) => (
-            <div className="alert alert-warn" key={warning}>{warning}</div>
-          ))}
-        </div>
-      )}
-      {baseline && baseline.scoreId !== report.scoreId && (
-        <div className="dim lineage-metric-note">{t('lineageMetricNotice')}</div>
-      )}
-
-      <div className="coach-workspace">
-        <div className="coach-evidence-column">
-          {scoreXmlUrl && beatsPerMeasure && (
+        {baseline && baseline.scoreId !== report.scoreId && (
+          <div className="dim lineage-metric-note">{t('lineageMetricNotice')}</div>
+        )}
+        {scoreXmlUrl && beatsPerMeasure && (
+          <div className="score-stage">
             <ScoreViewer
               xmlUrl={scoreXmlUrl} beatsPerMeasure={beatsPerMeasure} title={scoreTitle}
               errors={report.errors} selectedErrorId={selectedError?.id}
               onErrorClick={onChooseError}
             />
-          )}
+          </div>
+        )}
+        <section className="report-section">
           <h3>{tf('errorList', { count: report.errors.length })}</h3>
           <div className="error-list">
             {report.errors.map((error) => {
               const displayDetail = errorDetailForDisplay(error, report.evidences)
+              const chosen = selectedError?.id === error.id
               return (
-                <button type="button" key={error.id}
-                        className={`error-item ${selectedError?.id === error.id ? 'selected' : ''}`}
-                        onClick={() => onChooseError(error)}>
-                  <span className="badge" style={{ background: errorColor(error.type) }}>
-                    {ERROR_TYPE_LABEL[error.type] ?? error.type}
-                  </span>
-                  <span className="desc">
-                    {tf('errorPosition', {
-                      measure: measureLabel(error.location.measure),
-                      beat: error.location.beat + 1,
-                      severity: SEVERITY_LABEL[error.severity],
-                    })}
-                    {displayDetail && ` · ${displayDetail}`}
-                  </span>
-                  <span className="conf">{tf('confidence', { value: error.confidence })}</span>
-                </button>
+                <div key={error.id} className={`error-entry ${chosen ? 'open' : ''}`}>
+                  <button type="button"
+                          className={`error-item ${chosen ? 'selected' : ''}`}
+                          aria-expanded={chosen}
+                          onClick={() => onChooseError(error)}>
+                    <span className="badge" style={{ background: errorColor(error.type) }}>
+                      {ERROR_TYPE_LABEL[error.type] ?? error.type}
+                    </span>
+                    <span className="desc">
+                      {tf('errorPosition', {
+                        measure: measureLabel(error.location.measure),
+                        beat: error.location.beat + 1,
+                        severity: SEVERITY_LABEL[error.severity],
+                      })}
+                      {displayDetail && ` · ${displayDetail}`}
+                    </span>
+                    {pro && <span className="conf">{tf('confidence', { value: percent(error.confidence) })}</span>}
+                  </button>
+                  {/* The evidence opens under the mistake it belongs to, not
+                      after a list that can run to fifty rows. */}
+                  {chosen && (
+                    <EvidenceDrawer report={report} error={error} onPlayCompare={onPlayEvidence} />
+                  )}
+                </div>
               )
             })}
             {report.errors.length === 0 && <div className="dim">{t('noErrors')}</div>}
           </div>
-          {selectedError && (
-            <EvidenceDrawer report={report} error={selectedError} onPlayCompare={onPlayEvidence} />
-          )}
-          <details className="technical-details" open={depth === 'pro'}>
-            <summary>{t('musicalDetails')}</summary>
-            <div className="evidence-layers">
-              <section>
-                <h3>{t('verifiableFacts')}</h3>
-                <p>{tf('evidenceCount', { count: report.evidences.length })}</p>
-              </section>
-              {/* Standard says how many things were noticed; Pro says what they
-                  were. The list, the hands and the reading quality are all
-                  already in this report — they were simply never drawn. */}
-              {depth === 'pro' && (
-                <>
-                  <ProEvidence report={report} measureLabel={measureLabel} />
-                  <ProHands report={report} />
-                  <ProInputQuality report={report} />
-                </>
-              )}
-              <section>
-                <h3>{t('repeatedPatterns')}</h3>
-                <p>{report.patterns.length
-                  ? joinClauses(report.patterns.map((pattern) => tf('repeatedPattern', {
-                      description: pattern.description, count: pattern.sampleCount,
-                    })))
-                  : t('noRepeatedPattern')}</p>
-              </section>
-              <section>
-                <h3>{t('possibleCauses')}</h3>
-                <p>{report.hypotheses.length
-                  ? joinClauses(report.hypotheses.map((hypothesis) => tf('hypothesisConfidence', {
-                      cause: hypothesis.cause, confidence: hypothesis.confidence,
-                    })))
-                  : t('insufficientEvidence')}</p>
-              </section>
-            </div>
-          </details>
-        </div>
-        <aside className="coach-mentor-column">
-          <MentorSummary response={mentor} loading={mentorLoading} onApplyPlan={onApplyPlan}
-                         otherLanguage={mentorInOtherLanguage} onRewrite={onRewriteMentor} />
-          <MentorChat
-            messages={chatMessages} loading={chatLoading} question={question}
-            onQuestionChange={onQuestionChange} onAsk={onAskMentor}
-            onCancel={onCancelChat} onApplyAction={onApplyChatAction}
-            memory={mentorMemory} onForgetMemory={onForgetMemory}
-          />
-        </aside>
-      </div>
-
-      <div className="flex mt-20 between">
-        <button className="btn" onClick={onRerecord}>{t('rerecord')}</button>
-        <button className="btn btn-primary" onClick={onGenerateExercise}>
-          {t('generateExerciseNext')}
-        </button>
-      </div>
-    </div>
+        </section>
+        <details className="technical-details" open={closerOpen}
+                 onToggle={(event) => {
+                   const open = event.currentTarget.open
+                   setCloserOpen(open)
+                   write(CLOSER_LOOK[depth], open ? 'open' : 'closed')
+                 }}>
+          <summary>{t('musicalDetails')}</summary>
+          <div className="closer-look">
+            <section className="report-section">
+              <h3>{t('repeatedPatterns')}</h3>
+              {report.patterns.length ? (
+                <ul className="fact-list plain">
+                  {report.patterns.map((pattern) => (
+                    <li key={pattern.id}><span className="fact-text">{pattern.description}</span></li>
+                  ))}
+                </ul>
+              ) : <p className="dim">{t('noRepeatedPattern')}</p>}
+            </section>
+            {pro ? (
+              <>
+                <ProTempo report={report} />
+                <ProHands report={report} />
+                <ProEvidence report={report} measureLabel={measureLabel} />
+                <ProInputQuality report={report} />
+                <ProMethod report={report} />
+              </>
+            ) : (
+              <p className="dim closer-look-more">{tf('evidenceCount', { count: report.evidences.length })}</p>
+            )}
+          </div>
+        </details>
+      </div>}
+      aside={<div className="coach-mentor-column">
+        <MentorSummary response={mentor} loading={mentorLoading} onApplyPlan={onApplyPlan}
+                       otherLanguage={mentorInOtherLanguage} onRewrite={onRewriteMentor} />
+        <MentorChat
+          messages={chatMessages} loading={chatLoading} question={question}
+          onQuestionChange={onQuestionChange} onAsk={onAskMentor}
+          onCancel={onCancelChat} onApplyAction={onApplyChatAction}
+          memory={mentorMemory} onForgetMemory={onForgetMemory}
+        />
+      </div>}
+      actions={{
+        back: <button className="btn" onClick={onRerecord}>{t('rerecord')}</button>,
+        primary: (
+          <button className="btn btn-primary" onClick={onGenerateExercise}>
+            {t('generateExerciseNext')}
+          </button>
+        ),
+      }}
+    />
   )
 }
 
-function MetricsView({ report, baseline }: {
+const SCORELINE_METRICS = [
+  'pitchScore', 'rhythmScore', 'fluencyScore', 'dynamicsScore', 'timingMaeMs', 'avgBpm',
+] as const
+
+/**
+ * How the take went, on one line: the overall number, the six that make it
+ * up, and where to start. It replaces a banner, a row of seven tiles and a
+ * card that between them took a third of the screen before the score began.
+ */
+function Scoreline({ report, baseline }: {
   report: DiagnosisReport
   baseline: DiagnosisReport | null
 }) {
-  if (report.inputQuality?.status === 'insufficient') {
+  const quality = report.inputQuality
+  const qualityChip = quality && (
+    <span className={`quality-chip ${quality.status}`}>
+      {labelled(t('inputQualityTitle'), {
+        high: t('inputQualityHigh'), medium: t('inputQualityMedium'),
+        low: t('inputQualityLow'), insufficient: t('inputQualityInsufficient'),
+      }[quality.status])}
+    </span>
+  )
+  if (quality?.status === 'insufficient') {
     return (
-      <div className="limited-metrics-card">
-        <strong>{t('limitedMetricsTitle')}</strong>
-        <p>{t('limitedMetricsBody')}</p>
-        <span>{tf('inputQualityNotes', {
-          count: report.inputQuality.acceptedNoteCount })}</span>
+      <div className="scoreline limited">
+        <div className="scoreline-focus">
+          <strong>{t('limitedMetricsTitle')}</strong>
+          <span>{t('limitedMetricsBody')}</span>
+          <span className="dim">{tf('inputQualityNotes', { count: quality.acceptedNoteCount })}</span>
+        </div>
+        {qualityChip}
       </div>
     )
   }
   const metrics = report.metrics
-  const hasComparableBaseline = Boolean(baseline && baseline.scoreId === report.scoreId)
+  const comparable = Boolean(baseline && baseline.scoreId === report.scoreId)
+  const delta = (key: keyof typeof metrics) => {
+    if (!baseline || !comparable || baseline.metrics[key] === metrics[key]) return null
+    const change = metrics[key] - baseline.metrics[key]
+    const better = key === 'timingMaeMs' ? change < 0 : change > 0
+    return (
+      <span className={`delta ${better ? 'pos' : 'neg'}`}>
+        {change > 0 ? '+' : ''}{change.toFixed(1)}
+      </span>
+    )
+  }
+  const primary = report.errors[0]
   return (
-    <div className="metrics-grid">
-      {([
-        'overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore', 'dynamicsScore',
-        'timingMaeMs', 'avgBpm',
-      ] as const).map((key) => (
-        <div key={key} className="metric">
-          <div className="label">{METRIC_LABEL[key]}</div>
-          <div className="value">{metrics[key]}</div>
-          {baseline && hasComparableBaseline && baseline.metrics[key] !== metrics[key] && (
-            <div className="delta" style={{ color:
-              (key === 'timingMaeMs'
-                ? metrics[key] < baseline.metrics[key]
-                : metrics[key] > baseline.metrics[key]) ? 'var(--green)' : 'var(--red)',
-            }}>
-              {metrics[key] > baseline.metrics[key] ? '+' : ''}
-              {(metrics[key] - baseline.metrics[key]).toFixed(1)}
-            </div>
-          )}
-        </div>
-      ))}
+    <div className="scoreline">
+      <div className="scoreline-overall">
+        <span className="label">{METRIC_LABEL.overallScore}</span>
+        <span className="value">{metrics.overallScore}</span>
+        {delta('overallScore')}
+      </div>
+      <dl className="scoreline-metrics">
+        {SCORELINE_METRICS.map((key) => (
+          <div key={key}>
+            <dt>{METRIC_LABEL[key]}</dt>
+            <dd>{metrics[key]}{delta(key)}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="scoreline-focus">
+        <span className="eyebrow">{t('startHere')}</span>
+        <strong>{primary
+          ? `${ERROR_TYPE_LABEL[primary.type] ?? primary.type} · ${tf('errorPosition', {
+              measure: measureLabel(primary.location.measure),
+              beat: primary.location.beat + 1,
+              severity: SEVERITY_LABEL[primary.severity],
+            })}`
+          : t('noErrors')}</strong>
+        {qualityChip}
+      </div>
     </div>
   )
 }
@@ -238,28 +276,34 @@ function EvidenceDrawer({ report, error, onPlayCompare }: {
 }) {
   const evidences = report.evidences.filter((evidence) => error.evidenceIds.includes(evidence.id))
   return (
-    <div className="evidence-box">
-      <h3 style={{ margin: '0 0 8px' }}>{t('evidenceDetails')}</h3>
-      {evidences.map((evidence) => (
-        <div key={evidence.id} className="fact">
-          • {evidence.fact}
-          <div className="compare">
-            {evidenceNotes(evidence, 'expected').length > 0 && (
-              <button className="btn btn-sm"
-                      onClick={() => onPlayCompare(evidenceNotes(evidence, 'expected'))}>
-                {t('hearExpected')}
-              </button>
-            )}
-            {evidenceNotes(evidence, 'actual').length > 0 && (
-              <button className="btn btn-sm"
-                      onClick={() => onPlayCompare(evidenceNotes(evidence, 'actual'))}>
-                {t('hearActual')}
-              </button>
-            )}
-          </div>
-        </div>
-      ))}
-      {evidences.length === 0 && <div className="dim">{t('noDetailedEvidence')}</div>}
-    </div>
+    <section className="evidence-box" aria-label={t('evidenceDetails')}>
+      {evidences.length === 0 ? <p className="dim">{t('noDetailedEvidence')}</p> : (
+        <ul className="fact-list">
+          {evidences.map((evidence) => {
+            const expected = evidenceNotes(evidence, 'expected')
+            const actual = evidenceNotes(evidence, 'actual')
+            return (
+              <li key={evidence.id}>
+                <span className="fact-text">{evidence.fact}</span>
+                {(expected.length > 0 || actual.length > 0) && (
+                  <span className="fact-actions">
+                    {expected.length > 0 && (
+                      <button className="btn btn-sm" onClick={() => onPlayCompare(expected)}>
+                        {t('hearExpected')}
+                      </button>
+                    )}
+                    {actual.length > 0 && (
+                      <button className="btn btn-sm" onClick={() => onPlayCompare(actual)}>
+                        {t('hearActual')}
+                      </button>
+                    )}
+                  </span>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
 }

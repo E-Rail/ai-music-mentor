@@ -65,6 +65,9 @@ export const joinPhrases = (items: readonly (string | number)[]): string =>
 export const joinClauses = (items: readonly (string | number)[]): string =>
   items.join(t('clauseSeparator'))
 
+/** A 0–1 confidence as people say it: 39%, not 0.387. */
+export const percent = (fraction: number): string => `${Math.round(fraction * 100)}%`
+
 /** "Input quality: high" */
 export const labelled = (label: string, value: string | number): string =>
   tf('labelValue', { label, value })

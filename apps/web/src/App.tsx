@@ -20,7 +20,9 @@ import { MicrophoneCapture, type MicrophonePreview, type MicrophoneState } from 
 import { MicrophonePanel } from './features/microphone/MicrophonePanel'
 import type { InputDeviceDescriptor } from './features/input/PerformanceInputAdapter'
 import { MidiUploadInputAdapter } from './features/input/MidiUploadInputAdapter'
-import { StudioStepper, type StudioStage } from './features/practice/StudioStepper'
+import { StudioStepper } from './features/practice/StudioStepper'
+import { Stage } from './features/practice/Stage'
+import { stageOf, type StageId, type Step } from './features/practice/stages'
 import { LivePanel } from './features/live/LivePanel'
 import {
   LivePerformanceTracker, idleLiveState, type LivePerformanceState,
@@ -41,7 +43,8 @@ import {
   initialWorkflowState, workflowReducer, type WorkflowPhase,
 } from './workflow/machine'
 import {
-  CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, getLocale, t, tf,
+  CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, getLocale, instrumentLabel,
+  t, tf,
 } from './i18n/messages'
 import type { Locale } from './features/shell/preferences'
 import { withEmbeddedNote } from './features/shell/embedding'
@@ -51,7 +54,6 @@ const ScoreViewer = lazy(() => import('./features/score/ScoreViewer').then((modu
   default: module.ScoreViewer,
 })))
 
-type Step = 'select' | 'calibrate' | 'perform' | 'report' | 'exercise' | 'compare'
 type CalibrationStatus = {
   noteCount: number
   centerC: boolean
@@ -810,6 +812,11 @@ export default function App() {
 
   // ---- 选曲 ----
   const selectScore = async (id: string) => {
+    // Choosing the piece that is already open is not a new start.
+    if (id === scoreId && scoreDetail) {
+      if (step !== 'select') setStep('select')
+      return
+    }
     const requestId = ++scoreLoadRequestRef.current
     setLoading(true); clearNotices()
     try {
@@ -1020,8 +1027,11 @@ export default function App() {
           ...context, uploadedMidiRef: r.uploadedMidiRef,
           uploadedFileName: file.name, savedAt: Date.now(),
         }
+        // Saved for a reload, not announced: the take is on screen, being
+        // uploaded right now. The "left-over take" banner is for one found
+        // after the page was closed, and showing it here offered to discard
+        // the very take the player was in the middle of.
         writeRecoveryContext(updated)
-        setRecoveryContext(updated)
       }
     } catch (e) { notify('error', () => tf('uploadFailed', { detail: (e as Error).message })) }
     setLoading(false)
@@ -1456,7 +1466,6 @@ export default function App() {
           uploadedFileName: file.name, savedAt: Date.now(),
         }
         writeRecoveryContext(updated)
-        setRecoveryContext(updated)
       }
       notify('success', () => tf('retryMidiUploaded', { name: file.name }))
     } catch (error) {
@@ -1618,10 +1627,8 @@ export default function App() {
   const hasSavedMicrophoneTake = inputSource === 'microphone' && !recording &&
     microphoneState !== 'transcribing' &&
     Boolean(microphoneRef.current?.hasTake(activeCaptureSessionId))
-  const studioStage: StudioStage = step === 'select' ? 'score'
-    : step === 'calibrate' ? 'input'
-      : step === 'perform' ? 'perform' : 'coach'
-  const canOpenStudioStage = (stage: StudioStage) => {
+  const studioStage: StageId = stageOf(step).id
+  const canOpenStudioStage = (stage: StageId) => {
     if (loading || workflow.phase === 'count_in' || workflow.phase === 'analysis') {
       return stage === studioStage
     }
@@ -1631,27 +1638,54 @@ export default function App() {
     if (stage === 'score') return true
     if (stage === 'input') return Boolean(scoreId)
     if (stage === 'perform') return Boolean(sessionId) && step === 'perform'
-    return Boolean(report)
+    if (stage === 'review') return Boolean(report)
+    return Boolean(report || baselineReport)
   }
-  const openStudioStage = (stage: StudioStage) => {
-    if (!canOpenStudioStage(stage)) return
+  /** Back into the practice loop where it was left: comparing, or at the bench. */
+  const openPractice = () => {
+    if (comparison || retrySessionId) setStep('compare')
+    else if (exercise || baselineReport) setStep('exercise')
+    else openExerciseDesigner()
+  }
+  const openStudioStage = (stage: StageId) => {
+    if (!canOpenStudioStage(stage) || stage === studioStage) return
     if (stage === 'score') {
       if (workflow.capture !== null) {
         if (!hasSavedMicrophoneTake) return
         void discardCaptureAndReturnToScores()
         return
       }
-      const openSessions = [sessionId, retrySessionId].filter(
-        (value): value is string => Boolean(value))
-      openSessions.forEach((activeSessionId) => {
-        void api.discardSession(activeSessionId).catch(() => {})
-      })
-      resetPracticeBlock()
-      sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
+      // Looking at the library is not starting over. It used to be: this tab
+      // silently threw away the report, the conversation and the exercise.
+      // The round now stays — Review and Practice remain one click away — until
+      // a different piece is actually chosen. Only a take that was opened and
+      // never submitted is let go, since there is no way back to it.
+      if (step === 'perform' && sessionId) {
+        void api.discardSession(sessionId).catch(() => {})
+      }
+      setStep('select')
     }
     else if (stage === 'input') setStep('calibrate')
     else if (stage === 'perform') setStep('perform')
-    else setStep('report')
+    else if (stage === 'review') setStep('report')
+    else openPractice()
+  }
+  /**
+   * "Record again" means record again. When the instrument is still connected
+   * and checked there is nothing to set up, so the take starts; only when it is
+   * not does the player go back through Input.
+   */
+  const inputReady = inputSource === 'midi-upload' ||
+    (inputSource === 'microphone' && microphoneState === 'ready') ||
+    (inputSource === 'web-midi' && Boolean(selectedInput) && workflow.deviceConnected &&
+      calibration.centerC && calibration.noteCount >= 5)
+  const recordAgain = () => {
+    if (!inputReady) {
+      setStep('calibrate')
+      return
+    }
+    sendWorkflow({ type: 'START_DEVICE_SETUP' })
+    void startSession()
   }
   const clearGeneratedExercises = async () => {
     if (!window.confirm(t('clearGeneratedExercisesConfirm'))) return
@@ -1768,287 +1802,312 @@ export default function App() {
   const [uiScale, setUiScale] = useDepth()
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  return (
-    <div className="app">
-      <div className="header">
-        <h1>{t('appName')}</h1>
-        <span className="subtitle">{t('appSubtitle')}</span>
-        <span className="spacer" />
-        <button type="button" className="btn btn-sm settings-open"
-                aria-haspopup="dialog" aria-expanded={settingsOpen}
-                title={t('settingsOpen')} aria-label={t('settingsOpen')}
-                onClick={() => setSettingsOpen(true)}>⚙</button>
+  const startOver = () => {
+    sendWorkflow({ type: 'RESET' }); setReport(null); setBaselineReport(null); setComparison(null)
+    setMentorChat([]); setMentorMemory(null); setExercise(null); setExerciseStage('design'); setGenerationNote('')
+    setExerciseScore(null); setRetrySessionId(null); setCursor(null); setRecording(false)
+    recordingRef.current = false; setSubmissionStage('idle')
+    liveRef.current.reset(); setLiveTrace([])
+    setLiveFeedback(idleLiveState('web-midi'))
+    setScoreId(null); setScoreDetail(null); setNormalization(null); setMeta(null); setEvents([])
+    uploadMidiRef.current = null; retryUploadMidiRef.current = null
+  }
+
+  // A generated round says which round it is, wherever it is open.
+  const roundBadge = (scoreDetail?.generated || exerciseScore?.generated) ? (
+    <span className="round-context" role="status">
+      <span>{tf('roundContext', {
+        round: exerciseScore?.lineageDepth ?? scoreDetail?.lineageDepth ?? 1,
+      })}</span>
+    </span>
+  ) : null
+
+  const submissionStatus = loading && submissionStage !== 'idle' && submissionStage !== 'complete' ? (
+    <span className={`submission-status ${submissionStage}`} role="status">
+      <span className="submission-spinner" />
+      {submissionStage === 'transcribing'
+        ? tf('transcriptionProgress', { value: Math.round(transcriptionProgress * 100) })
+        : submissionStage === 'analyzing' ? t('submissionAnalyzing') : t('submissionSaving')}
+    </span>
+  ) : null
+
+  const microphonePanel = (
+    <MicrophonePanel
+      state={microphoneState} devices={microphoneDevices}
+      selectedDeviceId={selectedMicrophoneId} instrument={instrument}
+      preview={microphonePreview} progress={transcriptionProgress} busy={loading}
+      errorDetail={microphoneError}
+      previewMode={microphoneRef.current?.previewMode ?? 'unavailable'}
+      onConnect={() => void connectMicrophone()}
+      onCancelConnect={cancelMicrophoneConnect}
+      onSelectDevice={(deviceId) => {
+        setSelectedMicrophoneId(deviceId)
+        void connectMicrophone(deviceId)
+      }}
+      onInstrumentChange={setInstrument}
+      onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
+      sensitivity={micSensitivity}
+      sensitivityPinned={micSensitivityPinned}
+      onSensitivityChange={(value) => {
+        setMicSensitivity(value)
+        setMicSensitivityPinned(true)
+        microphoneRef.current?.setDetectionSensitivity(value)
+      }}
+    />
+  )
+
+  const disconnectRecovery = (kind: 'baseline' | 'retry') => (
+    <div className="disconnect-recovery" role="alert">
+      <strong>{kind === 'retry' ? t('retryDisconnected') : t('midiDisconnectedCursorFrozen')}</strong>
+      <span>{t('capturedSafe')}</span>
+      <div className="device-grid compact">
+        {inputs.map((name) => (
+          <button type="button" key={name} className="device-item"
+                  onClick={() => pickInput(name)}>{name}</button>
+        ))}
       </div>
+      <div className="flex">
+        <button className="btn btn-sm" onClick={refreshMidiInputs}>{t('rescanDevices')}</button>
+        {kind === 'baseline' && (
+          <button className="btn btn-sm" onClick={stopAndAnalyze}>{t('submitCurrentRecording')}</button>
+        )}
+        <button className="btn btn-danger btn-sm" onClick={discardActiveCapture}>
+          {kind === 'retry' ? t('discardRetry') : t('discardCurrentRecording')}
+        </button>
+      </div>
+    </div>
+  )
 
-      <NoticeStack notices={notices} onDismiss={dismissNotice} />
-
-      <SettingsDialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        theme={theme} onTheme={setTheme}
-        finish={finish} onFinish={setFinish}
-        locale={locale} onLocale={setLocale}
-        depth={uiScale} onDepth={setUiScale}
-      />
-
-      <StudioStepper active={studioStage} canOpen={canOpenStudioStage}
-                     onOpen={openStudioStage} />
-
-      <div className="app-body scroll-pane">
-      {(scoreDetail?.generated || exerciseScore?.generated) && (
-        <div className="round-context" role="status">
-          <span>{tf('roundContext', {
-            round: exerciseScore?.lineageDepth ?? scoreDetail?.lineageDepth ?? 1,
-          })}</span>
-          <strong>{exerciseScore?.metadata.title ?? scoreDetail?.metadata.title}</strong>
-        </div>
-      )}
-
-      {workflow.lastRejection === 'CAPTURE_ACTIVE' && (
-        <div className="alert alert-warn" role="alert">{t('captureActiveGuard')}</div>
-      )}
-      {/* Gated on the context, not on the note count. A microphone take or an
-          uploaded file recovers without any MIDI events, so keying this on
-          recoveredEvents left those two with a warning on every load and no
-          button to clear it — the only way out was wiping storage by hand. */}
-      {recoveryContext && (
-        <div className="recovery-banner" role="status">
-          <span>{recoveredEvents.length > 0
-            ? tf('localRecovery', { count: recoveredEvents.length })
-            : t('localRecoveryTake')}</span>
-          <button type="button" className="btn btn-sm" onClick={discardRecoveredRecording}
-                  disabled={loading}>{t('discardRecovery')}</button>
-        </div>
-      )}
-
-      <Suspense fallback={<div className="panel score-loading">{t('scoreEngineLoading')}</div>}>
-      {/* Step 1: 选曲 */}
-      {step === 'select' && (
-        <div className="panel fills-pane">
-          <h2>{t('scorePickerTitle')}</h2>
-          <div className={`select-workspace ${scoreDetail ? 'with-detail' : ''}`}>
-          <div className="select-library scroll-pane">
-          <section className="library-section" aria-labelledby="demo-library-title">
-            <div className="library-heading">
-              <div>
-                <h3 id="demo-library-title">{t('demoLibraryTitle')}</h3>
-                <p className="dim">{t('demoLibraryHint')}</p>
-              </div>
-              <span className="library-count">{scoreLibrary.demos.length}</span>
+  // --- 1 · the piece -------------------------------------------------------
+  // An exact MusicXML file has nothing to review: its tempo and metre are the
+  // engraver's, and the form showed them greyed out beside a 100% badge. Only
+  // an import that made guesses — a MIDI file, a photographed page — or one
+  // that has something to say, asks to be checked.
+  const importNeedsReview = Boolean(scoreDetail && normalization && (
+    scoreDetail.sourceType === 'midi' || scoreDetail.displayMode !== 'exact_notation' ||
+    scoreDetail.warnings.length > 0))
+  const nextBlockedByReview = scoreDetail?.sourceType === 'midi' && !normalization?.confirmed
+  const renderSelect = () => (
+    <Stage id="score" layout="library" headExtra={roundBadge}
+      main={<>
+        <section className="library-section" aria-labelledby="demo-library-title">
+          <div className="library-heading">
+            <div>
+              <h3 id="demo-library-title">{t('demoLibraryTitle')}</h3>
+              <p className="dim">{t('demoLibraryHint')}</p>
             </div>
+            <span className="library-count">{scoreLibrary.demos.length}</span>
+          </div>
+          <div className="score-list">
+            {scoreLibrary.demos.map((score) => renderScoreCard(score))}
+          </div>
+        </section>
+
+        <section className="library-section" aria-labelledby="upload-library-title">
+          <div className="library-heading">
+            <div>
+              <h3 id="upload-library-title">{t('uploadedLibraryTitle')}</h3>
+              <p className="dim">{t('uploadedLibraryHint')}</p>
+            </div>
+            <span className="library-count">{scoreLibrary.uploads.length}</span>
+          </div>
+          {scoreLibrary.uploads.length > 0 && (
             <div className="score-list">
-              {scoreLibrary.demos.map((score) => renderScoreCard(score))}
+              {scoreLibrary.uploads.map((score) => renderScoreCard(score))}
             </div>
-          </section>
-
-          <section className="library-section" aria-labelledby="upload-library-title">
-            <div className="library-heading">
-              <div>
-                <h3 id="upload-library-title">{t('uploadedLibraryTitle')}</h3>
-                <p className="dim">{t('uploadedLibraryHint')}</p>
-              </div>
-              <span className="library-count">{scoreLibrary.uploads.length}</span>
-            </div>
-            {scoreLibrary.uploads.length > 0 ? (
-              <div className="score-list">
-                {scoreLibrary.uploads.map((score) => renderScoreCard(score))}
-              </div>
-            ) : <div className="library-empty">{t('uploadedLibraryEmpty')}</div>}
-          </section>
-
-          {scoreLibrary.generated.length > 0 && (
-            <details className="generated-library">
-              <summary>
-                <span className="generated-library-icon" aria-hidden="true">✦</span>
-                <span className="generated-library-copy">
-                  <strong>{t('generatedLibraryTitle')}</strong>
-                  <small>{t('generatedLibraryHint')}</small>
-                </span>
-                <span className="library-count">{scoreLibrary.generated.length}</span>
-              </summary>
-              <div className="generated-library-actions">
-                <span>{t('clearGeneratedExercisesHint')}</span>
-                <button type="button" className="btn btn-danger btn-sm"
-                        disabled={loading} onClick={clearGeneratedExercises}>
-                  {t('clearGeneratedExercises')}
-                </button>
-              </div>
-              <div className="score-list compact-list">
-                {scoreLibrary.generated.map((score) => renderScoreCard(score, true))}
-              </div>
-            </details>
           )}
-          <h3>{t('uploadScoreTitle')}</h3>
-          <p className="dim">{t('uploadScoreHint')}</p>
-          <UploadZone onFile={importScore}
+          <UploadZone onFile={importScore} hint={t('uploadScoreHint')}
                       accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.webp"
                       disabled={loading} />
+        </section>
+
+        {scoreLibrary.generated.length > 0 && (
+          <details className="generated-library">
+            <summary>
+              <span className="generated-library-icon" aria-hidden="true">✦</span>
+              <span className="generated-library-copy">
+                <strong>{t('generatedLibraryTitle')}</strong>
+                <small>{t('generatedLibraryHint')}</small>
+              </span>
+              <span className="library-count">{scoreLibrary.generated.length}</span>
+            </summary>
+            <div className="generated-library-actions">
+              <span>{t('clearGeneratedExercisesHint')}</span>
+              <button type="button" className="btn btn-danger btn-sm"
+                      disabled={loading} onClick={clearGeneratedExercises}>
+                {t('clearGeneratedExercises')}
+              </button>
+            </div>
+            <div className="score-list compact-list">
+              {scoreLibrary.generated.map((score) => renderScoreCard(score, true))}
+            </div>
+          </details>
+        )}
+      </>}
+      aside={meta && scoreId ? <>
+        <div className="piece-head">
+          <div>
+            <h3>{pieceTitleOf(scoreDetail)}</h3>
+            <small>{tf('scoreMeta', {
+              measures: meta.measureCount, tempo: meta.tempo, meter: meta.timeSignature,
+            })}</small>
           </div>
-          <div className="select-detail scroll-pane">
-          {scoreDetail && normalization && (
-            <section className="import-review" aria-labelledby="import-review-title">
-              <div className="review-heading">
-                <div>
-                  <h3 id="import-review-title">{t('importReview')}</h3>
-                  <p className="dim">{t('importReviewHint')}</p>
-                </div>
-                <span className={`display-badge ${
-                  scoreDetail.displayMode === 'exact_notation' ? 'exact' : 'simplified'}`}>
-                  {scoreDetail.displayMode === 'exact_notation' ? t('exactNotation') : t('simplifiedNotation')}
-                </span>
+          {scoreDetail && (
+            <span className={`display-badge ${
+              scoreDetail.displayMode === 'exact_notation' ? 'exact' : 'simplified'}`}>
+              {scoreDetail.displayMode === 'exact_notation' ? t('exactNotation') : t('simplifiedNotation')}
+            </span>
+          )}
+        </div>
+        {importNeedsReview && scoreDetail && normalization && (
+          <section className="import-review" aria-labelledby="import-review-title">
+            <div className="review-heading">
+              <div>
+                <h3 id="import-review-title">{t('importReview')}</h3>
+                <p className="dim">{t('importReviewHint')}</p>
               </div>
-              {scoreDetail.displayMode === 'simplified_quantized_staff' && (
-                <div className="alert alert-info">
-                  {isReadFromPage(scoreDetail) ? t('readNotice') : t('simplifiedNotice')}
-                </div>
-              )}
-              {!!scoreDetail.warnings.length && (
-                <ul className="warning-list">
-                  {scoreDetail.warnings.map((warning) => <li key={warning}>{warning}</li>)}
-                </ul>
-              )}
-              <div className="review-grid">
-                <label>{t('tempoBpm')}
-                  <input type="number" min={20} max={300} value={normalization.tempo}
-                         disabled={scoreDetail.sourceType !== 'midi'}
-                         onChange={(e) => setNormalization({ ...normalization,
-                           tempo: Number(e.target.value), confirmed: false })} />
-                </label>
-                <label>{t('timeSignature')}
-                  <input value={normalization.timeSignature}
-                         disabled={scoreDetail.sourceType !== 'midi'}
-                         onChange={(e) => setNormalization({ ...normalization,
-                           timeSignature: e.target.value, confirmed: false })} />
-                </label>
-                <label>{t('quantizationGrid')}
-                  <select value={normalization.quantization}
-                          disabled={scoreDetail.sourceType !== 'midi'}
-                          onChange={(e) => setNormalization({ ...normalization,
-                            quantization: e.target.value as ScoreNormalization['quantization'], confirmed: false })}>
-                    {['1/8', '1/12', '1/16', '1/24', '1/32'].map((value) => (
-                      <option key={value} value={value}>{value}</option>
-                    ))}
-                  </select>
-                </label>
-                <div className="confidence-field">
-                  <span>{t('importConfidence')}</span>
-                  <strong>{Math.round(scoreDetail.confidence * 100)}%</strong>
-                </div>
+            </div>
+            {scoreDetail.displayMode === 'simplified_quantized_staff' && (
+              <div className="alert alert-info">
+                {isReadFromPage(scoreDetail) ? t('readNotice') : t('simplifiedNotice')}
               </div>
-              {scoreDetail.sourceType === 'midi' && Object.entries(normalization.trackMapping).map(([track, hand]) => (
-                <label className="track-map" key={track}>{tf('trackNumber', { number: Number(track) + 1 })}
-                  <select value={hand} onChange={(e) => setNormalization({
-                    ...normalization, confirmed: false,
-                    trackMapping: { ...normalization.trackMapping,
-                      [track]: e.target.value as ScoreNormalization['trackMapping'][string] },
-                  })}>
-                    <option value="split">{t('splitAtMiddleC')}</option>
-                    <option value="RH">{t('rightHand')}</option>
-                    <option value="LH">{t('leftHand')}</option>
-                    <option value="ignore">{t('ignore')}</option>
-                  </select>
-                </label>
-              ))}
-              {scoreDetail.sourceType === 'midi' && (
+            )}
+            {!!scoreDetail.warnings.length && (
+              <ul className="warning-list">
+                {scoreDetail.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            )}
+            {scoreDetail.sourceType === 'midi' && (
+              <>
+                <div className="review-grid">
+                  <label>{t('tempoBpm')}
+                    <input type="number" min={20} max={300} value={normalization.tempo}
+                           onChange={(e) => setNormalization({ ...normalization,
+                             tempo: Number(e.target.value), confirmed: false })} />
+                  </label>
+                  <label>{t('timeSignature')}
+                    <input value={normalization.timeSignature}
+                           onChange={(e) => setNormalization({ ...normalization,
+                             timeSignature: e.target.value, confirmed: false })} />
+                  </label>
+                  <label>{t('quantizationGrid')}
+                    <select value={normalization.quantization}
+                            onChange={(e) => setNormalization({ ...normalization,
+                              quantization: e.target.value as ScoreNormalization['quantization'], confirmed: false })}>
+                      {['1/8', '1/12', '1/16', '1/24', '1/32'].map((value) => (
+                        <option key={value} value={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="confidence-field">
+                    <span>{t('importConfidence')}</span>
+                    <strong>{Math.round(scoreDetail.confidence * 100)}%</strong>
+                  </div>
+                </div>
+                {Object.entries(normalization.trackMapping).map(([track, hand]) => (
+                  <label className="track-map" key={track}>{tf('trackNumber', { number: Number(track) + 1 })}
+                    <select value={hand} onChange={(e) => setNormalization({
+                      ...normalization, confirmed: false,
+                      trackMapping: { ...normalization.trackMapping,
+                        [track]: e.target.value as ScoreNormalization['trackMapping'][string] },
+                    })}>
+                      <option value="split">{t('splitAtMiddleC')}</option>
+                      <option value="RH">{t('rightHand')}</option>
+                      <option value="LH">{t('leftHand')}</option>
+                      <option value="ignore">{t('ignore')}</option>
+                    </select>
+                  </label>
+                ))}
                 <button className="btn btn-primary btn-sm" onClick={confirmNormalization}
                         disabled={loading || normalization.confirmed}>
                   {normalization.confirmed ? t('normalizationConfirmed') : t('confirmNormalization')}
                 </button>
-              )}
-            </section>
-          )}
-          {meta && scoreId && (
-            <section className="score-preview" aria-label={t('scorePreview')}>
-              <div className="score-preview-heading">
-                <span className="eyebrow">{t('scorePreview')}</span>
-                <small>{tf('scoreMeta', {
-                  measures: meta.measureCount, tempo: meta.tempo,
-                  meter: meta.timeSignature,
-                })}</small>
-              </div>
-              <div className="score-stage">
-                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} title={pieceTitleOf(scoreDetail)}
-                             beatsPerMeasure={meta.beatsPerMeasure} height={200} />
-              </div>
-            </section>
-          )}
-          {meta && (
-            <>
-              <h3>{t('practiceRange')}</h3>
-              {meta.measureCount > rangeEnd && rangeStart === 1 &&
-               rangeEnd === openingRange(meta.measureCount).end && (
-                <p className="dim">{tf('practiceRangeShortened', { count: rangeEnd })}</p>
-              )}
-              <div className="range-row">
-                <span>{t('rangePrefix')}</span>
-                <input aria-label={t('rangeStartAria')} type="number" min={1} max={meta.measureCount} value={rangeStart}
-                       onChange={(e) => setRangeStart(Number(e.target.value))} style={{ width: 60 }} />
-                <span>–</span>
-                <input aria-label={t('rangeEndAria')} type="number" min={1} max={meta.measureCount} value={rangeEnd}
-                       onChange={(e) => setRangeEnd(Number(e.target.value))} style={{ width: 60 }} />
-                <span>{tf('rangeSummary', { count: meta.measureCount })}</span>
-              </div>
-              <div className="flex mt-12">
-                <button className="btn btn-primary" onClick={gotoCalibrate}
-                        disabled={loading || !rangeValid ||
-                          (scoreDetail?.sourceType === 'midi' && !normalization?.confirmed)}>
-                  {t('nextDevice')}
-                </button>
-              </div>
-            </>
-          )}
+              </>
+            )}
+          </section>
+        )}
+        <section className="score-preview" aria-label={t('scorePreview')}>
+          <div className="score-stage">
+            <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} title={pieceTitleOf(scoreDetail)}
+                         beatsPerMeasure={meta.beatsPerMeasure} />
           </div>
+        </section>
+      </> : undefined}
+      actions={{
+        status: meta ? (
+          <div className="range-row" role="group" aria-label={t('practiceRange')}>
+            <span className="range-label">{t('practiceRange')}</span>
+            <span>{t('rangePrefix')}</span>
+            <input aria-label={t('rangeStartAria')} type="number" min={1} max={meta.measureCount}
+                   value={rangeStart} onChange={(e) => setRangeStart(Number(e.target.value))} />
+            <span>–</span>
+            <input aria-label={t('rangeEndAria')} type="number" min={1} max={meta.measureCount}
+                   value={rangeEnd} onChange={(e) => setRangeEnd(Number(e.target.value))} />
+            <span>{tf('rangeSummary', { count: meta.measureCount })}</span>
+            {meta.measureCount > rangeEnd && rangeStart === 1 &&
+             rangeEnd === openingRange(meta.measureCount).end && (
+              <span className="range-note">{tf('practiceRangeShortened', { count: rangeEnd })}</span>
+            )}
           </div>
+        ) : <span className="dim">{t('choosePieceFirst')}</span>,
+        primary: (
+          <button className="btn btn-primary" onClick={gotoCalibrate}
+                  disabled={loading || !meta || !rangeValid || nextBlockedByReview}
+                  title={nextBlockedByReview ? t('confirmNormalizationFirst') : undefined}>
+            {t('nextDevice')}
+          </button>
+        ),
+      }}
+    />
+  )
+
+  // --- 2 · the input -------------------------------------------------------
+  const startDisabled = loading ||
+    (inputSource === 'web-midi' && (!selectedInput || !calibration.centerC || calibration.noteCount < 5)) ||
+    (inputSource === 'microphone' && microphoneState !== 'ready')
+  const renderInput = () => (
+    <Stage id="input" layout="sources" headExtra={roundBadge}
+      main={<>
+        <div className="input-source-switch" role="group" aria-label={t('inputMode')}>
+          {([
+            ['web-midi', 'MIDI', t('inputMidi'), t('inputMidiCaption')],
+            ['microphone', 'MIC', t('inputMicrophone'), t('inputMicrophoneCaption')],
+            ['midi-upload', 'FILE', t('inputUpload'), t('inputUploadCaption')],
+          ] as [InputSource, string, string, string][]).map(([source, badge, label, caption]) => (
+            <button type="button" key={source} aria-pressed={inputSource === source}
+                    className={inputSource === source ? 'active' : ''}
+                    disabled={loading || recording}
+                    onClick={() => chooseInputSource(source)}>
+              <span className="input-source-badge">{badge}</span>
+              <span><strong>{label}</strong><small>{caption}</small></span>
+            </button>
+          ))}
         </div>
-      )}
-
-      {/* Step 2: 校准 */}
-      {step === 'calibrate' && (
-        <div className="panel input-workspace">
-          <div className="review-heading">
-            <div>
-              <h2>{t('inputMode')}</h2>
-              <p className="dim">{t('microphoneHint')}</p>
+        <p className="dim input-source-note">{t('microphoneHint')}</p>
+      </>}
+      aside={<>
+        {inputSource === 'web-midi' && (
+          <>
+            <div className="input-card-heading">
+              <div><h3>{t('usbMidiTitle')}</h3><p>{t('usbMidiHint')}</p></div>
+              <button className="btn btn-sm" type="button" onClick={gotoCalibrate}
+                      disabled={loading}>{t('rescan')}</button>
             </div>
-          </div>
-          <div className="input-source-switch" role="group" aria-label={t('inputMode')}>
-            {([
-              ['web-midi', 'MIDI', t('inputMidi'), t('inputMidiCaption')],
-              ['microphone', 'MIC', t('inputMicrophone'), t('inputMicrophoneCaption')],
-              ['midi-upload', 'FILE', t('inputUpload'), t('inputUploadCaption')],
-            ] as [InputSource, string, string, string][]).map(([source, badge, label, caption]) => (
-              <button type="button" key={source} aria-pressed={inputSource === source}
-                      className={inputSource === source ? 'active' : ''}
-                      disabled={loading || recording}
-                      onClick={() => chooseInputSource(source)}>
-                <span className="input-source-badge">{badge}</span>
-                <span><strong>{label}</strong><small>{caption}</small></span>
-              </button>
-            ))}
-          </div>
-
-          {inputSource === 'web-midi' && (
-            <>
-              <div className="input-card-heading">
-                <div><h3>{t('usbMidiTitle')}</h3><p>{t('usbMidiHint')}</p></div>
-                <button className="btn btn-sm" type="button" onClick={gotoCalibrate}
-                        disabled={loading}>{t('rescan')}</button>
-              </div>
-              {!midiSupported ? (
-                <div className="alert alert-warn">{t('midiBrowserFallback')}</div>
-              ) : (
-                <>
-                  <div className="device-grid">
-                    {inputs.map((name) => (
-                      <button type="button" key={name} aria-pressed={selectedInput === name}
-                              className={`device-item ${selectedInput === name ? 'selected' : ''}`}
-                              disabled={loading || recording}
-                              onClick={() => pickInput(name)}>
-                        <span className="dot" /> <span>{name}</span>
-                      </button>
-                    ))}
-                    {inputs.length === 0 && <div className="dim">{t('noMidiInput')}</div>}
-                  </div>
+            {!midiSupported ? (
+              <div className="alert alert-warn">{t('midiBrowserFallback')}</div>
+            ) : (
+              <div className="midi-setup">
+                <div className="device-grid">
+                  {inputs.map((name) => (
+                    <button type="button" key={name} aria-pressed={selectedInput === name}
+                            className={`device-item ${selectedInput === name ? 'selected' : ''}`}
+                            disabled={loading || recording}
+                            onClick={() => pickInput(name)}>
+                      <span className="dot" /> <span>{name}</span>
+                    </button>
+                  ))}
+                  {inputs.length === 0 && <div className="dim">{t('noMidiInput')}</div>}
+                </div>
                 <div className="calibration-card" aria-live="polite">
                   <h3>{t('healthCheck')}</h3>
                   <p className="dim">{t('healthCheckHint')}</p>
@@ -2073,682 +2132,625 @@ export default function App() {
                     <span>{t('duplicateMessages')} <strong>{calibration.duplicateMessages}</strong></span>
                   </div>
                 </div>
-                </>
-              )}
-            </>
-          )}
+              </div>
+            )}
+          </>
+        )}
+        {inputSource === 'microphone' && microphonePanel}
+        {inputSource === 'midi-upload' && (
+          <div className="upload-explainer">
+            <h3>{t('inputUpload')}</h3>
+            <p>{t('uploadFallbackHint')}</p>
+          </div>
+        )}
+      </>}
+      actions={{
+        back: <button className="btn" onClick={() => setStep('select')} disabled={loading}>{t('back')}</button>,
+        primary: (
+          <button className="btn btn-primary" onClick={startSession} disabled={startDisabled}>
+            {inputSource === 'midi-upload' ? t('enterMidiUpload') : t('startWithCountIn')}
+          </button>
+        ),
+      }}
+    />
+  )
 
-          {inputSource === 'microphone' && (
-            <MicrophonePanel
-              state={microphoneState} devices={microphoneDevices}
-              selectedDeviceId={selectedMicrophoneId} instrument={instrument}
-              preview={microphonePreview} progress={transcriptionProgress} busy={loading}
-              errorDetail={microphoneError}
-              previewMode={microphoneRef.current?.previewMode ?? 'unavailable'}
-              onConnect={() => void connectMicrophone()}
-              onCancelConnect={cancelMicrophoneConnect}
-              onSelectDevice={(deviceId) => {
-                setSelectedMicrophoneId(deviceId)
-                void connectMicrophone(deviceId)
-              }}
-              onInstrumentChange={setInstrument}
-              onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
-              sensitivity={micSensitivity}
-              sensitivityPinned={micSensitivityPinned}
-              onSensitivityChange={(value) => {
-                setMicSensitivity(value)
-                setMicSensitivityPinned(true)
-                microphoneRef.current?.setDetectionSensitivity(value)
-              }}
-            />
-          )}
-
-          {inputSource === 'midi-upload' && (
-            <div className="mt-20">
-              <div className="alert alert-info">{t('uploadFallbackHint')}</div>
+  // --- 3 · playing ---------------------------------------------------------
+  const inputStatusCard = (
+    <div className="input-status-card">
+      <span className="eyebrow">{t('inputDockTitle')}</span>
+      <dl>
+        <div><dt>{t('inputSourceLabel')}</dt><dd>{inputSource === 'web-midi' ? t('inputMidi') : t('inputUpload')}</dd></div>
+        <div><dt>{t('inputInstrumentLabel')}</dt><dd>{instrumentLabel(instrument)}</dd></div>
+        <div><dt>{t('inputDeviceLabel')}</dt><dd>{inputSource === 'web-midi'
+          ? (selectedInput ?? t('noMidiInput'))
+          : (uploadMidiRef.current ? t('inputFileStored') : t('inputFileAwaiting'))}</dd></div>
+      </dl>
+      <div className={`input-status-pill ${
+        (inputSource === 'web-midi' && workflow.deviceConnected) ||
+        (inputSource === 'midi-upload' && uploadMidiRef.current) ? 'ready' : ''}`}>
+        {inputSource === 'web-midi' && workflow.deviceConnected
+          ? t('inputCaptureReady')
+          : inputSource === 'midi-upload' && uploadMidiRef.current
+            ? t('inputAnalysisReady') : t('waitingForNotes')}
+      </div>
+    </div>
+  )
+  const renderPerform = () => (
+    <Stage id="perform" layout="desk"
+      headExtra={<>{uploadMode && <span className="tag">{t('uploadModeSuffix')}</span>}{roundBadge}</>}
+      main={meta && scoreId ? (
+        <div className="score-stage">
+          <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
+                       title={pieceTitleOf(scoreDetail)} cursor={cursor} follow={recording}
+                       liveFeedback={recording ? liveFeedback : null} />
+        </div>
+      ) : null}
+      aside={<div className="input-dock" aria-label={t('inputDockTitle')}>
+        {inputSource === 'web-midi' && workflow.capture && !workflow.deviceConnected &&
+          disconnectRecovery('baseline')}
+        {inputSource === 'microphone' && (
+          <>
+            {microphonePanel}
+            <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
+          </>
+        )}
+        {inputSource === 'web-midi' && (
+          <>
+            {/* What you are playing leads the rail; the hardware it arrived on
+                is reference, so it sits underneath. */}
+            <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
+            <div className="held-notes">
+              <span className="eyebrow">{t('heldNotes')}</span>
+              <div className="live-notes">
+                {liveNotes.length
+                  ? liveNotes.map((pitch) => <span key={pitch} className="live-note">{midiName(pitch)}</span>)
+                  : <span className="dim">{t('heldNotesEmpty')}</span>}
+              </div>
             </div>
-          )}
-          <div className="flex mt-20 between">
-            <button className="btn" onClick={() => setStep('select')} disabled={loading}>{t('back')}</button>
-            <button className="btn btn-primary" onClick={startSession}
-                    disabled={loading ||
-                      (inputSource === 'web-midi' && (!selectedInput || !calibration.centerC || calibration.noteCount < 5)) ||
-                      (inputSource === 'microphone' && microphoneState !== 'ready')}>
-              {inputSource === 'midi-upload' ? t('enterMidiUpload') : t('startWithCountIn')}
+            {inputStatusCard}
+          </>
+        )}
+        {inputSource === 'midi-upload' && (
+          <>
+            <p className="dim">{t('uploadedMidiExplanation')}</p>
+            {sessionId && <UploadZone onFile={onUploadMidi} accept=".mid,.midi" disabled={loading} />}
+            {uploadMidiRef.current && <div className="upload-confirm">{t('performanceFileReady')}</div>}
+            {inputStatusCard}
+          </>
+        )}
+      </div>}
+      actions={inputSource === 'midi-upload' ? {
+        back: <button className="btn" onClick={() => setStep('calibrate')} disabled={loading}>{t('back')}</button>,
+        status: submissionStatus,
+        primary: (
+          <button className="btn btn-primary" onClick={stopAndAnalyze}
+                  disabled={loading || !uploadMidiRef.current}>{t('submitAnalysis')}</button>
+        ),
+      } : inputSource === 'microphone' ? {
+        status: submissionStatus ?? (
+          <div className="transport-status" aria-live="polite">
+            {recording && <span className="rec-dot" />}
+            <strong>{microphoneState === 'transcribing'
+              ? t('microphoneTranscribing')
+              : recording ? t('microphoneRecording')
+                : microphoneRef.current?.hasTake(sessionId) ? t('microphoneTakeReady')
+                : hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length })
+                  : t('stopped')}</strong>
+            <span className="dim">{t('microphonePreviewOnly')}</span>
+          </div>
+        ),
+        primary: (
+          <>
+            {!recording && microphoneRef.current?.hasTake(sessionId) && (
+              <button className="btn" onClick={() => void discardCaptureAndReturnToScores()}
+                      disabled={loading || microphoneState === 'transcribing'}>
+                {t('discardTakeAndReturn')}
+              </button>
+            )}
+            <button className="btn btn-danger" onClick={stopAndAnalyze}
+                    disabled={loading || microphoneState === 'transcribing' ||
+                      (!recording && !hasBaselineRecovery &&
+                        !microphoneRef.current?.hasTake(sessionId))}>
+              {hasBaselineRecovery
+                ? t('analyzeRecovered')
+                : !recording && microphoneRef.current?.hasTake(sessionId)
+                  ? t('analyzeSavedTake')
+                  : t('stopAndAnalyze')}
             </button>
-          </div>
-        </div>
-      )}
+          </>
+        ),
+      } : {
+        status: submissionStatus ?? (workflow.phase === 'analysis'
+          ? <span role="status">{t('analysisRunning')}</span>
+          : (
+            <div className="recording-bar">
+              {recording && <span className="rec-dot" />}
+              <span>{recording ? t('recording') : (hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('stopped'))}</span>
+              <span className="dim">{cursor ? tf('cursorPosition', {
+                measure: measureLabel(cursor.measure), bpm: cursor.bpm ?? '—',
+                state: cursor.waiting ? ` · ${t('waitingHere')}` : '',
+              }) : t('waitingForNotes')}</span>
+            </div>
+          )),
+        primary: (
+          <>
+            <button className="btn" disabled={hasBaselineRecovery} onClick={async () => {
+              try {
+                const player = getPlayer()
+                await player.countIn(Math.round(meta!.beatsPerMeasure), meta!.tempo)
+              } catch (error) {
+                notify('warn', () => tf('countInPlaybackFailed', { detail: (error as Error).message }))
+              }
+            }}>{t('hearCountIn')}</button>
+            <button className="btn btn-danger" onClick={stopAndAnalyze}
+                    disabled={loading || workflow.phase === 'analysis' || (!recording && !hasBaselineRecovery)}>
+              {hasBaselineRecovery ? t('analyzeRecovered') : t('stopAndAnalyze')}
+            </button>
+          </>
+        ),
+      }}
+    />
+  )
 
-      {/* Step 3: 演奏 */}
-      {step === 'perform' && (
-        <div className="panel performance-panel">
-          <h2>{t('performanceTitle')} {uploadMode ? t('uploadModeSuffix') : ''}</h2>
-          {meta && scoreId && (
-            <div className="practice-studio">
-              <div className="score-stage">
-                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
-                             title={pieceTitleOf(scoreDetail)} cursor={cursor} follow={recording}
-                             liveFeedback={recording ? liveFeedback : null} />
-              </div>
-              {inputSource === 'microphone' && (
-                <aside className="input-dock">
-                  <MicrophonePanel
-                    state={microphoneState} devices={microphoneDevices}
-                    selectedDeviceId={selectedMicrophoneId} instrument={instrument}
-                    preview={microphonePreview} progress={transcriptionProgress} busy={loading}
-                    errorDetail={microphoneError}
-                    previewMode={microphoneRef.current?.previewMode ?? 'unavailable'}
-                    onConnect={() => void connectMicrophone()}
-                    onCancelConnect={cancelMicrophoneConnect}
-                    onSelectDevice={(deviceId) => {
-                      setSelectedMicrophoneId(deviceId)
-                      void connectMicrophone(deviceId)
-                    }}
-                    onInstrumentChange={setInstrument}
-                    onCancelTranscription={() => microphoneRef.current?.cancelTranscription()}
-                    sensitivity={micSensitivity}
-                    sensitivityPinned={micSensitivityPinned}
-                    onSensitivityChange={(value) => {
-                      setMicSensitivity(value)
-                      setMicSensitivityPinned(true)
-                      microphoneRef.current?.setDetectionSensitivity(value)
-                    }}
-                  />
-                  <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
-                </aside>
-              )}
-              {inputSource !== 'microphone' && (
-                <aside className="input-dock" aria-label={t('inputDockTitle')}>
-                  {/* What you are playing leads the rail; the hardware it
-                      arrived on is reference, so it sits underneath. */}
-                  {inputSource === 'web-midi' && (
-                    <>
-                      <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
-                      <div className="held-notes">
-                        <span className="eyebrow">{t('heldNotes')}</span>
-                        <div className="live-notes">
-                          {liveNotes.length
-                            ? liveNotes.map((pitch) => <span key={pitch} className="live-note">{midiName(pitch)}</span>)
-                            : <span className="dim">{t('heldNotesEmpty')}</span>}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                  <div className="input-status-card">
-                    <span className="eyebrow">{t('inputDockTitle')}</span>
-                    <dl>
-                      <div><dt>{t('inputSourceLabel')}</dt><dd>{inputSource === 'web-midi' ? t('inputMidi') : t('inputUpload')}</dd></div>
-                      <div><dt>{t('inputInstrumentLabel')}</dt><dd>{instrument === 'piano'
-                        ? t('instrumentPiano') : instrument === 'guitar'
-                          ? t('instrumentGuitar') : t('instrumentViolin')}</dd></div>
-                      <div><dt>{t('inputDeviceLabel')}</dt><dd>{inputSource === 'web-midi'
-                        ? (selectedInput ?? t('noMidiInput'))
-                        : (uploadMidiRef.current ? t('inputFileStored') : t('inputFileAwaiting'))}</dd></div>
-                    </dl>
-                    <div className={`input-status-pill ${
-                      (inputSource === 'web-midi' && workflow.deviceConnected) ||
-                      (inputSource === 'midi-upload' && uploadMidiRef.current) ? 'ready' : ''}`}>
-                      {inputSource === 'web-midi' && workflow.deviceConnected
-                        ? t('inputCaptureReady')
-                        : inputSource === 'midi-upload' && uploadMidiRef.current
-                          ? t('inputAnalysisReady') : t('waitingForNotes')}
-                    </div>
-                  </div>
-                </aside>
-              )}
-            </div>
-          )}
-          {loading && submissionStage !== 'idle' && submissionStage !== 'complete' && (
-            <div className={`submission-progress-card ${submissionStage}`} role="status">
-              <span className="submission-spinner" />
-              <div>
-                <strong>{submissionStage === 'transcribing'
-                  ? t('submissionTranscribing')
-                  : submissionStage === 'analyzing'
-                    ? t('submissionAnalyzing') : t('submissionSaving')}</strong>
-                {submissionStage === 'transcribing' && (
-                  <div className="submission-meter"><span style={{
-                    width: `${Math.max(4, Math.round(transcriptionProgress * 100))}%`,
-                  }} /></div>
-                )}
-              </div>
-            </div>
-          )}
-          {inputSource === 'web-midi' && (
-            <>
-              {workflow.capture && !workflow.deviceConnected && (
-                <div className="disconnect-recovery" role="alert">
-                  <strong>{t('midiDisconnectedCursorFrozen')}</strong>
-                  <span>{t('capturedSafe')}</span>
-                  <div className="device-grid compact">
-                    {inputs.map((name) => (
-                      <button type="button" key={name} className="device-item"
-                              onClick={() => pickInput(name)}>{name}</button>
-                    ))}
-                  </div>
-                  <div className="flex">
-                    <button className="btn btn-sm" onClick={refreshMidiInputs}>{t('rescanDevices')}</button>
-                    <button className="btn btn-sm" onClick={stopAndAnalyze}>{t('submitCurrentRecording')}</button>
-                    <button className="btn btn-danger btn-sm" onClick={discardActiveCapture}>{t('discardCurrentRecording')}</button>
-                  </div>
-                </div>
-              )}
-              {workflow.phase === 'analysis' && (
-                <div className="analysis-progress" role="status">{t('analysisRunning')}</div>
-              )}
-              <div className="transport-bar midi-transport">
-                <div className="recording-bar">
-                  {recording && <span className="rec-dot" />}
-                  <span>{recording ? t('recording') : (hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('stopped'))}</span>
-                  <span className="dim">{cursor ? tf('cursorPosition', {
-                    measure: measureLabel(cursor.measure), bpm: cursor.bpm ?? '—',
-                    state: cursor.waiting ? ` · ${t('waitingHere')}` : '',
-                  }) : t('waitingForNotes')}</span>
-                </div>
-                <div className="flex">
-                  <button className="btn" disabled={hasBaselineRecovery} onClick={async () => {
-                    try {
-                      const player = getPlayer()
-                      await player.countIn(Math.round(meta!.beatsPerMeasure), meta!.tempo)
-                    } catch (error) {
-                      notify('warn', () => tf('countInPlaybackFailed', { detail: (error as Error).message }))
-                    }
-                  }}>{t('hearCountIn')}</button>
-                  <button className="btn btn-danger" onClick={stopAndAnalyze}
-                          disabled={loading || workflow.phase === 'analysis' || (!recording && !hasBaselineRecovery)}>
-                    {hasBaselineRecovery ? t('analyzeRecovered') : t('stopAndAnalyze')}
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-          {inputSource === 'microphone' && (
-            <div className="transport-bar" aria-live="polite">
-              <div className="transport-status">
-                {recording && <span className="rec-dot" />}
-                <strong>{microphoneState === 'transcribing'
-                  ? t('microphoneTranscribing')
-                  : recording ? t('microphoneRecording')
-                    : microphoneRef.current?.hasTake(sessionId) ? t('microphoneTakeReady')
-                    : hasBaselineRecovery ? tf('recoveredNotes', { count: recoveredEvents.length })
-                      : t('stopped')}</strong>
-                <span>{t('microphonePreviewOnly')}</span>
-              </div>
-              <div className="flex">
-                <button className="btn btn-danger" onClick={stopAndAnalyze}
-                        disabled={loading || microphoneState === 'transcribing' ||
-                          (!recording && !hasBaselineRecovery &&
-                            !microphoneRef.current?.hasTake(sessionId))}>
-                  {hasBaselineRecovery
-                    ? t('analyzeRecovered')
-                    : !recording && microphoneRef.current?.hasTake(sessionId)
-                      ? t('analyzeSavedTake')
-                      : t('stopAndAnalyze')}
-                </button>
-                {!recording && microphoneRef.current?.hasTake(sessionId) && (
-                  <button className="btn" onClick={() => void discardCaptureAndReturnToScores()}
-                          disabled={loading || microphoneState === 'transcribing'}>
-                    {t('discardTakeAndReturn')}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-          {inputSource === 'midi-upload' && (
-            <div className="mt-20">
-              <div className="dim">{t('uploadedMidiExplanation')}</div>
-              {sessionId && <UploadZone onFile={onUploadMidi} accept=".mid,.midi" disabled={loading} />}
-              {uploadMidiRef.current && <div className="upload-confirm">{t('performanceFileReady')}</div>}
-              <div className="flex mt-12 between">
-                <button className="btn" onClick={() => setStep('calibrate')} disabled={loading}>{t('back')}</button>
-                <button className="btn btn-primary" onClick={stopAndAnalyze} disabled={loading || !uploadMidiRef.current}>{t('submitAnalysis')}</button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+  // --- 5 · practice --------------------------------------------------------
+  // The loop inside Practice, so the player can see where they are in it.
+  const practiceStep = step === 'compare' ? (comparison ? 3 : 2) : exerciseStage === 'generated' ? 1 : 0
+  const practiceTrail = (
+    <ol className="practice-trail" aria-label={t('generationLoopAria')}>
+      {(['generationStepDesign', 'generationStepResult', 'practiceStepPlayAlong',
+        'practiceStepCompare'] as const).map((key, index) => (
+        <li key={key} className={index === practiceStep ? 'active' : index < practiceStep ? 'done' : ''}
+            aria-current={index === practiceStep ? 'step' : undefined}>{t(key)}</li>
+      ))}
+    </ol>
+  )
 
-      {/* Step 4: 报告 */}
-      {step === 'report' && report && (
-        <CoachReport
-          depth={uiScale}
-          report={report}
-          baseline={baselineReport}
-          beatsPerMeasure={meta?.beatsPerMeasure}
-          scoreXmlUrl={scoreId ? api.scoreXmlUrl(scoreId) : undefined}
-          scoreTitle={pieceTitleOf(scoreDetail)}
-          selectedError={selectedError}
-          mentor={mentor}
-          mentorLoading={mentorLoading}
-          mentorInOtherLanguage={mentorInOtherLanguage}
-          onRewriteMentor={rewriteMentor}
-          chatMessages={mentorChat}
-          chatLoading={mentorChatLoading}
-          question={question}
-          mentorMemory={mentorMemory}
-          onChooseError={(error) => chooseError(report, error)}
-          onPlayEvidence={playEvidence}
-          onApplyPlan={applyMentorPlan}
-          onApplyChatAction={applyChatAction}
-          onAskMentor={askMentor}
-          onQuestionChange={setQuestion}
-          onCancelChat={() => mentorChatAbortRef.current?.abort()}
-          onForgetMemory={forgetMentorMemory}
-          onRerecord={() => setStep('calibrate')}
-          onGenerateExercise={openExerciseDesigner}
-        />
-      )}
-      {/* Step 5: 练习 */}
-      {step === 'exercise' && (
-        <div className="panel training-panel">
-          <div className="training-hero">
+  const renderExerciseDesign = () => (
+    <Stage id="practice" layout="bench" heading={t('exerciseDesignTitle')}
+      headExtra={<>{practiceTrail}{roundBadge}</>}
+      main={<div className="exercise-designer">
+        <p className="dim stage-lede">{t('exerciseDesignSubtitle')}</p>
+        {selectedError && (
+          <div className="exercise-target">
+            <span className="badge" style={{ background: errorColor(selectedError.type) }}>
+              {ERROR_TYPE_LABEL[selectedError.type] ?? selectedError.type}
+            </span>
             <div>
-              <span className="training-kicker">{t('aiExerciseKicker')}</span>
-              <h2>{exerciseStage === 'design' ? t('exerciseDesignTitle') : t('exerciseGeneratedTitle')}</h2>
-              <p>{exerciseStage === 'design' ? t('exerciseDesignSubtitle') : t('exerciseGeneratedSubtitle')}</p>
-            </div>
-            <div className="generation-loop" aria-label={t('generationLoopAria')}>
-              <span className={exerciseStage === 'design' ? 'active' : 'done'}>{t('generationStepDesign')}</span>
-              <b>→</b>
-              <span className={exerciseStage === 'generated' ? 'active' : ''}>{t('generationStepResult')}</span>
-              <b>↩</b>
+              <strong>{tf('exerciseTargetPosition', {
+                measure: measureLabel(selectedError.location.measure),
+                beat: selectedError.location.beat + 1,
+              })}</strong>
+              <span>{errorDetailForDisplay(selectedError, report?.evidences ?? [])}</span>
             </div>
           </div>
+        )}
+        <label className="generation-note">
+          <span>{t('generationNoteLabel')}</span>
+          <textarea value={generationNote}
+                    onChange={(event) => setGenerationNote(event.target.value)}
+                    maxLength={1000} rows={4}
+                    placeholder={t('generationNotePlaceholder')} />
+          <small>{tf('generationNoteCount', { count: generationNote.length })}</small>
+        </label>
+        <div className="note-suggestions">
+          <span className="dim">{t('generationNoteExamples')}</span>
+          {(['generationNoteLeftHand', 'generationNoteFiveMinutes', 'generationNoteRhythm'] as const).map((key) => (
+            <button type="button" className="strategy-btn" key={key}
+                    onClick={() => setGenerationNote(t(key))}>{t(key)}</button>
+          ))}
+        </div>
+        <div className="ai-generation-note">
+          <span>AI</span>
+          <div><strong>{t('aiGenerationBoundaryTitle')}</strong><br />{t('aiGenerationBoundary')}</div>
+        </div>
+      </div>}
+      aside={<div className="designer-grid">
+        <section>
+          <span className="control-label">{t('strategy')}</span>
+          <div className="strategy-select">
+            {EXERCISE_STRATEGIES.map(([key, label]) => (
+              <button type="button" key={key} aria-pressed={strategy === key}
+                      className={`strategy-btn ${strategy === key ? 'active' : ''}`}
+                      onClick={() => setStrategy(key)}>{label}</button>
+            ))}
+          </div>
+        </section>
+        <section>
+          <label className="control-label" htmlFor="exercise-tempo">{t('exerciseSpeed')}</label>
+          <div className="range-control">
+            <input id="exercise-tempo" aria-label={t('exerciseSpeedAria')}
+                   type="range" min={0.25} max={1.25} step={0.05}
+                   value={tempoRatio}
+                   onChange={(event) => setTempoRatio(Number(event.target.value))} />
+            <strong>{Math.round(tempoRatio * 100)}%</strong>
+          </div>
+        </section>
+        <section>
+          <label className="control-label" htmlFor="exercise-loops">{t('loops')}</label>
+          <input id="exercise-loops" className="number-control"
+                 aria-label={t('loopsAria')} type="number" min={1} max={10}
+                 value={loopCount}
+                 onChange={(event) => setLoopCount(Number(event.target.value))} />
+        </section>
+        {meta && meta.parts.length > 1 && (
+          <section>
+            <label className="control-label" htmlFor="exercise-hands">{t('part')}</label>
+            <select id="exercise-hands" className="select-control"
+                    value={hands ?? ''}
+                    onChange={(event) => setHands(event.target.value || null)}>
+              <option value="">{t('bothHands')}</option>
+              <option value="RH">{t('rightHand')}</option>
+              <option value="LH">{t('leftHand')}</option>
+            </select>
+          </section>
+        )}
+      </div>}
+      actions={{
+        back: <button className="btn" onClick={() => leaveExercise('report')}>{t('backToReport')}</button>,
+        primary: (
+          <button className="btn btn-primary generate-ai-btn" onClick={genExercise} disabled={loading}>
+            {loading ? t('aiGeneratingExercise') : t('generateWithAi')}
+          </button>
+        ),
+      }}
+    />
+  )
 
-          {exerciseStage === 'design' && (
-            <div className="exercise-designer">
-              {selectedError && (
-                <div className="exercise-target">
-                  <span className="badge" style={{ background: errorColor(selectedError.type) }}>
-                    {ERROR_TYPE_LABEL[selectedError.type] ?? selectedError.type}
-                  </span>
-                  <div>
-                    <strong>{tf('exerciseTargetPosition', {
-                      measure: measureLabel(selectedError.location.measure),
-                      beat: selectedError.location.beat + 1,
-                    })}</strong>
-                    <span>{errorDetailForDisplay(selectedError, report?.evidences ?? [])}</span>
-                  </div>
-                </div>
-              )}
-
-              <label className="generation-note">
-                <span>{t('generationNoteLabel')}</span>
-                <textarea value={generationNote}
-                          onChange={(event) => setGenerationNote(event.target.value)}
-                          maxLength={1000} rows={4}
-                          placeholder={t('generationNotePlaceholder')} />
-                <small>{tf('generationNoteCount', { count: generationNote.length })}</small>
-              </label>
-              <div className="note-suggestions">
-                <span className="dim">{t('generationNoteExamples')}</span>
-                {[t('generationNoteLeftHand'), t('generationNoteFiveMinutes'), t('generationNoteRhythm')].map((note) => (
-                  <button type="button" className="strategy-btn" key={note}
-                          onClick={() => setGenerationNote(note)}>{note}</button>
-                ))}
-              </div>
-
-              <div className="designer-grid">
-                <section>
-                  <span className="control-label">{t('strategy')}</span>
-                  <div className="strategy-select">
-                    {EXERCISE_STRATEGIES.map(([key, label]) => (
-                      <button type="button" key={key} aria-pressed={strategy === key}
-                              className={`strategy-btn ${strategy === key ? 'active' : ''}`}
-                              onClick={() => setStrategy(key)}>{label}</button>
-                    ))}
-                  </div>
-                </section>
-                <section>
-                  <label className="control-label" htmlFor="exercise-tempo">{t('exerciseSpeed')}</label>
-                  <div className="range-control">
-                    <input id="exercise-tempo" aria-label={t('exerciseSpeedAria')}
-                           type="range" min={0.25} max={1.25} step={0.05}
-                           value={tempoRatio}
-                           onChange={(event) => setTempoRatio(Number(event.target.value))} />
-                    <strong>{Math.round(tempoRatio * 100)}%</strong>
-                  </div>
-                </section>
-                <section>
-                  <label className="control-label" htmlFor="exercise-loops">{t('loops')}</label>
-                  <input id="exercise-loops" className="number-control"
-                         aria-label={t('loopsAria')} type="number" min={1} max={10}
-                         value={loopCount}
-                         onChange={(event) => setLoopCount(Number(event.target.value))} />
-                </section>
-                {meta && meta.parts.length > 1 && (
-                  <section>
-                    <label className="control-label" htmlFor="exercise-hands">{t('part')}</label>
-                    <select id="exercise-hands" className="select-control"
-                            value={hands ?? ''}
-                            onChange={(event) => setHands(event.target.value || null)}>
-                      <option value="">{t('bothHands')}</option>
-                      <option value="RH">{t('rightHand')}</option>
-                      <option value="LH">{t('leftHand')}</option>
-                    </select>
-                  </section>
-                )}
-              </div>
-
-              <div className="ai-generation-note">
-                <span>AI</span>
-                <div><strong>{t('aiGenerationBoundaryTitle')}</strong><br />{t('aiGenerationBoundary')}</div>
-              </div>
-              <div className="flex mt-20 between">
-                <button className="btn" onClick={() => leaveExercise('report')}>{t('backToReport')}</button>
-                <button className="btn btn-primary generate-ai-btn" onClick={genExercise} disabled={loading}>
-                  {loading ? t('aiGeneratingExercise') : t('generateWithAi')}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {exerciseStage === 'generated' && exercise && (
-            <div className="exercise-result">
-              <div className="generated-plan-card">
-                <div className="generated-plan-heading">
-                  <div>
-                    <span className="training-kicker">{t('aiPlanLabel')}</span>
-                    <h3>{exercise.aiPlan?.title || t('exerciseGeneratedTitle')}</h3>
-                  </div>
-                  {exercise.plannerProvider?.startsWith('rules') && (
-                    <span className="planner-status fallback">
-                      {exercise.plannerProvider === 'rules'
-                        ? t('exercisePlannerLocal') : t('exercisePlannerFallback')}
-                    </span>
-                  )}
-                </div>
-                {exercise.aiPlan?.rationale && <p>{exercise.aiPlan.rationale}</p>}
-                {exercise.aiPlan?.noteAcknowledgement && (
-                  <div className="note-ack">{exercise.aiPlan.noteAcknowledgement}</div>
-                )}
-                <div className="plan-facts">
-                  <span>{tf('generatedMeasures', {
-                    measures: measureLabelList(exercise.sourceMeasures),
-                  })}</span>
-                  <span>{tf('generatedStrategy', {
-                    strategy: EXERCISE_STRATEGIES.find(([key]) => key === exercise.ruleId)?.[1] || exercise.ruleId,
-                  })}</span>
-                  <span>{tf('generatedTempo', { percent: Math.round((exercise.aiPlan?.tempoRatio ?? tempoRatio) * 100) })}</span>
-                  <span>{tf('generatedLoops', { count: exercise.aiPlan?.loopCount ?? loopCount })}</span>
-                  {!!exercise.cadencePlan?.length && (
-                    <span>{tf('generatedCadences', {
-                      cadences: exercise.cadencePlan.map((item) =>
-                        CADENCE_LABEL[item] ?? item).join(' → '),
-                    })}</span>
-                  )}
-                </div>
-                <div className="success-criterion">{tf('mentorSuccessCriterion', { criterion: exercise.successCriterion })}</div>
-              </div>
-
-              {scoreId && meta && (
-                <div className="generated-score">
-                  <ScoreViewer xmlUrl={exercise.musicXmlUrl} title={pieceTitleOf(exerciseScore)}
-                               beatsPerMeasure={meta.beatsPerMeasure} height={240} />
-                </div>
-              )}
-              {exercise.tempoPlan.length > 1 && (
-                <div className="tempo-plan">{t('tempoLadder')}{exercise.tempoPlan.map((tempo) => `${tempo} BPM`).join(' → ')}</div>
-              )}
-              <div className="result-actions">
-                <button className="btn btn-primary" onClick={playExercise} disabled={playing}>
-                  {playing ? t('playing') : t('playExercise')}
-                </button>
-                <a className="btn" href={exercise.musicXmlUrl} download>{t('downloadMusicXml')}</a>
-                <a className="btn" href={exercise.midiUrl} download>{t('downloadMidi')}</a>
-              </div>
-              <div className="flex mt-20 between">
-                <button className="btn" onClick={() => {
-                  playerRef.current?.stop()
-                  setPlaying(false)
-                  setExerciseStage('design')
-                }}>{t('backToExerciseDesign')}</button>
-                <div className="flex">
-                  <button className="btn" onClick={genExercise} disabled={loading}>
-                    {loading ? t('aiGeneratingExercise') : t('regenerateWithAi')}
-                  </button>
-                  <button className="btn btn-primary" onClick={() => leaveExercise('compare')}>
-                    {t('enterEnsemble')}
-                  </button>
-                </div>
-              </div>
-            </div>
+  const renderExerciseResult = () => exercise && (
+    <Stage id="practice" layout="bench"
+      heading={exercise.aiPlan?.title || t('exerciseGeneratedTitle')}
+      headExtra={<>{practiceTrail}{roundBadge}</>}
+      main={scoreId && meta ? (
+        <div className="generated-score score-stage">
+          <ScoreViewer xmlUrl={exercise.musicXmlUrl} title={pieceTitleOf(exerciseScore)}
+                       beatsPerMeasure={meta.beatsPerMeasure} />
+        </div>
+      ) : null}
+      aside={<div className="generated-plan-card">
+        <div className="generated-plan-heading">
+          <span className="training-kicker">{t('aiPlanLabel')}</span>
+          {exercise.plannerProvider?.startsWith('rules') && (
+            <span className="planner-status fallback">
+              {exercise.plannerProvider === 'rules'
+                ? t('exercisePlannerLocal') : t('exercisePlannerFallback')}
+            </span>
           )}
         </div>
-      )}
+        {exercise.aiPlan?.rationale && <p>{exercise.aiPlan.rationale}</p>}
+        {exercise.aiPlan?.noteAcknowledgement && (
+          <div className="note-ack">{exercise.aiPlan.noteAcknowledgement}</div>
+        )}
+        <div className="plan-facts">
+          <span>{tf('generatedMeasures', { measures: measureLabelList(exercise.sourceMeasures) })}</span>
+          <span>{tf('generatedStrategy', {
+            strategy: EXERCISE_STRATEGIES.find(([key]) => key === exercise.ruleId)?.[1] || exercise.ruleId,
+          })}</span>
+          <span>{tf('generatedTempo', { percent: Math.round((exercise.aiPlan?.tempoRatio ?? tempoRatio) * 100) })}</span>
+          <span>{tf('generatedLoops', { count: exercise.aiPlan?.loopCount ?? loopCount })}</span>
+          {!!exercise.cadencePlan?.length && (
+            <span>{tf('generatedCadences', {
+              cadences: exercise.cadencePlan.map((item) => CADENCE_LABEL[item] ?? item).join(' → '),
+            })}</span>
+          )}
+        </div>
+        <div className="success-criterion">{tf('mentorSuccessCriterion', { criterion: exercise.successCriterion })}</div>
+        {exercise.tempoPlan.length > 1 && (
+          <div className="tempo-plan">{t('tempoLadder')}{exercise.tempoPlan.map((tempo) => `${tempo} BPM`).join(' → ')}</div>
+        )}
+        <div className="result-actions">
+          <button className="btn btn-primary" onClick={playExercise} disabled={playing}>
+            {playing ? t('playing') : t('playExercise')}
+          </button>
+          <a className="btn" href={exercise.musicXmlUrl} download>{t('downloadMusicXml')}</a>
+          <a className="btn" href={exercise.midiUrl} download>{t('downloadMidi')}</a>
+        </div>
+      </div>}
+      actions={{
+        back: (
+          <button className="btn" onClick={() => {
+            playerRef.current?.stop()
+            setPlaying(false)
+            setExerciseStage('design')
+          }}>{t('backToExerciseDesign')}</button>
+        ),
+        primary: (
+          <>
+            <button className="btn" onClick={genExercise} disabled={loading}>
+              {loading ? t('aiGeneratingExercise') : t('regenerateWithAi')}
+            </button>
+            <button className="btn btn-primary" onClick={() => leaveExercise('compare')}>
+              {t('enterEnsemble')}
+            </button>
+          </>
+        ),
+      }}
+    />
+  )
 
-      {/* Step 6: 对比 */}
-      {step === 'compare' && (
-        <div className="panel">
-          <h2>{t('comparisonTitle')}</h2>
+  const retryLocked = !!retrySessionId && !comparison
+  const renderCompare = () => (
+    <Stage id="practice" layout="desk" heading={t('comparisonTitle')}
+      headExtra={<>{practiceTrail}{roundBadge}</>}
+      main={comparison && baselineReport && report ? (
+        retryScoreMeta && retryScoreXmlUrl ? (
+          <div className="retry-score-target score-stage">
+            <ScoreViewer
+              xmlUrl={retryScoreXmlUrl} beatsPerMeasure={retryScoreMeta.beatsPerMeasure}
+              title={pieceTitleOf(exerciseScore)} errors={report.errors}
+              resolvedKeys={comparison.targetChanged ? undefined : resolvedKeys}
+            />
+          </div>
+        ) : <div className="alert alert-warn">{t('retryGeneratedUnavailable')}</div>
+      ) : retryScoreMeta && retryScoreXmlUrl ? (
+        <div className="retry-score-target score-stage">
+          <ScoreViewer xmlUrl={retryScoreXmlUrl} title={pieceTitleOf(exerciseScore)}
+                       beatsPerMeasure={retryScoreMeta.beatsPerMeasure} cursor={cursor}
+                       follow={recording}
+                       liveFeedback={recording ? liveFeedback : null} />
+        </div>
+      ) : <div className="alert alert-warn">{t('retryGeneratedUnavailable')}</div>}
+      aside={comparison && baselineReport && report ? (
+        <div className="comparison-result">
+          {report.inputQuality?.status === 'insufficient' ? (
+            <div className="limited-metrics-card">
+              <strong>{t('limitedMetricsTitle')}</strong>
+              <p>{t('limitedMetricsBody')}</p>
+            </div>
+          ) : <div className="table-scroll"><table className="comparison-table">
+            <thead><tr><th>{t('metric')}</th><th>{t('previousRound')}</th><th>{t('currentRound')}</th><th>{t('change')}</th></tr></thead>
+            <tbody>
+              {(['overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore',
+                'dynamicsScore', 'timingMaeMs'] as const).map((k) => (
+                <tr key={k}>
+                  <td>{METRIC_LABEL[k]}</td>
+                  <td>{baselineReport.metrics[k]}</td>
+                  <td>{report.metrics[k]}</td>
+                  <td className={metricDeltaClass(k, comparison.metricDelta[k])}>
+                    {comparison.metricDelta[k] > 0 ? '+' : ''}{comparison.metricDelta[k]}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>}
+          <p className="comparison-summary">
+            {report.inputQuality?.status === 'insufficient'
+              ? t('limitedMetricsBody')
+              : comparison.targetChanged
+              ? tf('lineageComparisonSummary', { remaining: report.errors.length })
+              : tf('comparisonSummary', {
+                  resolved: comparison.resolvedErrors.length,
+                  persistent: comparison.persistentErrors.length,
+                  added: comparison.newErrors.length,
+                })}
+          </p>
+          {comparison.targetChanged && (
+            <div className="dim lineage-metric-note">{t('lineageMetricNotice')}</div>
+          )}
+          <div className="alert alert-success">{comparison.suggestion}</div>
+          <section className="round-guidance">
+            <span className="training-kicker">{t('currentRoundAiKicker')}</span>
+            <h3>{report.inputQuality?.status === 'insufficient'
+              ? t('limitedMetricsTitle')
+              : report.errors.length
+              ? tf('roundProblemsRemain', { count: report.errors.length })
+              : t('roundPassed')}</h3>
+            <p>{report.inputQuality?.status === 'insufficient'
+              ? t('limitedMetricsBody')
+              : mentorLoading
+              ? t('mentorThinking')
+              : (mentor?.summary || comparison.suggestion)}</p>
+            {mentor?.plan[0] && (
+              <div className="round-plan-preview">
+                <strong>{mentor.plan[0].label || mentor.plan[0].exerciseType}</strong>
+                <span>{tf('mentorSuccessCriterion', { criterion: mentor.plan[0].successCriterion })}</span>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : (
+        <div className="retry-stage" aria-live="polite">
           <div className="exercise-controls">
-            <span className="dim">{t('accompanimentMode')}</span>
+            <span className="control-label">{t('accompanimentMode')}</span>
             <div className="strategy-select">
               <button type="button" aria-pressed={accMode === 'flexible'}
                       className={`strategy-btn ${accMode === 'flexible' ? 'active' : ''}`}
-                      disabled={loading || (!!retrySessionId && !comparison) ||
+                      disabled={loading || retryLocked ||
                         (inputSource === 'microphone' && !headphonesConfirmed)}
                       onClick={() => setAccMode('flexible')}>{t('flexibleFollow')}</button>
               <button type="button" aria-pressed={accMode === 'strict'}
                       className={`strategy-btn ${accMode === 'strict' ? 'active' : ''}`}
-                      disabled={loading || (!!retrySessionId && !comparison) ||
+                      disabled={loading || retryLocked ||
                         (inputSource === 'microphone' && !headphonesConfirmed)}
                       onClick={() => setAccMode('strict')}>{t('strictTempo')}</button>
             </div>
             {inputSource === 'microphone' && (
               <label className="mode-toggle headphone-warning">
                 <input type="checkbox" checked={headphonesConfirmed}
-                       disabled={loading || (!!retrySessionId && !comparison)}
+                       disabled={loading || retryLocked}
                        onChange={(event) => setHeadphonesConfirmed(event.target.checked)} />
                 {t('microphoneHeadphones')}
               </label>
             )}
-            <button className="btn btn-primary btn-sm" onClick={startAccompaniment}
-                    disabled={loading || recording || (!!retrySessionId && !comparison)}>
-              {inputSource === 'microphone'
-                ? (headphonesConfirmed ? t('startMicrophoneRetryWithAccompaniment') : t('startMicrophoneRetry'))
-                : t('startAccompaniment')}
-            </button>
-            <button className="btn btn-danger btn-sm" onClick={stopRetryAndCompare}
-                    disabled={loading || !retrySessionId || (uploadMode
-                      ? !retryUploadMidiRef.current
-                      : (!recording && !hasRetryRecovery &&
-                        !microphoneRef.current?.hasTake(retrySessionId)))}>
-              {hasRetryRecovery
-                ? t('analyzeRecoveredComparison')
-                : inputSource === 'microphone' && !recording &&
-                    microphoneRef.current?.hasTake(retrySessionId)
-                  ? t('analyzeSavedTakeComparison')
-                  : t('stopAndCompare')}
-            </button>
-            {retrySessionId && !comparison && (
-              <button className="btn btn-sm" onClick={cancelRetry} disabled={loading}>{t('cancelRetry')}</button>
-            )}
           </div>
-
-          {retrySessionId && !comparison && (
-            <div className="retry-stage" aria-live="polite">
-              {inputSource === 'web-midi' && workflow.capture === 'retry' && !workflow.deviceConnected && (
-                <div className="disconnect-recovery" role="alert">
-                  <strong>{t('retryDisconnected')}</strong>
-                  <span>{t('capturedSafe')}</span>
-                  <div className="device-grid compact">
-                    {inputs.map((name) => (
-                      <button type="button" key={name} className="device-item"
-                              onClick={() => pickInput(name)}>{name}</button>
-                    ))}
-                  </div>
-                  <div className="flex">
-                    <button className="btn btn-sm" onClick={refreshMidiInputs}>{t('rescanDevices')}</button>
-                    <button className="btn btn-danger btn-sm" onClick={discardActiveCapture}>{t('discardRetry')}</button>
-                  </div>
-                </div>
-              )}
-              {retryScoreMeta && retryScoreXmlUrl ? (
-                <div className="retry-score-target">
-                  <div className="retry-score-label">{t('retryGeneratedTarget')}</div>
-                  <ScoreViewer xmlUrl={retryScoreXmlUrl} title={pieceTitleOf(exerciseScore)}
-                               beatsPerMeasure={retryScoreMeta.beatsPerMeasure} cursor={cursor}
-                               follow={recording}
-                               liveFeedback={recording ? liveFeedback : null} />
-                </div>
-              ) : (
-                <div className="alert alert-warn">{t('retryGeneratedUnavailable')}</div>
-              )}
-              <div className="recording-bar">
-                {inputSource !== 'midi-upload' && recording && <span className="rec-dot" />}
-                <span>{inputSource === 'midi-upload'
-                  ? t('midiFileRetry')
-                  : inputSource === 'microphone' && microphoneState === 'transcribing'
-                    ? t('microphoneTranscribing')
-                    : (recording ? t('recordingRetry')
-                      : microphoneRef.current?.hasTake(retrySessionId)
-                        ? t('microphoneTakeReady')
-                        : (hasRetryRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('waitingToRecord')))}</span>
-                <span className="dim">{tf('accompanimentStatus', { bpm: retryTempo ?? '—' })}</span>
-                {cursor && <span className="dim">{tf('followerPosition', {
-                  measure: measureLabel(cursor.measure),
-                  bpm: Math.round(cursor.bpm ?? 0),
-                })}</span>}
-              </div>
-              {inputSource !== 'midi-upload' && <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />}
-              {loading && submissionStage !== 'idle' && submissionStage !== 'complete' && (
-                <div className={`submission-progress-card ${submissionStage}`} role="status">
-                  <span className="submission-spinner" />
-                  <strong>{submissionStage === 'transcribing'
-                    ? t('submissionTranscribing')
-                    : submissionStage === 'analyzing'
-                      ? t('submissionAnalyzing') : t('submissionSaving')}</strong>
-                </div>
-              )}
-              {inputSource === 'microphone' && microphoneState === 'transcribing' && (
-                <div className="transcription-progress" role="status">
-                  <div><span style={{ width: `${Math.round(transcriptionProgress * 100)}%` }} /></div>
-                  <strong>{tf('transcriptionProgress', { value: Math.round(transcriptionProgress * 100) })}</strong>
-                  <button type="button" className="btn btn-sm"
-                          onClick={() => microphoneRef.current?.cancelTranscription()}>
-                    {t('transcriptionCancel')}
-                  </button>
-                </div>
-              )}
-              {inputSource === 'midi-upload' && (
-                <div className="mt-12">
-                  <p className="dim">{t('uploadFreshRetry')}</p>
-                  <UploadZone onFile={onUploadRetryMidi} accept=".mid,.midi" disabled={loading} />
-                  {retryUploadName && <div className="upload-confirm">{tf('readyFile', { name: retryUploadName })}</div>}
-                </div>
-              )}
+          {inputSource === 'web-midi' && workflow.capture === 'retry' && !workflow.deviceConnected &&
+            disconnectRecovery('retry')}
+          {inputSource !== 'midi-upload' && retrySessionId && (
+            <LivePanel state={liveFeedback} trace={liveTrace} onSkip={skipLivePosition} />
+          )}
+          {inputSource === 'microphone' && microphoneState === 'transcribing' && (
+            <div className="transcription-progress" role="status">
+              <div><span style={{ width: `${Math.round(transcriptionProgress * 100)}%` }} /></div>
+              <strong>{tf('transcriptionProgress', { value: Math.round(transcriptionProgress * 100) })}</strong>
+              <button type="button" className="btn btn-sm"
+                      onClick={() => microphoneRef.current?.cancelTranscription()}>
+                {t('transcriptionCancel')}
+              </button>
             </div>
           )}
-
-          {comparison && baselineReport && report && (
-            <div className="mt-20">
-              {report.inputQuality?.status === 'insufficient' ? (
-                <div className="limited-metrics-card">
-                  <strong>{t('limitedMetricsTitle')}</strong>
-                  <p>{t('limitedMetricsBody')}</p>
-                </div>
-              ) : <div className="table-scroll"><table className="comparison-table">
-                <thead><tr><th>{t('metric')}</th><th>{t('previousRound')}</th><th>{t('currentRound')}</th><th>{t('change')}</th></tr></thead>
-                <tbody>
-                  {(['overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore',
-                    'dynamicsScore', 'timingMaeMs'] as const).map((k) => (
-                    <tr key={k}>
-                      <td>{METRIC_LABEL[k]}</td>
-                      <td>{baselineReport.metrics[k]}</td>
-                      <td>{report.metrics[k]}</td>
-                      <td className={metricDeltaClass(k, comparison.metricDelta[k])}>
-                        {comparison.metricDelta[k] > 0 ? '+' : ''}{comparison.metricDelta[k]}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>}
-              <div className="alert alert-info">
-                {report.inputQuality?.status === 'insufficient'
-                  ? t('limitedMetricsBody')
-                  : comparison.targetChanged
-                  ? tf('lineageComparisonSummary', { remaining: report.errors.length })
-                  : tf('comparisonSummary', {
-                      resolved: comparison.resolvedErrors.length,
-                      persistent: comparison.persistentErrors.length,
-                      added: comparison.newErrors.length,
-                    })}
-              </div>
-              {comparison.targetChanged && (
-                <div className="dim lineage-metric-note">{t('lineageMetricNotice')}</div>
-              )}
-              <div className="alert alert-success">{comparison.suggestion}</div>
-              {retryScoreMeta && retryScoreXmlUrl ? (
-                <div className="retry-score-target">
-                  <div className="retry-score-label">{t('retryGeneratedTarget')}</div>
-                  <ScoreViewer
-                    xmlUrl={retryScoreXmlUrl} beatsPerMeasure={retryScoreMeta.beatsPerMeasure}
-                    title={pieceTitleOf(exerciseScore)} errors={report.errors}
-                    resolvedKeys={comparison.targetChanged ? undefined : resolvedKeys}
-                  />
-                </div>
-              ) : (
-                <div className="alert alert-warn">{t('retryGeneratedUnavailable')}</div>
-              )}
-              <section className="round-guidance">
-                <span className="training-kicker">{t('currentRoundAiKicker')}</span>
-                <h3>{report.inputQuality?.status === 'insufficient'
-                  ? t('limitedMetricsTitle')
-                  : report.errors.length
-                  ? tf('roundProblemsRemain', { count: report.errors.length })
-                  : t('roundPassed')}</h3>
-                <p>{report.inputQuality?.status === 'insufficient'
-                  ? t('limitedMetricsBody')
-                  : mentorLoading
-                  ? t('mentorThinking')
-                  : (mentor?.summary || comparison.suggestion)}</p>
-                {mentor?.plan[0] && (
-                  <div className="round-plan-preview">
-                    <strong>{mentor.plan[0].label || mentor.plan[0].exerciseType}</strong>
-                    <span>{tf('mentorSuccessCriterion', {
-                      criterion: mentor.plan[0].successCriterion,
-                    })}</span>
-                  </div>
-                )}
-                <div className="flex mt-12">
-                  <button className="btn" onClick={() => setStep('report')}>
-                    {t('viewCurrentRoundReport')}
-                  </button>
-                  <button className="btn btn-primary" onClick={continueFromCurrentRound}>
-                    {report.errors.length ? t('generateFromCurrentRound') : t('increaseChallenge')}
-                  </button>
-                </div>
-              </section>
+          {inputSource === 'midi-upload' && retrySessionId && (
+            <div>
+              <p className="dim">{t('uploadFreshRetry')}</p>
+              <UploadZone onFile={onUploadRetryMidi} accept=".mid,.midi" disabled={loading} />
+              {retryUploadName && <div className="upload-confirm">{tf('readyFile', { name: retryUploadName })}</div>}
             </div>
           )}
-
-          <div className="flex mt-20 between">
-            <button className="btn" onClick={comparison ? continueFromCurrentRound : () => setStep('exercise')}
-                    disabled={!!retrySessionId && !comparison}>{comparison
-                      ? t('generateFromCurrentRound') : t('backToExercise')}</button>
-            <button className="btn btn-primary" onClick={() => {
-              sendWorkflow({ type: 'RESET' }); setReport(null); setBaselineReport(null); setComparison(null)
-              setMentorChat([]); setMentorMemory(null); setExercise(null); setExerciseStage('design'); setGenerationNote('')
-              setExerciseScore(null); setRetrySessionId(null); setCursor(null); setRecording(false)
-              recordingRef.current = false; setSubmissionStage('idle')
-              liveRef.current.reset(); setLiveTrace([])
-              setLiveFeedback(idleLiveState('web-midi'))
-              setScoreId(null); setScoreDetail(null); setNormalization(null); setMeta(null); setEvents([])
-              uploadMidiRef.current = null; retryUploadMidiRef.current = null
-            }} disabled={!!retrySessionId && !comparison}>{t('restart')}</button>
-          </div>
         </div>
       )}
+      actions={comparison ? {
+        back: <button className="btn" onClick={() => setStep('report')}>{t('viewCurrentRoundReport')}</button>,
+        primary: (
+          <>
+            <button className="btn" onClick={startOver}>{t('restart')}</button>
+            <button className="btn btn-primary" onClick={continueFromCurrentRound}>
+              {report?.errors.length ? t('generateFromCurrentRound') : t('increaseChallenge')}
+            </button>
+          </>
+        ),
+      } : {
+        back: (
+          <button className="btn" onClick={() => setStep('exercise')} disabled={retryLocked}>
+            {t('backToExercise')}
+          </button>
+        ),
+        status: submissionStatus ?? (retrySessionId ? (
+          <div className="recording-bar">
+            {inputSource !== 'midi-upload' && recording && <span className="rec-dot" />}
+            <span>{inputSource === 'midi-upload'
+              ? t('midiFileRetry')
+              : inputSource === 'microphone' && microphoneState === 'transcribing'
+                ? t('microphoneTranscribing')
+                : (recording ? t('recordingRetry')
+                  : microphoneRef.current?.hasTake(retrySessionId)
+                    ? t('microphoneTakeReady')
+                    : (hasRetryRecovery ? tf('recoveredNotes', { count: recoveredEvents.length }) : t('waitingToRecord')))}</span>
+            <span className="dim">{tf('accompanimentStatus', { bpm: retryTempo ?? '—' })}</span>
+            {cursor && <span className="dim">{tf('followerPosition', {
+              measure: measureLabel(cursor.measure),
+              bpm: Math.round(cursor.bpm ?? 0),
+            })}</span>}
+          </div>
+        ) : null),
+        primary: (
+          <>
+            {retrySessionId && (
+              <button className="btn" onClick={cancelRetry} disabled={loading}>{t('cancelRetry')}</button>
+            )}
+            {retrySessionId ? (
+              <button className="btn btn-danger" onClick={stopRetryAndCompare}
+                      disabled={loading || (uploadMode
+                        ? !retryUploadMidiRef.current
+                        : (!recording && !hasRetryRecovery &&
+                          !microphoneRef.current?.hasTake(retrySessionId)))}>
+                {hasRetryRecovery
+                  ? t('analyzeRecoveredComparison')
+                  : inputSource === 'microphone' && !recording &&
+                      microphoneRef.current?.hasTake(retrySessionId)
+                    ? t('analyzeSavedTakeComparison')
+                    : t('stopAndCompare')}
+              </button>
+            ) : (
+              <button className="btn btn-primary" onClick={startAccompaniment}
+                      disabled={loading || recording}>
+                {inputSource === 'microphone'
+                  ? (headphonesConfirmed ? t('startMicrophoneRetryWithAccompaniment') : t('startMicrophoneRetry'))
+                  : t('startAccompaniment')}
+              </button>
+            )}
+          </>
+        ),
+      }}
+    />
+  )
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <h1 className="brand">{t('appName')}</h1>
+        <StudioStepper active={studioStage} canOpen={canOpenStudioStage}
+                       onOpen={openStudioStage} />
+        <button type="button" className="btn btn-sm settings-open"
+                aria-haspopup="dialog" aria-expanded={settingsOpen}
+                title={t('settingsOpen')} aria-label={t('settingsOpen')}
+                onClick={() => setSettingsOpen(true)}>⚙</button>
+      </header>
+
+      <NoticeStack notices={notices} onDismiss={dismissNotice} />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme} onTheme={setTheme}
+        finish={finish} onFinish={setFinish}
+        locale={locale} onLocale={setLocale}
+        depth={uiScale} onDepth={setUiScale}
+      />
+
+      <main className="app-body">
+      {workflow.lastRejection === 'CAPTURE_ACTIVE' && (
+        <div className="alert alert-warn" role="alert">{t('captureActiveGuard')}</div>
+      )}
+      {/* Gated on the context, not on the note count. A microphone take or an
+          uploaded file recovers without any MIDI events, so keying this on
+          recoveredEvents left those two with a warning on every load and no
+          button to clear it — the only way out was wiping storage by hand. */}
+      {recoveryContext && (
+        <div className="recovery-banner" role="status">
+          <span>{recoveredEvents.length > 0
+            ? tf('localRecovery', { count: recoveredEvents.length })
+            : t('localRecoveryTake')}</span>
+          <button type="button" className="btn btn-sm" onClick={discardRecoveredRecording}
+                  disabled={loading}>{t('discardRecovery')}</button>
+        </div>
+      )}
+
+      <Suspense fallback={<div className="stage score-loading">{t('scoreEngineLoading')}</div>}>
+        {step === 'select' && renderSelect()}
+        {step === 'calibrate' && renderInput()}
+        {step === 'perform' && renderPerform()}
+        {step === 'report' && report && (
+          <CoachReport
+            depth={uiScale}
+            report={report}
+            baseline={baselineReport}
+            beatsPerMeasure={meta?.beatsPerMeasure}
+            scoreXmlUrl={scoreId ? api.scoreXmlUrl(scoreId) : undefined}
+            scoreTitle={pieceTitleOf(scoreDetail)}
+            headExtra={roundBadge}
+            selectedError={selectedError}
+            mentor={mentor}
+            mentorLoading={mentorLoading}
+            mentorInOtherLanguage={mentorInOtherLanguage}
+            onRewriteMentor={rewriteMentor}
+            chatMessages={mentorChat}
+            chatLoading={mentorChatLoading}
+            question={question}
+            mentorMemory={mentorMemory}
+            onChooseError={(error) => chooseError(report, error)}
+            onPlayEvidence={playEvidence}
+            onApplyPlan={applyMentorPlan}
+            onApplyChatAction={applyChatAction}
+            onAskMentor={askMentor}
+            onQuestionChange={setQuestion}
+            onCancelChat={() => mentorChatAbortRef.current?.abort()}
+            onForgetMemory={forgetMentorMemory}
+            onRerecord={recordAgain}
+            onGenerateExercise={openExerciseDesigner}
+          />
+        )}
+        {step === 'exercise' && (exerciseStage === 'generated' && exercise
+          ? renderExerciseResult() : renderExerciseDesign())}
+        {step === 'compare' && renderCompare()}
       </Suspense>
-      </div>
+      </main>
     </div>
   )
 }
 
 // ---- 辅助组件 ----
-function UploadZone({ onFile, accept, disabled }: { onFile: (f: File) => void; accept: string; disabled?: boolean }) {
+function UploadZone({ onFile, accept, disabled, hint }: {
+  onFile: (f: File) => void; accept: string; disabled?: boolean; hint?: string
+}) {
   const [drag, setDrag] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const choose = () => { if (!disabled) inputRef.current?.click() }
@@ -2768,7 +2770,8 @@ function UploadZone({ onFile, accept, disabled }: { onFile: (f: File) => void; a
                if (f) onFile(f)
                e.currentTarget.value = ''
              }} />
-      <div className="dim">{t('fileDrop')}{disabled ? t('processingSuffix') : ''}</div>
+      <div className="upload-zone-label">{t('fileDrop')}{disabled ? t('processingSuffix') : ''}</div>
+      {hint && <div className="upload-zone-hint">{hint}</div>}
     </div>
   )
 }

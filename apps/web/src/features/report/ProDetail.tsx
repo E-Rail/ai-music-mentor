@@ -1,15 +1,20 @@
 import { t, tf } from '../../i18n/messages'
 import { handOfEventIds } from '../score/hands'
 import type { DiagnosisReport } from '../../types'
+import { TempoCurve } from './TempoCurve'
 
 /**
  * What Pro adds to a report.
  *
  * Every number here was already measured and already sent — the evidence list,
- * the per-note confidence, the engine that did the reading, the room it was
- * read in. Standard leaves it folded away because a player wanting to know what
- * to practise does not need it; Pro is for the take after that, when the
- * question has become "how do you know?".
+ * the per-hand split, the engine that did the reading, the room it was read in,
+ * the tempo that was kept. Standard leaves them out because a player wanting to
+ * know what to practise does not need them; Pro is for the take after that,
+ * when the question has become "how do you know?".
+ *
+ * They are drawn with the same pieces as everything else in the report — the
+ * same section heading, fact row and metric tile — because Pro is more of the
+ * same studio, not a different one.
  *
  * Nothing here grades a dynamic. Velocity and amplitude are evidence about a
  * played note, and only notation may be read as a written marking.
@@ -18,45 +23,41 @@ export function ProEvidence({ report, measureLabel }: {
   report: DiagnosisReport
   measureLabel: (measure: number) => string | number
 }) {
-  if (!report.evidences.length) {
-    return (
-      <section className="pro-block">
-        <h3>{t('proEvidenceTitle')}</h3>
-        <p className="pro-empty">{t('proEvidenceEmpty')}</p>
-      </section>
-    )
-  }
   return (
-    <section className="pro-block">
+    <section className="report-section">
       <h3>{t('proEvidenceTitle')}</h3>
-      <ul className="pro-evidence">
-        {report.evidences.map((evidence) => (
-          <li key={evidence.id}>
-            <span className="pro-where">{tf('proEvidencePosition', {
-              measure: measureLabel(evidence.measureNo),
-              beat: evidence.beat + 1,
-            })}</span>
-            <span className="pro-fact">{evidence.fact}</span>
-            {(evidence.expected || evidence.actual) && (
-              <span className="pro-compare">
-                {evidence.expected && (
-                  <span><em>{t('proEvidenceExpected')}</em> {evidence.expected}</span>
-                )}
-                {evidence.actual && (
-                  <span><em>{t('proEvidenceActual')}</em> {evidence.actual}</span>
-                )}
-              </span>
-            )}
-            {typeof evidence.deltaMs === 'number' && (
-              <span className="pro-delta">{tf('proEvidenceDelta', {
-                ms: evidence.deltaMs > 0
-                  ? `+${Math.round(evidence.deltaMs)}`
-                  : Math.round(evidence.deltaMs),
+      {report.evidences.length === 0 ? (
+        <p className="dim">{t('proEvidenceEmpty')}</p>
+      ) : (
+        <ul className="fact-list">
+          {report.evidences.map((evidence) => (
+            <li key={evidence.id}>
+              <span className="fact-where">{tf('proEvidencePosition', {
+                measure: measureLabel(evidence.measureNo),
+                beat: evidence.beat + 1,
               })}</span>
-            )}
-          </li>
-        ))}
-      </ul>
+              <span className="fact-text">{evidence.fact}</span>
+              {(evidence.expected || evidence.actual) && (
+                <span className="fact-compare">
+                  {evidence.expected && (
+                    <span><em>{t('proEvidenceExpected')}</em> {evidence.expected}</span>
+                  )}
+                  {evidence.actual && (
+                    <span><em>{t('proEvidenceActual')}</em> {evidence.actual}</span>
+                  )}
+                  {typeof evidence.deltaMs === 'number' && !evidence.actual && (
+                    <span className="numeric">{tf('proEvidenceDelta', {
+                      ms: evidence.deltaMs > 0
+                        ? `+${Math.round(evidence.deltaMs)}`
+                        : Math.round(evidence.deltaMs),
+                    })}</span>
+                  )}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   )
 }
@@ -79,18 +80,21 @@ export function ProHands({ report }: { report: DiagnosisReport }) {
   }
   const total = counts.left + counts.right + counts.unknown
   return (
-    <section className="pro-block">
+    <section className="report-section">
       <h3>{t('proHandsTitle')}</h3>
       {total === 0 ? (
-        <p className="pro-empty">{t('proHandsClean')}</p>
+        <p className="dim">{t('proHandsClean')}</p>
       ) : (
-        <ul className="pro-hands">
-          <li>{tf('proHandsLeft', { count: counts.left })}</li>
-          <li>{tf('proHandsRight', { count: counts.right })}</li>
+        <div className="metric-row">
+          <div className="metric"><div className="label">{t('leftHand')}</div>
+            <div className="value">{counts.left}</div></div>
+          <div className="metric"><div className="label">{t('rightHand')}</div>
+            <div className="value">{counts.right}</div></div>
           {counts.unknown > 0 && (
-            <li>{tf('proHandsUnknown', { count: counts.unknown })}</li>
+            <div className="metric"><div className="label">{t('proHandsBoth')}</div>
+              <div className="value">{counts.unknown}</div></div>
           )}
-        </ul>
+        </div>
       )}
     </section>
   )
@@ -100,36 +104,56 @@ export function ProHands({ report }: { report: DiagnosisReport }) {
  * How good the reading itself was.
  *
  * A player whose room was too loud deserves to know that before they believe a
- * score. All of this has been on the wire since the first release without ever
- * reaching the screen.
+ * score.
  */
 export function ProInputQuality({ report }: { report: DiagnosisReport }) {
   const quality = report.inputQuality
   if (!quality) return null
   return (
-    <section className="pro-block">
+    <section className="report-section">
       <h3>{t('proInputTitle')}</h3>
-      <ul className="pro-input">
+      <dl className="fact-table">
         {quality.transcriptionEngine && (
-          <li>{tf('proInputEngine', {
-            engine: quality.transcriptionEngine,
-            version: quality.transcriptionVersion,
-          })}</li>
+          <div><dt>{t('proInputEngineLabel')}</dt><dd>{quality.transcriptionEngine}
+            {quality.transcriptionVersion ? ` ${quality.transcriptionVersion}` : ''}</dd></div>
         )}
-        <li>{tf('proInputAccepted', {
-          accepted: quality.acceptedNoteCount,
-          rejected: quality.rejectedNoteCount,
-        })}</li>
+        <div><dt>{t('proInputNotesLabel')}</dt><dd>{tf('proInputAccepted', {
+          accepted: quality.acceptedNoteCount, rejected: quality.rejectedNoteCount,
+        })}</dd></div>
         {typeof quality.noiseFloorDb === 'number' && (
-          <li>{tf('proInputNoise', { db: Math.round(quality.noiseFloorDb) })}</li>
+          <div><dt>{t('proInputNoiseLabel')}</dt><dd className="numeric">
+            {Math.round(quality.noiseFloorDb)} dBFS</dd></div>
         )}
-        <li>{tf('proInputConfidence', {
-          value: Math.round(quality.confidence * 100),
-        })}</li>
-        <li className="pro-provenance">{tf('proProvenance', {
-          algorithm: report.algorithmVersion,
-          profile: report.thresholdProfile,
-        })}</li>
+        <div><dt>{t('proInputConfidenceLabel')}</dt><dd className="numeric">
+          {Math.round(quality.confidence * 100)}%</dd></div>
+        <div><dt>{t('proProvenanceLabel')}</dt><dd className="numeric">
+          {report.algorithmVersion} · {report.thresholdProfile}</dd></div>
+      </dl>
+    </section>
+  )
+}
+
+export function ProTempo({ report }: { report: DiagnosisReport }) {
+  if (!report.tempoCurve?.length) return null
+  return (
+    <section className="report-section">
+      <h3>{t('tempoCurveTitle')}</h3>
+      {report.targetBpm ? (
+        <p className="dim">{tf('tempoCurveHint', { bpm: Math.round(report.targetBpm) })}</p>
+      ) : null}
+      <TempoCurve points={report.tempoCurve} targetBpm={report.targetBpm} />
+    </section>
+  )
+}
+
+/** How the take was measured — method, kept apart from what went wrong. */
+export function ProMethod({ report }: { report: DiagnosisReport }) {
+  if (!report.notes?.length) return null
+  return (
+    <section className="report-section">
+      <h3>{t('methodTitle')}</h3>
+      <ul className="fact-list plain">
+        {report.notes.map((note) => <li key={note}><span className="fact-text">{note}</span></li>)}
       </ul>
     </section>
   )

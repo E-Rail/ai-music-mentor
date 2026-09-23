@@ -598,4 +598,8 @@ export const enUS: Record<keyof typeof zhHans, string> = {
   phraseSeparator: ', ',
   clauseSeparator: '; ',
   labelValue: '{label}: {value}',
+
+  // Mentor summary language
+  mentorOtherLanguage: 'This summary was written before you switched language.',
+  mentorRewrite: 'Rewrite in English',
 }

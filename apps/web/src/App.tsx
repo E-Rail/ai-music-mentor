@@ -36,13 +36,14 @@ import type { MentorChatMessage } from './features/mentor/MentorChat'
 import {
   chatMessageId, readMentorChat, writeMentorChat,
 } from './features/mentor/chatStorage'
-import { MidiPlayer, ensureAudio, parsePitchNames, playPitches } from './features/audio/player'
+import { MidiPlayer, ensureAudio, playPitches } from './features/audio/player'
 import {
   initialWorkflowState, workflowReducer, type WorkflowPhase,
 } from './workflow/machine'
 import {
-  CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, t, tf,
+  CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, getLocale, t, tf,
 } from './i18n/messages'
+import type { Locale } from './features/shell/preferences'
 import { withEmbeddedNote } from './features/shell/embedding'
 import { NoticeStack, useNotices } from './features/shell/notices'
 
@@ -76,6 +77,12 @@ type RecoveryContext = {
 type ExerciseStage = 'design' | 'generated'
 type SubmissionStage = 'idle' | 'saving' | 'transcribing' | 'analyzing' | 'complete' | 'error'
 type ScoreListItem = ScoreLibraryItem
+
+/** One summary per report, question, mistake — and language. */
+function mentorCacheKey(reportId: string, errorId: string | undefined, prompt: string,
+  locale: Locale): string {
+  return JSON.stringify([reportId, errorId ?? '', prompt.trim(), locale])
+}
 
 const RECOVERY_CONTEXT_KEY = 'ai-music-mentor:active-session'
 function readRecoveryContext(): RecoveryContext | null {
@@ -232,6 +239,10 @@ export default function App() {
   const [baselineReport, setBaselineReport] = useState<DiagnosisReport | null>(null)
   const [selectedError, setSelectedError] = useState<ErrorEvent | null>(null)
   const [mentor, setMentor] = useState<MentorResponse | null>(null)
+  // The language the summary on screen was written in. It is AI prose, so a
+  // language switch does not translate it; the panel offers to rewrite it.
+  const [mentorLocale, setMentorLocale] = useState<Locale | null>(null)
+  const mentorArgsRef = useRef<{ report: DiagnosisReport; prompt: string; errorId?: string } | null>(null)
   const [mentorLoading, setMentorLoading] = useState(false)
   const [mentorChat, setMentorChat] = useState<MentorChatMessage[]>([])
   const [mentorChatLoading, setMentorChatLoading] = useState(false)
@@ -390,10 +401,13 @@ export default function App() {
   const loadMentor = async (activeReport: DiagnosisReport, prompt = '',
     errorId?: string, notifyOnError = true): Promise<MentorResponse | null> => {
     const requestId = ++mentorRequestRef.current
-    const key = JSON.stringify([activeReport.reportId, errorId ?? '', prompt.trim()])
+    const locale = getLocale()
+    mentorArgsRef.current = { report: activeReport, prompt, errorId }
+    const key = mentorCacheKey(activeReport.reportId, errorId, prompt, locale)
     const cached = mentorCacheRef.current.get(key)
     if (cached) {
       setMentor(cached)
+      setMentorLocale(locale)
       setMentorLoading(false)
       return cached
     }
@@ -408,7 +422,10 @@ export default function App() {
     try {
       const response = await pending
       mentorCacheRef.current.set(key, response)
-      if (requestId === mentorRequestRef.current) setMentor(response)
+      if (requestId === mentorRequestRef.current) {
+        setMentor(response)
+        setMentorLocale(locale)
+      }
       return response
     } catch (error) {
       if (requestId === mentorRequestRef.current && notifyOnError) {
@@ -1258,10 +1275,9 @@ export default function App() {
     }
   }
 
-  const playEvidence = async (text: string) => {
+  const playEvidence = async (pitches: number[]) => {
     try {
       await ensureAudio()
-      const pitches = parsePitchNames(text)
       if (pitches.length) await playPitches(pitches)
     } catch (error) {
       notify('warn', () => tf('evidencePlaybackFailed', { detail: (error as Error).message }))
@@ -1685,6 +1701,70 @@ export default function App() {
   const [theme, setTheme] = useTheme()
   const [finish, setFinish] = useFinish()
   const [locale, setLocale, spokenLocale] = useLocale()
+
+  // Everything the server wrote that is on screen now — the library, the open
+  // piece, the report, the comparison, the exercise — is fetched again in the
+  // new language. Deterministic and cheap: no AI call. The AI's own summary
+  // is not rewritten behind the player's back; a cached one in this language
+  // is shown if there is one, and otherwise the panel offers to rewrite it.
+  const spokenOnceRef = useRef(spokenLocale)
+  useEffect(() => {
+    if (spokenOnceRef.current === spokenLocale) return
+    spokenOnceRef.current = spokenLocale
+    const same = <T,>(fresh: T, key: (value: T) => string) =>
+      (current: T | null) => (current && key(current) === key(fresh) ? fresh : current)
+    void api.listScores().then((r) => setScores(r.scores as ScoreListItem[])).catch(() => {})
+    if (scoreDetail) {
+      void api.getScore(scoreDetail.scoreId).then((fresh) => {
+        setScoreDetail(same(fresh, (value) => value.scoreId))
+        // Only the name is language; bar labels and tempo stay as they are.
+        setMetaState((current) => current && current.scoreId === fresh.metadata.scoreId
+          ? { ...current, title: fresh.metadata.title } : current)
+      }).catch(() => {})
+    }
+    if (exerciseScore) {
+      void api.getScore(exerciseScore.scoreId)
+        .then((fresh) => setExerciseScore(same(fresh, (value) => value.scoreId))).catch(() => {})
+    }
+    for (const [held, set] of [[report, setReport], [baselineReport, setBaselineReport]] as const) {
+      if (!held) continue
+      void api.getReport(held.reportId).then((fresh) => {
+        set(same(fresh, (value) => value.reportId))
+        setSelectedError((current) => current
+          ? fresh.errors.find((error) => error.id === current.id) ?? current : current)
+      }).catch(() => {})
+    }
+    if (comparison && baselineReport && report) {
+      void api.compare(baselineReport.reportId, report.reportId)
+        .then((fresh) => setComparison((current) => current ? fresh : current)).catch(() => {})
+    }
+    if (exercise) {
+      void api.getExercise(exercise.exerciseId).then((fresh) => setExercise((current) =>
+        current?.exerciseId === fresh.exerciseId ? { ...current, ...fresh } : current)).catch(() => {})
+    }
+    const args = mentorArgsRef.current
+    if (args) {
+      const cached = mentorCacheRef.current.get(
+        mentorCacheKey(args.report.reportId, args.errorId, args.prompt, spokenLocale))
+      if (cached) {
+        setMentor(cached)
+        setMentorLocale(spokenLocale)
+      } else if (mentor?.provider.startsWith('rules')) {
+        // The offline mentor costs nothing to ask again, so there is no call
+        // to save by keeping its old-language summary on screen.
+        void loadMentor(args.report, args.prompt, args.errorId, false)
+      }
+    }
+  // Keyed on the language alone: this is what a language change does, not
+  // something to repeat whenever the report changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spokenLocale])
+
+  const rewriteMentor = () => {
+    const args = mentorArgsRef.current
+    if (args) void loadMentor(args.report, args.prompt, args.errorId)
+  }
+  const mentorInOtherLanguage = Boolean(mentor && mentorLocale && mentorLocale !== spokenLocale)
   const [uiScale, setUiScale] = useDepth()
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -2241,6 +2321,8 @@ export default function App() {
           selectedError={selectedError}
           mentor={mentor}
           mentorLoading={mentorLoading}
+          mentorInOtherLanguage={mentorInOtherLanguage}
+          onRewriteMentor={rewriteMentor}
           chatMessages={mentorChat}
           chatLoading={mentorChatLoading}
           question={question}

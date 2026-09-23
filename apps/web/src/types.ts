@@ -119,6 +119,9 @@ export interface Evidence {
   beat: number
   expected: string
   actual: string
+  /** The notes behind expected/actual, for playing back. Empty when the evidence is not about notes. */
+  expectedPitches?: number[]
+  actualPitches?: number[]
   deltaMs: number | null
   deltaVelocity?: number | null
 }
@@ -159,7 +162,19 @@ export interface DiagnosisReport {
   scoreHash: string
   sourceReferences?: { artifactId: string; kind: string; sha256: string; originalName: string }[]
   inputQuality?: InputQuality
+  /** Problems with the evidence itself: noise, low confidence. Shown in both modes. */
   warnings?: string[]
+  /** How the take was measured. Method, not a problem; Pro shows it. */
+  notes?: string[]
+  /** The tempo the player kept around each matched note. */
+  tempoCurve?: TempoPoint[]
+  targetBpm?: number | null
+}
+
+export interface TempoPoint {
+  beat: number
+  measure: number
+  bpm: number
 }
 
 export interface AnalysisJob {

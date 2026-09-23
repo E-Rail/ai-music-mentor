@@ -7,7 +7,7 @@ import {
   ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, joinClauses, labelled, t, tf,
 } from '../../i18n/messages'
 import { ProEvidence, ProHands, ProInputQuality } from './ProDetail'
-import { errorColor, errorDetailForDisplay } from './errorPresentation'
+import { errorColor, errorDetailForDisplay, evidenceNotes } from './errorPresentation'
 import { MentorSummary } from '../mentor/MentorSummary'
 import { MentorChat, type MentorChatMessage } from '../mentor/MentorChat'
 import { measureLabel } from '../score/measureLabels'
@@ -27,12 +27,14 @@ type CoachReportProps = {
   selectedError: ErrorEvent | null
   mentor: MentorResponse | null
   mentorLoading: boolean
+  mentorInOtherLanguage?: boolean
+  onRewriteMentor?: () => void
   chatMessages: MentorChatMessage[]
   chatLoading: boolean
   question: string
   mentorMemory: MentorMemoryStatus | null
   onChooseError: (error: ErrorEvent) => void
-  onPlayEvidence: (text: string) => void
+  onPlayEvidence: (pitches: number[]) => void
   onApplyPlan: (plan: MentorPlanItem) => void
   onApplyChatAction: (response: MentorChatResponse, actionIndex: number) => void
   onAskMentor: (prompt?: string, retryMessageId?: string) => void | Promise<void>
@@ -45,7 +47,8 @@ type CoachReportProps = {
 
 export function CoachReport({
   depth, report, baseline, beatsPerMeasure, scoreXmlUrl, scoreTitle, selectedError,
-  mentor, mentorLoading, chatMessages, chatLoading, question,
+  mentor, mentorLoading, mentorInOtherLanguage, onRewriteMentor,
+  chatMessages, chatLoading, question,
   mentorMemory,
   onChooseError, onPlayEvidence, onApplyPlan, onApplyChatAction, onAskMentor,
   onQuestionChange, onCancelChat, onForgetMemory, onRerecord, onGenerateExercise,
@@ -166,7 +169,8 @@ export function CoachReport({
           </details>
         </div>
         <aside className="coach-mentor-column">
-          <MentorSummary response={mentor} loading={mentorLoading} onApplyPlan={onApplyPlan} />
+          <MentorSummary response={mentor} loading={mentorLoading} onApplyPlan={onApplyPlan}
+                         otherLanguage={mentorInOtherLanguage} onRewrite={onRewriteMentor} />
           <MentorChat
             messages={chatMessages} loading={chatLoading} question={question}
             onQuestionChange={onQuestionChange} onAsk={onAskMentor}
@@ -230,7 +234,7 @@ function MetricsView({ report, baseline }: {
 function EvidenceDrawer({ report, error, onPlayCompare }: {
   report: DiagnosisReport
   error: ErrorEvent
-  onPlayCompare: (text: string) => void
+  onPlayCompare: (pitches: number[]) => void
 }) {
   const evidences = report.evidences.filter((evidence) => error.evidenceIds.includes(evidence.id))
   return (
@@ -240,13 +244,15 @@ function EvidenceDrawer({ report, error, onPlayCompare }: {
         <div key={evidence.id} className="fact">
           • {evidence.fact}
           <div className="compare">
-            {evidence.expected && (
-              <button className="btn btn-sm" onClick={() => onPlayCompare(evidence.expected)}>
+            {evidenceNotes(evidence, 'expected').length > 0 && (
+              <button className="btn btn-sm"
+                      onClick={() => onPlayCompare(evidenceNotes(evidence, 'expected'))}>
                 {t('hearExpected')}
               </button>
             )}
-            {evidence.actual && (
-              <button className="btn btn-sm" onClick={() => onPlayCompare(evidence.actual)}>
+            {evidenceNotes(evidence, 'actual').length > 0 && (
+              <button className="btn btn-sm"
+                      onClick={() => onPlayCompare(evidenceNotes(evidence, 'actual'))}>
                 {t('hearActual')}
               </button>
             )}

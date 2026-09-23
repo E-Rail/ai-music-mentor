@@ -593,4 +593,8 @@ export const zhHans = {
   phraseSeparator: '，',
   clauseSeparator: '；',
   labelValue: '{label}：{value}',
+
+  // 导师总结的语言
+  mentorOtherLanguage: '这段总结是切换语言之前写的。',
+  mentorRewrite: '用中文重写',
 } as const

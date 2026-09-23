@@ -49,6 +49,33 @@ export function tf(key: MessageKey, values: Record<string, string | number | nul
   )
 }
 
+// ------------------------------------------------------------------ joiners
+// Punctuation is language too. A '；' written into a component reads as a stray
+// Chinese mark in an English sentence, so the joins live in the catalogue.
+
+/** Items of one kind: bars, notes. 1、2、3 / 1, 2, 3 */
+export const joinList = (items: readonly (string | number)[]): string =>
+  items.join(t('listSeparator'))
+
+/** Parts of one statement: a label and where it is. */
+export const joinPhrases = (items: readonly (string | number)[]): string =>
+  items.join(t('phraseSeparator'))
+
+/** Whole findings, each able to stand as its own sentence. */
+export const joinClauses = (items: readonly (string | number)[]): string =>
+  items.join(t('clauseSeparator'))
+
+/** "Input quality: high" */
+export const labelled = (label: string, value: string | number): string =>
+  tf('labelValue', { label, value })
+
+const INSTRUMENT_KEYS: Record<string, MessageKey> = {
+  piano: 'instrumentPiano', guitar: 'instrumentGuitar', violin: 'instrumentViolin',
+}
+
+export const instrumentLabel = (instrument: string): string =>
+  INSTRUMENT_KEYS[instrument] ? t(INSTRUMENT_KEYS[instrument]) : instrument
+
 // ------------------------------------------------------------------- labels
 // These name values that arrive from the API as bare codes. They were plain
 // Chinese constants until this file learned a second language, which meant they

@@ -7,7 +7,7 @@
 // - 70ms 和弦窗口聚合（方案 5.3）
 
 import type { PerformanceEvent } from '../../types'
-import { t } from '../../i18n/messages'
+import { labelled, t } from '../../i18n/messages'
 import type {
   InputDeviceDescriptor, PerformanceCaptureResult, PerformanceInputAdapter,
 } from '../input/PerformanceInputAdapter'
@@ -124,7 +124,7 @@ export class MidiCapture implements PerformanceInputAdapter {
         return
       }
       const name = port.name || port.id
-      this.onStateChange?.(`${name}：${port.state === 'connected' ? t('connected') : t('disconnected')}`)
+      this.onStateChange?.(labelled(name, port.state === 'connected' ? t('connected') : t('disconnected')))
       if (port.state === 'disconnected' && this.input && port.id === this.input.id) {
         this.onDeviceLost?.(name)
       }

@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { followScrollTop } from './followScroll'
 import { OpenSheetMusicDisplay } from 'opensheetmusicdisplay'
 import type { ErrorEvent } from '../../types'
-import { ERROR_TYPE_LABEL, t, tf } from '../../i18n/messages'
+import { ERROR_TYPE_LABEL, joinPhrases, t, tf } from '../../i18n/messages'
 import type { LivePerformanceState } from '../live'
 import { CURSOR_INK, RESOLVED_INK, errorInk } from '../report/errorPalette'
 import {
@@ -26,7 +26,7 @@ import {
 import { labelPlacement } from './overlayLabels'
 import { midiFromOsmdHalfTone, noteName } from './pitch'
 import { measureLabel, renumberMeasures } from './measureLabels'
-import { ENGRAVING_OPTIONS, applyEngravingRules } from './engraving'
+import { ENGRAVING_OPTIONS, applyEngravingRules, retitle } from './engraving'
 
 interface Props {
   xmlUrl: string
@@ -40,6 +40,8 @@ interface Props {
   selectedErrorId?: string | null
   onErrorClick?: (e: ErrorEvent) => void
   height?: number
+  /** What the app calls this piece; the page is engraved with it. */
+  title?: string
 }
 
 interface RenderedNoteAnchor {
@@ -95,7 +97,7 @@ export function ScoreViewer(props: Props) {
         // The page prints the same bar numbers the app says out loud. A file
         // that numbers every bar 0 would otherwise contradict every position in
         // the report.
-        await osmd.load(renumberMeasures(text))
+        await osmd.load(retitle(renumberMeasures(text), props.title))
         if (cancelled) return
         osmd.render()
         if (cancelled) return
@@ -167,7 +169,7 @@ export function ScoreViewer(props: Props) {
     }
     render()
     return () => { cancelled = true; controller.abort() }
-  }, [props.xmlUrl])
+  }, [props.xmlUrl, props.title])
 
   /**
    * "Pitch → staff height", fitted to the notes OSMD actually drew — once per
@@ -394,11 +396,12 @@ export function ScoreViewer(props: Props) {
             data-measure={err.location.measure}
             data-beat={err.location.beat}
             title={`${ERROR_TYPE_LABEL[err.type] ?? err.type} · ${tf('errorPosition', {
-              measure: err.location.measure, beat: err.location.beat + 1, severity: '',
+              measure: measureLabel(err.location.measure), beat: err.location.beat + 1, severity: '',
             }).replace(/ · $/, '')}`}
-            aria-label={`${resolved ? t('improved') : ERROR_TYPE_LABEL[err.type] ?? err.type}，${tf('errorPosition', {
-              measure: err.location.measure, beat: err.location.beat + 1, severity: '',
-            }).replace(/ · $/, '')}`}
+            aria-label={joinPhrases([resolved ? t('improved') : ERROR_TYPE_LABEL[err.type] ?? err.type,
+              tf('errorPosition', {
+                measure: measureLabel(err.location.measure), beat: err.location.beat + 1, severity: '',
+              }).replace(/ · $/, '')])}
             onClick={() => props.onErrorClick?.(err)}
             style={{
               position: 'absolute', left: p.left, top: p.top, height: p.height,

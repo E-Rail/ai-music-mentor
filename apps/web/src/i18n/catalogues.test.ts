@@ -3,7 +3,8 @@ import { enUS } from './en-US'
 import { zhHans } from './zh-Hans'
 import {
   CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL,
-  SEVERITY_LABEL, getLocale, setLocale, t, tf,
+  SEVERITY_LABEL, getLocale, instrumentLabel, joinClauses, joinList, joinPhrases,
+  labelled, setLocale, t, tf,
 } from './messages'
 
 const placeholders = (message: string) =>
@@ -31,10 +32,10 @@ describe('the two catalogues stay in step', () => {
     }
   })
 
-  it('does not leave Chinese characters in the English catalogue', () => {
+  it('does not leave Chinese characters or punctuation in the English catalogue', () => {
     for (const [key, value] of Object.entries(enUS)) {
-      expect(/[一-鿿]/.test(value), `en-US ${key} still has Chinese`)
-        .toBe(false)
+      expect(/[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]/.test(value),
+        `en-US ${key} still has Chinese`).toBe(false)
     }
   })
 })
@@ -80,5 +81,21 @@ describe('switching language', () => {
     expect(EXERCISE_STRATEGIES.map(([id]) => id)).toEqual(english)
     expect(english[0]).toBe('auto')
     expect(english).toHaveLength(7)
+  })
+})
+
+describe('joining words is part of the language', () => {
+  it('uses each language\'s own separators', () => {
+    setLocale('zh-Hans')
+    expect(joinList([1, 2, 3])).toBe('1、2、3')
+    expect(joinClauses(['甲', '乙'])).toBe('甲；乙')
+    expect(labelled('输入质量', '高')).toBe('输入质量：高')
+    setLocale('en-US')
+    expect(joinList([1, 2, 3])).toBe('1, 2, 3')
+    expect(joinPhrases(['Wrong note', 'bar 3'])).toBe('Wrong note, bar 3')
+    expect(joinClauses(['one', 'two'])).toBe('one; two')
+    expect(labelled('Input quality', 'high')).toBe('Input quality: high')
+    expect(instrumentLabel('violin')).toBe(enUS.instrumentViolin)
+    setLocale('zh-Hans')
   })
 })

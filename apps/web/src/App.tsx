@@ -29,7 +29,7 @@ import {
 import { CoachReport } from './features/report/CoachReport'
 import { errorColor, errorDetailForDisplay } from './features/report/errorPresentation'
 import {
-  categoryForScore, partitionScoreLibrary, scoreDisplayTitle,
+  categoryForScore, partitionScoreLibrary, pieceTitle, pieceTitleOf,
   type ScoreLibraryItem,
 } from './features/score/library'
 import type { MentorChatMessage } from './features/mentor/MentorChat'
@@ -44,6 +44,7 @@ import {
   CADENCE_LABEL, ERROR_TYPE_LABEL, EXERCISE_STRATEGIES, METRIC_LABEL, t, tf,
 } from './i18n/messages'
 import { withEmbeddedNote } from './features/shell/embedding'
+import { NoticeStack, useNotices } from './features/shell/notices'
 
 const ScoreViewer = lazy(() => import('./features/score/ScoreViewer').then((module) => ({
   default: module.ScoreViewer,
@@ -159,7 +160,7 @@ export default function App() {
   const [rangeStart, setRangeStart] = useState(1)
   const [rangeEnd, setRangeEnd] = useState(8)
   const [loading, setLoading] = useState(false)
-  const [alert, setAlert] = useState<{ type: string; msg: string } | null>(null)
+  const { notices, notify, dismiss: dismissNotice, clear: clearNotices } = useNotices()
   const setStep = (next: Step) => {
     const phase: WorkflowPhase = next === 'select' ? (scoreId ? 'review' : 'import')
       : next === 'calibrate' ? 'device_setup'
@@ -411,10 +412,7 @@ export default function App() {
       return response
     } catch (error) {
       if (requestId === mentorRequestRef.current && notifyOnError) {
-        setAlert({
-          type: 'warn',
-          msg: tf('mentorUnavailableWithDetail', { detail: (error as Error).message }),
-        })
+        notify('warn', () => tf('mentorUnavailableWithDetail', { detail: (error as Error).message }))
       }
       return null
     } finally {
@@ -454,7 +452,7 @@ export default function App() {
         if (!cancelled) setScores(r.scores as ScoreListItem[])
       })
       .catch((error) => {
-        if (!cancelled) setAlert({ type: 'error', msg: tf('loadScoresFailed', { detail: (error as Error).message }) })
+        if (!cancelled) notify('error', () => tf('loadScoresFailed', { detail: (error as Error).message }))
       })
     const capture = new MidiCapture()
     capture.onLiveNote = (pitch, velocity, on) => {
@@ -486,7 +484,7 @@ export default function App() {
       setCursor((previous) => previous ? { ...previous, waiting: true } : previous)
       const active = readRecoveryContext()
       if (active) void api.markDeviceLost(active.sessionId).catch(() => {})
-      setAlert({ type: 'warn', msg: tf('deviceLost', { name }) })
+      notify('warn', () => tf('deviceLost', { name }))
     }
     capture.onStateChange = (message) => {
       const names = capture.listInputs()
@@ -495,9 +493,9 @@ export default function App() {
       if (selected && !names.includes(selected)) {
         selectedInputRef.current = null
         setSelectedInput(null)
-        setAlert({ type: 'warn', msg: tf('deviceStateLost', { message }) })
+        notify('warn', () => tf('deviceStateLost', { message }))
       } else {
-        setAlert({ type: 'info', msg: message })
+        notify('info', () => message)
       }
     }
     captureRef.current = capture
@@ -527,12 +525,12 @@ export default function App() {
       sendWorkflow({ type: 'DEVICE_LOST' })
       const active = readRecoveryContext()
       if (active) void api.markDeviceLost(active.sessionId).catch(() => {})
-      setAlert({ type: 'warn', msg: t('microphoneDeviceLost') })
+      notify('warn', () => t('microphoneDeviceLost'))
     }
     microphone.onLimitReached = () => {
       recordingRef.current = false
       setRecording(false)
-      setAlert({ type: 'warn', msg: t('microphoneLimitReached') })
+      notify('warn', () => t('microphoneLimitReached'))
     }
     microphoneRef.current = microphone
     const midiUpload = new MidiUploadInputAdapter(api.uploadMidi)
@@ -608,19 +606,16 @@ export default function App() {
             setMentorChat(baseline ? readMentorChat(baseline.reportId) : [])
             sendWorkflow({ type: 'CAPTURE_RESTORED', kind: 'retry' })
           }
-          setAlert({
-            type: 'info',
-            msg: recoveredUploadRef
+          notify('info', () => recoveredUploadRef
               ? tf('recoveredMidiCanSubmit', { name: stored.uploadedFileName ?? 'MIDI' })
               : recoveredMicrophoneTake
                 ? t('microphoneSavedTakeRecovered')
-              : tf('recoveredNotesCanSubmit', { count: recovered.length }),
-          })
+              : tf('recoveredNotesCanSubmit', { count: recovered.length }))
         } catch (error) {
           if (!cancelled) {
             setRecoveryContext(stored)
             setRecoveredEvents(recovered)
-            setAlert({ type: 'warn', msg: tf('recoveryFailed', { detail: (error as Error).message }) })
+            notify('warn', () => tf('recoveryFailed', { detail: (error as Error).message }))
           }
         }
       })()
@@ -665,17 +660,16 @@ export default function App() {
       setRetrySessionId(null)
       if (!baselineReport) sendWorkflow({ type: 'OPEN_IMPORT' })
     }
-    setAlert({ type: 'info', msg: t('recoveryDiscarded') })
+    notify('info', () => t('recoveryDiscarded'))
   }
 
   const refreshMidiInputs = async () => {
     try {
       const names = await captureRef.current!.requestAccess()
       setInputs(names)
-      setAlert({ type: names.length ? 'info' : 'warn',
-        msg: names.length ? t('rescanFound') : t('rescanEmpty') })
+      notify(names.length ? 'info' : 'warn', () => names.length ? t('rescanFound') : t('rescanEmpty'))
     } catch (error) {
-      setAlert({ type: 'warn', msg: tf('reconnectFailed', { detail: (error as Error).message }) })
+      notify('warn', () => tf('reconnectFailed', { detail: (error as Error).message }))
     }
   }
 
@@ -683,7 +677,7 @@ export default function App() {
     if (loading || recording || workflow.phase === 'analysis') return
     setInputSource(source)
     setUploadModeState(source === 'midi-upload')
-    setAlert(null)
+    clearNotices()
     if (source === 'midi-upload') sendWorkflow({ type: 'DEVICE_CONNECTED' })
     if (source === 'web-midi' && selectedInput) sendWorkflow({ type: 'DEVICE_CONNECTED' })
     if (source === 'microphone' && microphoneState === 'ready') {
@@ -693,7 +687,7 @@ export default function App() {
 
   const connectMicrophone = async (deviceId = selectedMicrophoneId || undefined) => {
     const requestId = ++microphoneConnectRequestRef.current
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     setMicrophoneError(null)
     try {
       const devices = await microphoneRef.current!.connect(deviceId)
@@ -704,23 +698,17 @@ export default function App() {
       setSelectedMicrophoneId(selected)
       sendWorkflow({ type: 'DEVICE_CONNECTED' })
       const previewWarning = microphoneRef.current?.previewWarning
-      setAlert({
-        type: previewWarning ? 'info' : 'success',
-        msg: previewWarning
+      notify(previewWarning ? 'info' : 'success', () => previewWarning
           ? tf('microphoneReadyWithPreviewWarning', { detail: previewWarning })
-          : t('microphoneReady'),
-      })
+          : t('microphoneReady'))
     } catch (error) {
       if (requestId !== microphoneConnectRequestRef.current) return
       const state = microphoneRef.current?.state
       const detail = (error as Error).message
       setMicrophoneError(detail)
-      setAlert({
-        type: 'warn',
-        msg: state === 'permission-denied'
+      notify('warn', () => state === 'permission-denied'
           ? t('microphonePermissionDenied')
-          : tf('reconnectFailed', { detail }),
-      })
+          : tf('reconnectFailed', { detail }))
     } finally {
       if (requestId === microphoneConnectRequestRef.current) setLoading(false)
     }
@@ -731,7 +719,7 @@ export default function App() {
     microphoneRef.current?.cancelConnect()
     setLoading(false)
     setMicrophoneError(null)
-    setAlert({ type: 'info', msg: t('microphoneRequestCancelled') })
+    notify('info', () => t('microphoneRequestCancelled'))
   }
 
   /**
@@ -758,7 +746,7 @@ export default function App() {
     if (workflow.capture === 'retry') setRetrySessionId(null)
     else setSessionId(null)
     sendWorkflow({ type: 'CAPTURE_DISCARDED' })
-    setAlert({ type: 'info', msg: t('captureDiscarded') })
+    notify('info', () => t('captureDiscarded'))
   }
 
   /**
@@ -794,7 +782,7 @@ export default function App() {
       await performDiscard()
       resetPracticeBlock()
       sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
-      setAlert({ type: 'info', msg: t('returnedToScoresAfterDiscard') })
+      notify('info', () => t('returnedToScoresAfterDiscard'))
     } finally {
       setLoading(false)
     }
@@ -806,7 +794,7 @@ export default function App() {
   // ---- 选曲 ----
   const selectScore = async (id: string) => {
     const requestId = ++scoreLoadRequestRef.current
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     try {
       const r = await api.getScore(id)
       if (requestId !== scoreLoadRequestRef.current) return
@@ -818,7 +806,7 @@ export default function App() {
       sendWorkflow({ type: 'SCORE_SELECTED' })
     } catch (e) {
       if (requestId === scoreLoadRequestRef.current) {
-        setAlert({ type: 'error', msg: tf('scoreLoadFailed', { detail: (e as Error).message }) })
+        notify('error', () => tf('scoreLoadFailed', { detail: (e as Error).message }))
       }
     }
     if (requestId === scoreLoadRequestRef.current) setLoading(false)
@@ -826,11 +814,11 @@ export default function App() {
 
   const importScore = async (file: File) => {
     const requestId = ++scoreLoadRequestRef.current
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     // Reading a page takes tens of seconds, which is long enough that silence
     // reads as a hang. Say what is happening before the wait, not after it.
     if (READ_FROM_PAGE_SUFFIXES.test(file.name)) {
-      setAlert({ type: 'info', msg: t('uploadScoreReading') })
+      notify('info', () => t('uploadScoreReading'))
     }
     try {
       const r = await api.importScore(file)
@@ -846,11 +834,11 @@ export default function App() {
       const opening = openingRange(r.metadata.measureCount)
       setRangeStart(opening.start); setRangeEnd(opening.end)
       sendWorkflow({ type: 'SCORE_SELECTED' })
-      setAlert({ type: 'success', msg: tf('scoreImported', { title: r.metadata.title }) })
+      notify('success', () => tf('scoreImported', { title: r.metadata.title }))
     } catch (e) {
       if (requestId === scoreLoadRequestRef.current) {
         const err = e as Error & { code?: string }
-        setAlert({ type: 'error', msg: err.code === 'SCORE_UNSUPPORTED' ? err.message : tf('scoreImportFailed', { detail: err.message }) })
+        notify('error', () => err.code === 'SCORE_UNSUPPORTED' ? err.message : tf('scoreImportFailed', { detail: err.message }))
       }
     }
     if (requestId === scoreLoadRequestRef.current) setLoading(false)
@@ -858,15 +846,15 @@ export default function App() {
 
   const confirmNormalization = async () => {
     if (!scoreId || !normalization || scoreDetail?.sourceType !== 'midi') return
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     try {
       const detail = await api.confirmNormalization(scoreId, normalization)
       setScoreDetail(detail); setNormalization(detail.normalization)
       setMeta(detail.metadata); setEvents(detail.scoreEvents)
       setRangeEnd(Math.min(rangeEnd, detail.metadata.measureCount))
-      setAlert({ type: 'success', msg: t('normalizationSaved') })
+      notify('success', () => t('normalizationSaved'))
     } catch (error) {
-      setAlert({ type: 'error', msg: tf('normalizationSaveFailed', { detail: (error as Error).message }) })
+      notify('error', () => tf('normalizationSaveFailed', { detail: (error as Error).message }))
     }
     setLoading(false)
   }
@@ -874,15 +862,15 @@ export default function App() {
   const gotoCalibrate = async () => {
     if (!scoreId) return
     if (!rangeValid) {
-      setAlert({ type: 'warn', msg: tf('invalidRange', { count: meta?.measureCount ?? 1 }) })
+      notify('warn', () => tf('invalidRange', { count: meta?.measureCount ?? 1 }))
       return
     }
     if (scoreDetail?.sourceType === 'midi' && !normalization?.confirmed) {
-      setAlert({ type: 'warn', msg: t('confirmNormalizationFirst') })
+      notify('warn', () => t('confirmNormalizationFirst'))
       return
     }
     getPlayer()
-    sendWorkflow({ type: 'START_DEVICE_SETUP' }); setAlert(null); setLiveNotes([])
+    sendWorkflow({ type: 'START_DEVICE_SETUP' }); clearNotices(); setLiveNotes([])
     setCalibration(UNCHECKED)
     if (inputSource === 'microphone' || inputSource === 'midi-upload') return
     setLoading(true)
@@ -890,12 +878,12 @@ export default function App() {
       const names = await captureRef.current!.requestAccess()
       setInputs(names); setMidiSupported(true)
       if (names.length === 0) {
-        setAlert({ type: 'warn', msg: t('noMidiFallback') })
+        notify('warn', () => t('noMidiFallback'))
         setUploadMode(true)
       }
     } catch (e) {
       setMidiSupported(false); setUploadMode(true)
-      setAlert({ type: 'warn', msg: withEmbeddedNote(t('midiPermissionFallback')) })
+      notify('warn', () => withEmbeddedNote(t('midiPermissionFallback')))
     } finally {
       setLoading(false)
     }
@@ -913,7 +901,7 @@ export default function App() {
       // whole point of this screen was skipped.
       setCalibration(UNCHECKED)
       sendWorkflow({ type: 'DEVICE_CONNECTED' })
-      setAlert({ type: 'info', msg: tf('deviceSelected', { name }) })
+      notify('info', () => tf('deviceSelected', { name }))
     }
   }
 
@@ -922,15 +910,15 @@ export default function App() {
     if (!scoreId || !meta) return
     if (sessionStartInFlightRef.current) return
     if (inputSource === 'web-midi' && !selectedInput) {
-      setAlert({ type: 'warn', msg: t('chooseMidiOrUpload') })
+      notify('warn', () => t('chooseMidiOrUpload'))
       return
     }
     if (inputSource === 'microphone' && microphoneState !== 'ready') {
-      setAlert({ type: 'warn', msg: t('microphoneConnect') })
+      notify('warn', () => t('microphoneConnect'))
       return
     }
     sessionStartInFlightRef.current = true
-    setLoading(true); setAlert(null); setSubmissionStage('idle')
+    setLoading(true); clearNotices(); setSubmissionStage('idle')
     let countInPlayer: MidiPlayer | null = null
     let audioReady = inputSource === 'midi-upload'
     if (inputSource !== 'midi-upload') {
@@ -964,12 +952,12 @@ export default function App() {
             observeLiveInput(group.pitches, group.tOnMs)
           }
         }
-        setAlert({ type: 'info', msg: tf('countInStarts', { beats: r.countIn.beats }) })
+        notify('info', () => tf('countInStarts', { beats: r.countIn.beats }))
         try {
           if (!audioReady || !countInPlayer) throw new Error(t('audioContextUnavailable'))
           await countInPlayer.countIn(r.countIn.beats, r.countIn.bpm)
         } catch {
-          setAlert({ type: 'warn', msg: t('countInUnavailable') })
+          notify('warn', () => t('countInUnavailable'))
         }
         prepareLiveFeedback(
           events, rangeStart, rangeEnd, meta.beatsPerMeasure, meta.tempo,
@@ -987,16 +975,13 @@ export default function App() {
           rangeStart, rangeEnd, inputSource, instrument, savedAt: Date.now(),
         })
         setRecording(true)
-        setAlert({
-          type: 'info',
-          msg: inputSource === 'microphone'
-            ? t('microphoneRecording') : t('recordingDeterministic'),
-        })
+        notify('info', () => inputSource === 'microphone'
+            ? t('microphoneRecording') : t('recordingDeterministic'))
       }
     } catch (e) {
       recordingRef.current = false
       setRecording(false)
-      setAlert({ type: 'error', msg: tf('createSessionFailed', { detail: (e as Error).message }) })
+      notify('error', () => tf('createSessionFailed', { detail: (e as Error).message }))
     } finally {
       sessionStartInFlightRef.current = false
       setLoading(false)
@@ -1007,10 +992,10 @@ export default function App() {
   const onUploadMidi = async (file: File) => {
     if (!sessionId) return
     uploadMidiRef.current = null
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     try {
       const r = await midiUploadRef.current!.upload(file)
-      setAlert({ type: 'success', msg: tf('midiUploaded', { name: file.name }) })
+      notify('success', () => tf('midiUploaded', { name: file.name }))
       uploadMidiRef.current = r.uploadedMidiRef ?? null
       const context = readRecoveryContext()
       if (context?.sessionId === sessionId && r.uploadedMidiRef) {
@@ -1021,7 +1006,7 @@ export default function App() {
         writeRecoveryContext(updated)
         setRecoveryContext(updated)
       }
-    } catch (e) { setAlert({ type: 'error', msg: tf('uploadFailed', { detail: (e as Error).message }) }) }
+    } catch (e) { notify('error', () => tf('uploadFailed', { detail: (e as Error).message })) }
     setLoading(false)
   }
   // ---- 停止演奏 → 提交分析 ----
@@ -1029,11 +1014,11 @@ export default function App() {
     if (!sessionId) return
     if (submissionInFlightRef.current) return
     if (inputSource === 'midi-upload' && !uploadMidiRef.current) {
-      setAlert({ type: 'warn', msg: t('uploadPerformanceFirst') })
+      notify('warn', () => t('uploadPerformanceFirst'))
       return
     }
     submissionInFlightRef.current = true
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     setSubmissionStage(inputSource === 'microphone' ? 'transcribing' : 'saving')
     const usingRecoveredEvents = recoveryContext?.kind === 'baseline' && (
       recoveredEvents.length > 0 || (inputSource === 'microphone' && !!captureMeta))
@@ -1059,10 +1044,10 @@ export default function App() {
         const failure = error as Error & { code?: string }
         if (failure.code === 'TRANSCRIPTION_CANCELLED') {
           setSubmissionStage('idle')
-          setAlert({ type: 'info', msg: t('transcriptionCancelledSaved') })
+          notify('info', () => t('transcriptionCancelledSaved'))
         } else {
           setSubmissionStage('error')
-          setAlert({ type: 'warn', msg: tf('transcriptionFailed', { detail: failure.message }) })
+          notify('warn', () => tf('transcriptionFailed', { detail: failure.message }))
         }
         return
       }
@@ -1097,8 +1082,8 @@ export default function App() {
       setSubmissionStage('error')
       const err = e as Error & { code?: string }
       if (err.code === 'ALIGNMENT_LOW_CONFIDENCE') {
-        setAlert({ type: 'warn', msg: t('lowAlignmentConfidence') })
-      } else { setAlert({ type: 'error', msg: tf('analysisFailed', { detail: err.message }) }) }
+        notify('warn', () => t('lowAlignmentConfidence'))
+      } else { notify('error', () => tf('analysisFailed', { detail: err.message })) }
       sendWorkflow({ type: 'ANALYSIS_FAILED' })
       if (inputSource !== 'midi-upload' && !usingRecoveredEvents) {
         const context = readRecoveryContext()
@@ -1119,7 +1104,7 @@ export default function App() {
     const requestId = ++mentorChatRequestRef.current
     const text = (prompt ?? question).trim()
     if (!text) return
-    setAlert(null)
+    clearNotices()
     const history = mentorChat
       .filter((message) => message.status === 'sent')
       .map((message) => ({ role: message.role, content: message.text.slice(0, 2_000) }))
@@ -1163,7 +1148,7 @@ export default function App() {
         : message)
       setMentorChat(pendingMessages)
       writeMentorChat(report.reportId, pendingMessages)
-      setAlert({ type: 'warn', msg: tf('mentorUnavailableWithDetail', { detail }) })
+      notify('warn', () => tf('mentorUnavailableWithDetail', { detail }))
     } finally {
       if (mentorChatAbortRef.current === controller) mentorChatAbortRef.current = null
       if (requestId === mentorChatRequestRef.current) setMentorChatLoading(false)
@@ -1182,12 +1167,9 @@ export default function App() {
         rememberedTurnCount: 0,
         updatedAt: null,
       }))
-      setAlert({ type: 'info', msg: t('mentorMemoryForgotten') })
+      notify('info', () => t('mentorMemoryForgotten'))
     } catch (error) {
-      setAlert({
-        type: 'warn',
-        msg: tf('mentorMemoryForgetFailed', { detail: (error as Error).message }),
-      })
+      notify('warn', () => tf('mentorMemoryForgetFailed', { detail: (error as Error).message }))
     }
   }
 
@@ -1221,7 +1203,7 @@ export default function App() {
     const requestId = ++exerciseRequestRef.current
     const sourceReportId = report.reportId
     const sourceScoreId = report.scoreId
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     try {
       const r = await api.createExercise(report.reportId,
         selectedError ? [selectedError.id] : [],
@@ -1251,12 +1233,12 @@ export default function App() {
       }
       setExerciseStage('generated')
       const strategyLabel = EXERCISE_STRATEGIES.find(([key]) => key === r.ruleId)?.[1] || r.ruleId
-      setAlert({ type: 'success', msg: tf('exerciseGenerated', {
+      notify('success', () => tf('exerciseGenerated', {
         rule: strategyLabel, measures: measureLabelList(r.sourceMeasures, '-'),
-      }) })
+      }))
     } catch (e) {
       if (requestId === exerciseRequestRef.current) {
-        setAlert({ type: 'error', msg: tf('exerciseFailed', { detail: (e as Error).message }) })
+        notify('error', () => tf('exerciseFailed', { detail: (e as Error).message }))
       }
     }
     if (requestId === exerciseRequestRef.current) setLoading(false)
@@ -1272,7 +1254,7 @@ export default function App() {
       await player.play(midi, { onEnd: () => setPlaying(false) })
     } catch (error) {
       setPlaying(false)
-      setAlert({ type: 'error', msg: tf('exercisePlaybackFailed', { detail: (error as Error).message }) })
+      notify('error', () => tf('exercisePlaybackFailed', { detail: (error as Error).message }))
     }
   }
 
@@ -1282,7 +1264,7 @@ export default function App() {
       const pitches = parsePitchNames(text)
       if (pitches.length) await playPitches(pitches)
     } catch (error) {
-      setAlert({ type: 'warn', msg: tf('evidencePlaybackFailed', { detail: (error as Error).message }) })
+      notify('warn', () => tf('evidencePlaybackFailed', { detail: (error as Error).message }))
     }
   }
 
@@ -1297,20 +1279,20 @@ export default function App() {
     if (!baselineReport) return
     if (sessionStartInFlightRef.current) return
     if (!exercise) {
-      setAlert({ type: 'warn', msg: t('generateExerciseBeforeRetry') })
+      notify('warn', () => t('generateExerciseBeforeRetry'))
       setStep('exercise')
       return
     }
     if (inputSource === 'web-midi' && !selectedInput) {
-      setAlert({ type: 'warn', msg: t('midiReconnectRequired') })
+      notify('warn', () => t('midiReconnectRequired'))
       return
     }
     if (inputSource === 'microphone' && microphoneState !== 'ready') {
-      setAlert({ type: 'warn', msg: t('microphoneConnect') })
+      notify('warn', () => t('microphoneConnect'))
       return
     }
     sessionStartInFlightRef.current = true
-    setLoading(true); setAlert(null); setSubmissionStage('idle')
+    setLoading(true); clearNotices(); setSubmissionStage('idle')
     setPlaying(false)
     setComparison(null); setCursor(null); setRetryTempo(null); setRetryUploadName(null)
     retryUploadMidiRef.current = null
@@ -1410,19 +1392,16 @@ export default function App() {
       if (midi && player) {
         await player.play(midi, {
           volume: -10,
-          onEnd: () => setAlert({ type: 'info', msg: t('accompanimentEnded') }),
+          onEnd: () => notify('info', () => t('accompanimentEnded')),
         })
       }
-      setAlert({
-        type: 'info',
-        msg: inputSource === 'microphone' && !headphonesConfirmed
+      notify('info', () => inputSource === 'microphone' && !headphonesConfirmed
           ? t('microphoneRecording')
           : uploadMode
           ? t('accompanimentUploadStarted')
           : tf('accompanimentStarted', {
               mode: accMode === 'flexible' ? t('flexibleTempoDescription') : t('fixedTempoDescription'),
-            }),
-      })
+            }))
     } catch (e) {
       if (captureStarted && inputSource === 'microphone' && createdSessionId) {
         await microphoneRef.current?.cancelTake(createdSessionId)
@@ -1438,7 +1417,7 @@ export default function App() {
       recordingRef.current = false
       setRecording(false); setRetrySessionId(null)
       sendWorkflow({ type: 'CAPTURE_DISCARDED' })
-      setAlert({ type: 'error', msg: tf('accompanimentFailed', { detail: (e as Error).message }) })
+      notify('error', () => tf('accompanimentFailed', { detail: (e as Error).message }))
     } finally {
       sessionStartInFlightRef.current = false
       setLoading(false)
@@ -1449,7 +1428,7 @@ export default function App() {
     if (!retrySessionId) return
     retryUploadMidiRef.current = null
     setRetryUploadName(null)
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     try {
       const result = await midiUploadRef.current!.upload(file)
       retryUploadMidiRef.current = result.uploadedMidiRef ?? null
@@ -1463,9 +1442,9 @@ export default function App() {
         writeRecoveryContext(updated)
         setRecoveryContext(updated)
       }
-      setAlert({ type: 'success', msg: tf('retryMidiUploaded', { name: file.name }) })
+      notify('success', () => tf('retryMidiUploaded', { name: file.name }))
     } catch (error) {
-      setAlert({ type: 'error', msg: tf('retryMidiUploadFailed', { detail: (error as Error).message }) })
+      notify('error', () => tf('retryMidiUploadFailed', { detail: (error as Error).message }))
     }
     setLoading(false)
   }
@@ -1491,18 +1470,18 @@ export default function App() {
     retryUploadMidiRef.current = null
     sendWorkflow({ type: 'CAPTURE_DISCARDED' })
     setLoading(false)
-    setAlert({ type: 'info', msg: t('retryCancelled') })
+    notify('info', () => t('retryCancelled'))
   }
 
   const stopRetryAndCompare = async () => {
     if (!retrySessionId || !baselineReport) return
     if (submissionInFlightRef.current) return
     if (inputSource === 'midi-upload' && !retryUploadMidiRef.current) {
-      setAlert({ type: 'warn', msg: t('uploadFreshRetryFirst') })
+      notify('warn', () => t('uploadFreshRetryFirst'))
       return
     }
     submissionInFlightRef.current = true
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     setSubmissionStage(inputSource === 'microphone' ? 'transcribing' : 'saving')
     const usingRecoveredEvents = recoveryContext?.kind === 'retry' && (
       recoveredEvents.length > 0 || (inputSource === 'microphone' && !!captureMeta))
@@ -1528,10 +1507,10 @@ export default function App() {
         const failure = error as Error & { code?: string }
         if (failure.code === 'TRANSCRIPTION_CANCELLED') {
           setSubmissionStage('idle')
-          setAlert({ type: 'info', msg: t('transcriptionCancelledSaved') })
+          notify('info', () => t('transcriptionCancelledSaved'))
         } else {
           setSubmissionStage('error')
-          setAlert({ type: 'warn', msg: tf('transcriptionFailed', { detail: failure.message }) })
+          notify('warn', () => tf('transcriptionFailed', { detail: failure.message }))
         }
         return
       }
@@ -1583,7 +1562,7 @@ export default function App() {
         }
       }
       sendWorkflow({ type: 'ANALYSIS_FAILED' })
-      setAlert({ type: 'error', msg: tf('comparisonFailed', { detail: (e as Error).message }) })
+      notify('error', () => tf('comparisonFailed', { detail: (e as Error).message }))
     }
     submissionInFlightRef.current = false
     setLoading(false)
@@ -1660,7 +1639,7 @@ export default function App() {
   }
   const clearGeneratedExercises = async () => {
     if (!window.confirm(t('clearGeneratedExercisesConfirm'))) return
-    setLoading(true); setAlert(null)
+    setLoading(true); clearNotices()
     try {
       const selectedWasGenerated = scores.some((item) =>
         item.scoreId === scoreId && categoryForScore(item) === 'generated')
@@ -1675,24 +1654,16 @@ export default function App() {
       } else {
         sendWorkflow(scoreId ? { type: 'SCORE_SELECTED' } : { type: 'OPEN_IMPORT' })
       }
-      setAlert({
-        type: 'success',
-        msg: tf('generatedExercisesCleared', { count: result.clearedCount }),
-      })
+      notify('success', () => tf('generatedExercisesCleared', { count: result.clearedCount }))
     } catch (error) {
-      setAlert({
-        type: 'error',
-        msg: tf('generatedExercisesClearFailed', { detail: (error as Error).message }),
-      })
+      notify('error', () => tf('generatedExercisesClearFailed', { detail: (error as Error).message }))
     }
     setLoading(false)
   }
   const scoreLibrary = partitionScoreLibrary(scores)
   const renderScoreCard = (score: ScoreListItem, compact = false) => {
     const category = categoryForScore(score)
-    const displayTitle = category === 'generated'
-      ? tf('generatedLibraryItemTitle', { round: score.lineageDepth ?? 1 })
-      : scoreDisplayTitle(score)
+    const displayTitle = pieceTitle(score)
     return (
       <button type="button" key={score.scoreId}
               aria-pressed={scoreId === score.scoreId}
@@ -1713,7 +1684,7 @@ export default function App() {
 
   const [theme, setTheme] = useTheme()
   const [finish, setFinish] = useFinish()
-  const [locale, setLocale] = useLocale()
+  const [locale, setLocale, spokenLocale] = useLocale()
   const [uiScale, setUiScale] = useDepth()
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -1728,6 +1699,8 @@ export default function App() {
                 title={t('settingsOpen')} aria-label={t('settingsOpen')}
                 onClick={() => setSettingsOpen(true)}>⚙</button>
       </div>
+
+      <NoticeStack notices={notices} onDismiss={dismissNotice} />
 
       <SettingsDialog
         open={settingsOpen}
@@ -1751,8 +1724,6 @@ export default function App() {
         </div>
       )}
 
-      {alert && <div role={alert.type === 'error' || alert.type === 'warn' ? 'alert' : 'status'}
-                     className={`alert alert-${alert.type}`}>{alert.msg}</div>}
       {workflow.lastRejection === 'CAPTURE_ACTIVE' && (
         <div className="alert alert-warn" role="alert">{t('captureActiveGuard')}</div>
       )}
@@ -1916,7 +1887,7 @@ export default function App() {
                 })}</small>
               </div>
               <div className="score-stage">
-                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)}
+                <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} title={pieceTitleOf(scoreDetail)}
                              beatsPerMeasure={meta.beatsPerMeasure} height={200} />
               </div>
             </section>
@@ -2077,7 +2048,7 @@ export default function App() {
             <div className="practice-studio">
               <div className="score-stage">
                 <ScoreViewer xmlUrl={api.scoreXmlUrl(scoreId)} beatsPerMeasure={meta.beatsPerMeasure}
-                             cursor={cursor} follow={recording}
+                             title={pieceTitleOf(scoreDetail)} cursor={cursor} follow={recording}
                              liveFeedback={recording ? liveFeedback : null} />
               </div>
               {inputSource === 'microphone' && (
@@ -2201,7 +2172,7 @@ export default function App() {
                       const player = getPlayer()
                       await player.countIn(Math.round(meta!.beatsPerMeasure), meta!.tempo)
                     } catch (error) {
-                      setAlert({ type: 'warn', msg: tf('countInPlaybackFailed', { detail: (error as Error).message }) })
+                      notify('warn', () => tf('countInPlaybackFailed', { detail: (error as Error).message }))
                     }
                   }}>{t('hearCountIn')}</button>
                   <button className="btn btn-danger" onClick={stopAndAnalyze}
@@ -2266,6 +2237,7 @@ export default function App() {
           baseline={baselineReport}
           beatsPerMeasure={meta?.beatsPerMeasure}
           scoreXmlUrl={scoreId ? api.scoreXmlUrl(scoreId) : undefined}
+          scoreTitle={pieceTitleOf(scoreDetail)}
           selectedError={selectedError}
           mentor={mentor}
           mentorLoading={mentorLoading}
@@ -2430,7 +2402,7 @@ export default function App() {
 
               {scoreId && meta && (
                 <div className="generated-score">
-                  <ScoreViewer xmlUrl={exercise.musicXmlUrl}
+                  <ScoreViewer xmlUrl={exercise.musicXmlUrl} title={pieceTitleOf(exerciseScore)}
                                beatsPerMeasure={meta.beatsPerMeasure} height={240} />
                 </div>
               )}
@@ -2534,7 +2506,7 @@ export default function App() {
               {retryScoreMeta && retryScoreXmlUrl ? (
                 <div className="retry-score-target">
                   <div className="retry-score-label">{t('retryGeneratedTarget')}</div>
-                  <ScoreViewer xmlUrl={retryScoreXmlUrl}
+                  <ScoreViewer xmlUrl={retryScoreXmlUrl} title={pieceTitleOf(exerciseScore)}
                                beatsPerMeasure={retryScoreMeta.beatsPerMeasure} cursor={cursor}
                                follow={recording}
                                liveFeedback={recording ? liveFeedback : null} />
@@ -2631,7 +2603,7 @@ export default function App() {
                   <div className="retry-score-label">{t('retryGeneratedTarget')}</div>
                   <ScoreViewer
                     xmlUrl={retryScoreXmlUrl} beatsPerMeasure={retryScoreMeta.beatsPerMeasure}
-                    errors={report.errors}
+                    title={pieceTitleOf(exerciseScore)} errors={report.errors}
                     resolvedKeys={comparison.targetChanged ? undefined : resolvedKeys}
                   />
                 </div>

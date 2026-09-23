@@ -591,4 +591,11 @@ export const enUS: Record<keyof typeof zhHans, string> = {
   strategy_rhythm_variant: 'Rhythm variants',
   strategy_beat_skeleton: 'Beat skeleton',
   strategy_chunk_connect: 'Join the phrases',
+
+  // Messages and joiners
+  noticeDismiss: 'Dismiss',
+  listSeparator: ', ',
+  phraseSeparator: ', ',
+  clauseSeparator: '; ',
+  labelValue: '{label}: {value}',
 }

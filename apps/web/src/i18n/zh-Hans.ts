@@ -586,4 +586,11 @@ export const zhHans = {
   strategy_rhythm_variant: '节奏变体',
   strategy_beat_skeleton: '节拍骨架',
   strategy_chunk_connect: '动机连接',
+
+  // 消息与连接符
+  noticeDismiss: '关闭',
+  listSeparator: '、',
+  phraseSeparator: '，',
+  clauseSeparator: '；',
+  labelValue: '{label}：{value}',
 } as const

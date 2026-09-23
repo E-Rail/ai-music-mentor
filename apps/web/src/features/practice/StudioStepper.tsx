@@ -1,12 +1,12 @@
-import { t } from '../../i18n/messages'
+import { t, type MessageKey } from '../../i18n/messages'
 
 export type StudioStage = 'score' | 'input' | 'perform' | 'coach'
 
-const stages: { id: StudioStage; label: ReturnType<typeof t>; hint: ReturnType<typeof t> }[] = [
-  { id: 'score', label: t('stageScore'), hint: t('stageScoreHint') },
-  { id: 'input', label: t('stageInput'), hint: t('stageInputHint') },
-  { id: 'perform', label: t('stagePerform'), hint: t('stagePerformHint') },
-  { id: 'coach', label: t('stageCoach'), hint: t('stageCoachHint') },
+const stages: { id: StudioStage; label: MessageKey; hint: MessageKey }[] = [
+  { id: 'score', label: 'stageScore', hint: 'stageScoreHint' },
+  { id: 'input', label: 'stageInput', hint: 'stageInputHint' },
+  { id: 'perform', label: 'stagePerform', hint: 'stagePerformHint' },
+  { id: 'coach', label: 'stageCoach', hint: 'stageCoachHint' },
 ]
 
 export function StudioStepper({ active, canOpen, onOpen }: {
@@ -27,7 +27,7 @@ export function StudioStepper({ active, canOpen, onOpen }: {
           <span className="stage-mark" aria-hidden="true">
             {index < activeIndex ? '♩' : '𝄀'}
           </span>
-          <span><strong>{stage.label}</strong><small>{stage.hint}</small></span>
+          <span><strong>{t(stage.label)}</strong><small>{t(stage.hint)}</small></span>
         </button>
       ))}
     </nav>

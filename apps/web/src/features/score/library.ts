@@ -1,4 +1,5 @@
-import type { ScoreMeta } from '../../types'
+import type { ScoreDetail, ScoreMeta } from '../../types'
+import { tf } from '../../i18n/messages'
 
 export type ScoreLibraryCategory = 'demo' | 'uploaded' | 'generated' | 'internal'
 
@@ -35,4 +36,28 @@ export function scoreDisplayTitle(score: ScoreLibraryItem): string {
     return sourceBase || title || score.scoreId
   }
   return title
+}
+
+/**
+ * The one name a piece goes by — on its library card, above the page, and
+ * engraved on the page itself. A generated round is named for its place in the
+ * practice loop rather than by the planner's working title.
+ */
+export function pieceTitle(score: ScoreLibraryItem): string {
+  return categoryForScore(score) === 'generated'
+    ? tf('generatedLibraryItemTitle', { round: score.lineageDepth ?? 1 })
+    : scoreDisplayTitle(score)
+}
+
+/** The same name, for a piece that has been opened rather than listed. */
+export function pieceTitleOf(detail: ScoreDetail | null | undefined): string | undefined {
+  if (!detail) return undefined
+  return pieceTitle({
+    ...detail.metadata,
+    builtin: detail.libraryCategory === 'demo',
+    generated: detail.generated,
+    lineageDepth: detail.lineageDepth,
+    sourceName: detail.sourceName,
+    libraryCategory: detail.libraryCategory,
+  })
 }

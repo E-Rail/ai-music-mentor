@@ -3,7 +3,9 @@ import type {
   DiagnosisReport, ErrorEvent, MentorChatResponse, MentorPlanItem, MentorResponse,
   MentorMemoryStatus,
 } from '../../types'
-import { ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, t, tf } from '../../i18n/messages'
+import {
+  ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, joinClauses, labelled, t, tf,
+} from '../../i18n/messages'
 import { ProEvidence, ProHands, ProInputQuality } from './ProDetail'
 import { errorColor, errorDetailForDisplay } from './errorPresentation'
 import { MentorSummary } from '../mentor/MentorSummary'
@@ -21,6 +23,7 @@ type CoachReportProps = {
   baseline: DiagnosisReport | null
   beatsPerMeasure?: number
   scoreXmlUrl?: string
+  scoreTitle?: string
   selectedError: ErrorEvent | null
   mentor: MentorResponse | null
   mentorLoading: boolean
@@ -41,7 +44,7 @@ type CoachReportProps = {
 }
 
 export function CoachReport({
-  depth, report, baseline, beatsPerMeasure, scoreXmlUrl, selectedError,
+  depth, report, baseline, beatsPerMeasure, scoreXmlUrl, scoreTitle, selectedError,
   mentor, mentorLoading, chatMessages, chatLoading, question,
   mentorMemory,
   onChooseError, onPlayEvidence, onApplyPlan, onApplyChatAction, onAskMentor,
@@ -69,10 +72,10 @@ export function CoachReport({
           : t('noErrors')}</h3>
         {report.inputQuality && (
           <div className={`input-quality ${report.inputQuality.status}`}>
-            <strong>{t('inputQualityTitle')}：{{
+            <strong>{labelled(t('inputQualityTitle'), {
               high: t('inputQualityHigh'), medium: t('inputQualityMedium'),
               low: t('inputQualityLow'), insufficient: t('inputQualityInsufficient'),
-            }[report.inputQuality.status]}</strong>
+            }[report.inputQuality.status])}</strong>
             <span>{tf('inputQualityConfidence', {
               value: Math.round(report.inputQuality.confidence * 100) })}</span>
           </div>
@@ -93,7 +96,7 @@ export function CoachReport({
         <div className="coach-evidence-column">
           {scoreXmlUrl && beatsPerMeasure && (
             <ScoreViewer
-              xmlUrl={scoreXmlUrl} beatsPerMeasure={beatsPerMeasure}
+              xmlUrl={scoreXmlUrl} beatsPerMeasure={beatsPerMeasure} title={scoreTitle}
               errors={report.errors} selectedErrorId={selectedError?.id}
               onErrorClick={onChooseError}
             />
@@ -146,17 +149,17 @@ export function CoachReport({
               <section>
                 <h3>{t('repeatedPatterns')}</h3>
                 <p>{report.patterns.length
-                  ? report.patterns.map((pattern) => tf('repeatedPattern', {
+                  ? joinClauses(report.patterns.map((pattern) => tf('repeatedPattern', {
                       description: pattern.description, count: pattern.sampleCount,
-                    })).join('；')
+                    })))
                   : t('noRepeatedPattern')}</p>
               </section>
               <section>
                 <h3>{t('possibleCauses')}</h3>
                 <p>{report.hypotheses.length
-                  ? report.hypotheses.map((hypothesis) => tf('hypothesisConfidence', {
+                  ? joinClauses(report.hypotheses.map((hypothesis) => tf('hypothesisConfidence', {
                       cause: hypothesis.cause, confidence: hypothesis.confidence,
-                    })).join('；')
+                    })))
                   : t('insufficientEvidence')}</p>
               </section>
             </div>

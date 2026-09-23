@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { getLocale, setLocale } from '../../i18n/messages'
+import { getLocale, setLocale, t } from '../../i18n/messages'
 import {
   DEPTH, FINISH, LOCALE, THEME, applyDepth, applyFinish, applyTheme,
   read, resolveLocale, write,
-  type Depth, type Finish, type LocaleChoice, type Preference, type Theme,
+  type Depth, type Finish, type Locale, type LocaleChoice, type Preference, type Theme,
 } from './preferences'
 
 /**
@@ -57,12 +57,32 @@ export function useDepth(): [Depth, (next: Depth) => void] {
  * which a render touches. Switching language mid-recording is therefore safe
  * and deliberately allowed.
  */
-export function useLocale(): [LocaleChoice, (next: LocaleChoice) => void] {
+function speak(locale: Locale): void {
+  setLocale(locale)
+  document.documentElement.lang = locale === 'zh-Hans' ? 'zh-Hans' : 'en'
+  document.title = t('appName')
+}
+
+/**
+ * Put the stored language in place before the first render.
+ *
+ * Applying it from an effect meant the first paint was always Chinese and an
+ * English player saw the interface change language under them on every load.
+ */
+export function speakStoredLanguage(): void {
+  speak(resolveLocale(read(LOCALE)))
+}
+
+export function useLocale(): [LocaleChoice, (next: LocaleChoice) => void, Locale] {
   const [choice, setChoice] = useState<LocaleChoice>(() => read(LOCALE))
+  // The language actually in use. It is state as well as the choice, because
+  // "follow the system" can change what it resolves to without the choice
+  // changing — and only a state change re-renders the tree.
+  const [spoken, setSpoken] = useState<Locale>(() => resolveLocale(read(LOCALE)))
   const apply = useCallback((next: LocaleChoice) => {
     const resolved = resolveLocale(next)
-    setLocale(resolved)
-    document.documentElement.lang = resolved === 'zh-Hans' ? 'zh-Hans' : 'en'
+    speak(resolved)
+    setSpoken(resolved)
   }, [])
   useEffect(() => { apply(choice) }, [apply, choice])
   // Following the system means following it while the app is open, the same
@@ -78,7 +98,7 @@ export function useLocale(): [LocaleChoice, (next: LocaleChoice) => void] {
     setChoice(next)
     apply(next)
   }, [apply])
-  return [choice, choose]
+  return [choice, choose, spoken]
 }
 
 export { getLocale }

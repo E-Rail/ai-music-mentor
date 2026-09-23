@@ -13,6 +13,7 @@
  * component that happens to mention a bar — the same shape as the message
  * catalogue in `i18n/messages`.
  */
+import { joinList } from '../../i18n/messages'
 
 let labels: string[] = []
 
@@ -37,9 +38,10 @@ export function measureLabel(measureNo: number, from: string[] = labels): string
 
 /** A list of bars, in the order given. */
 export function measureLabelList(
-  measures: readonly number[], separator = '、', from: string[] = labels,
+  measures: readonly number[], separator?: string, from: string[] = labels,
 ): string {
-  return measures.map((measure) => measureLabel(measure, from)).join(separator)
+  const named = measures.map((measure) => measureLabel(measure, from))
+  return separator === undefined ? joinList(named) : named.join(separator)
 }
 
 // `<part ...>`, and deliberately not `<part-list>`: `\b` would match the hyphen

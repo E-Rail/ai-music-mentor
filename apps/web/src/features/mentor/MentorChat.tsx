@@ -22,9 +22,9 @@ type MentorChatProps = {
   onForgetMemory: () => void | Promise<void>
 }
 
-const QUICK_QUESTIONS = [
-  t('mentorQuickWhy'), t('mentorQuickPractice'), t('mentorQuickPlan'),
-]
+// Keys, read at render: these are sent to the mentor as the question itself,
+// so a frozen table asked it in Chinese whatever language the player chose.
+const QUICK_QUESTIONS = ['mentorQuickWhy', 'mentorQuickPractice', 'mentorQuickPlan'] as const
 
 export function MentorChat({
   messages, loading, question, onQuestionChange, onAsk, onCancel, onApplyAction,
@@ -111,9 +111,9 @@ export function MentorChat({
       </div>
       <div className="mentor-quick">
         <span className="dim">{t('mentorQuickQuestions')}</span>
-        {QUICK_QUESTIONS.map((prompt) => (
-          <button type="button" className="strategy-btn" key={prompt}
-                  disabled={loading} onClick={() => void onAsk(prompt)}>{prompt}</button>
+        {QUICK_QUESTIONS.map((key) => (
+          <button type="button" className="strategy-btn" key={key}
+                  disabled={loading} onClick={() => void onAsk(t(key))}>{t(key)}</button>
         ))}
       </div>
       <div className="mentor-composer">

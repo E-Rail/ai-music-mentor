@@ -36,27 +36,34 @@ def load_midi_events(path: str) -> list[PerformanceEvent]:
     # 合并所有轨道，确保 conductor track 的 tempo 作用于其他音符轨。
     merged = mido.merge_tracks(mid.tracks)
     # 同音高/通道可能重叠（重复触发），用 FIFO 队列配对 note_on/off。
-    active: dict[tuple[int, int], list[tuple[float, int]]] = {}
+    active: dict[tuple[int, int], list[tuple[float, int, bool]]] = {}
+    # Sustain pedal (CC64) per channel. A note let go with it down keeps
+    # sounding, and the analysis must know that before it judges a length.
+    pedal: dict[int, bool] = {}
     n = 0
     for msg in merged:
         abs_ms += mido.tick2second(msg.time, ticks_per_beat, tempo) * 1000.0
         if msg.type == "set_tempo":
             tempo = msg.tempo
+        elif msg.type == "control_change" and msg.control == 64:
+            pedal[msg.channel] = msg.value >= 64
         elif msg.type == "note_on" and msg.velocity > 0:
             key = (msg.channel, msg.note)
-            active.setdefault(key, []).append((abs_ms, msg.velocity))
+            active.setdefault(key, []).append((abs_ms, msg.velocity,
+                                               pedal.get(msg.channel, False)))
         elif msg.type in ("note_off",) or (msg.type == "note_on" and msg.velocity == 0):
             key = (msg.channel, msg.note)
             if active.get(key):
-                t_on, vel = active[key].pop(0)
+                t_on, vel, pedal_on = active[key].pop(0)
                 n += 1
                 events.append(PerformanceEvent(
                     id=f"pe_{n:05d}", tOnMs=t_on, tOffMs=abs_ms,
                     pitch=msg.note, velocity=vel, channel=msg.channel,
-                    source="midi-file"))
+                    source="midi-file", pedalDown=pedal_on,
+                    pedalAtRelease=pedal.get(msg.channel, False)))
     # 补未闭合音符
     for (channel, note), ons in active.items():
-        for t_on, vel in ons:
+        for t_on, vel, _pedal in ons:
             n += 1
             events.append(PerformanceEvent(
                 id=f"pe_{n:05d}", tOnMs=t_on, tOffMs=t_on + 200.0,

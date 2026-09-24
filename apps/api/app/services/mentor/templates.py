@@ -9,17 +9,14 @@ from __future__ import annotations
 from app.i18n import say
 from app.schemas.models import (DiagnosisReport, ErrorType, MentorChatResponse,
                                 MentorResponse)
+from app.services.generation.remedies import remedy_for
 
-# (exercise type, message key naming it)
-STRATEGY_BY_TYPE = {
-    ErrorType.wrong_pitch: ("chunk_connect", "strategy.chunk_connect"),
-    ErrorType.missed_note: ("chunk_connect", "strategy.chunk_connect"),
-    ErrorType.extra_note: ("chunk_connect", "strategy.chunk_connect"),
-    ErrorType.early_late: ("slow_ladder", "strategy.slow_ladder"),
-    ErrorType.tempo_instability: ("slow_ladder", "strategy.slow_ladder"),
-    ErrorType.duration_anomaly: ("rhythm_variant", "strategy.rhythm_variant"),
-    ErrorType.dynamics_anomaly: ("chunk_connect", "strategy.dynamics_chunk"),
-}
+def _strategy(error_type: ErrorType) -> tuple[str, str]:
+    """The practice for this kind of mistake, and the message naming it."""
+    strategy = remedy_for(error_type)
+    if error_type == ErrorType.dynamics_anomaly:
+        return strategy, "strategy.dynamics_chunk"
+    return strategy, f"strategy.{strategy}"
 
 # The fallback reads intent from words, and a player may type in either
 # language whatever the interface is set to — so every list holds both.
@@ -100,7 +97,7 @@ def build_response(report: DiagnosisReport,
                 "limitation": h["limitation"]}
                for h in report.hypotheses[:3]]
 
-    strategy, label_key = STRATEGY_BY_TYPE.get(top.type, ("loop", "strategy.loop"))
+    strategy, label_key = _strategy(top.type)
     measures = sorted({e.location["measure"] for e in errors
                        if e.type == top.type})[:2]
     plan = [{

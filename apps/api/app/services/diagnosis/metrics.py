@@ -11,9 +11,19 @@ from __future__ import annotations
 
 import statistics
 
+from typing import TYPE_CHECKING
+
 from app.schemas.models import (AlignmentPair, AlignOp, Metrics,
                                 PerformanceGroup)
 from app.services.alignment.onset import ScoreOnset, score_onset_beat
+
+if TYPE_CHECKING:
+    from app.services.diagnosis.take import Written
+
+#: What one unwritten stop, or going back to replay a passage, costs fluency.
+#: A stop is one event however long it lasts; it used to be read as a wild
+#: swing in tempo, which could take the whole score to zero on its own.
+STOP_PENALTY = 8.0
 
 
 def calculate_metrics(pairs: list[AlignmentPair],
@@ -21,7 +31,12 @@ def calculate_metrics(pairs: list[AlignmentPair],
                       group_index: dict[str, PerformanceGroup],
                       beats_per_measure: float,
                       bpm: float,
-                      has_dynamics: bool = False) -> Metrics:
+                      has_dynamics: bool = False,
+                      *,
+                      written: "Written | None" = None,
+                      after_pause: frozenset[str] | set[str] = frozenset(),
+                      went_back_to: frozenset[str] | set[str] = frozenset(),
+                      replays: int = 0) -> Metrics:
     # 期望声部事件总数（range 内非 optional）
     member_total = sum(1 for o in onset_index.values()
                        for m in o.members if not m.optional)
@@ -58,9 +73,11 @@ def calculate_metrics(pairs: list[AlignmentPair],
     pitch_score = 100.0 * n_correct / member_total if member_total else 100.0
     rhythm_score = (0.6 * on_time_ratio * 100.0
                     + 0.4 * 100.0 * max(0.0, 1.0 - timing_mae / 300.0))
-    avg_bpm, cv = _tempo_stats(matched, onset_index, group_index, beats_per_measure)
+    avg_bpm, cv = _tempo_stats(matched, onset_index, group_index, beats_per_measure,
+                               written, set(after_pause) | set(went_back_to))
     fluency_score = 100.0 * max(0.0, 1.0 - cv / 0.15)
-    fluency_score = max(0.0, fluency_score - 4.0 * (n_extra + n_missed) - 2.0 * n_wrong)
+    fluency_score = max(0.0, fluency_score - 4.0 * (n_extra + n_missed) - 2.0 * n_wrong
+                        - STOP_PENALTY * (len(after_pause) + replays))
     velocity_deltas: list[float] = []
     if has_dynamics:
         for pair in matched:
@@ -104,21 +121,42 @@ def calculate_metrics(pairs: list[AlignmentPair],
 def _tempo_stats(matched: list[AlignmentPair],
                  onset_index: dict[str, ScoreOnset],
                  group_index: dict[str, PerformanceGroup],
-                 beats_per_measure: float) -> tuple[float, float]:
+                 beats_per_measure: float,
+                 written: "Written | None" = None,
+                 stops: frozenset[str] | set[str] = frozenset(),
+                 ) -> tuple[float, float]:
+    """Mean played tempo, and how much the pulse wandered from the page.
+
+    The wandering is read against the tempo written at each point, so a new
+    metronome mark or a written *rit.* is not unsteadiness. Gaps a stop, a
+    restart or a fermata opened are left out: each is its own event, not a tempo.
+    """
     pts = []
     for p in matched:
         o = onset_index.get(p.scoreEventId or "")
         g = group_index.get(p.performanceId or "")
         if o and g:
             beat = score_onset_beat(o, beats_per_measure)
-            pts.append((beat, g.tOnMs))
+            pts.append((beat, g.tOnMs, o.onsetId))
     pts.sort()
     bpms = []
-    for (b0, m0), (b1, m1) in zip(pts, pts[1:]):
+    ratios = []
+    fermatas = written.fermata_onsets if written else set()
+    for (b0, m0, id0), (b1, m1, id1) in zip(pts, pts[1:]):
         if b1 > b0 and m1 > m0:
-            bpms.append(60.0 / ((m1 - m0) / (b1 - b0) / 1000.0))
+            played = 60.0 / ((m1 - m0) / (b1 - b0) / 1000.0)
+            bpms.append(played)
+            if id1 in stops or id0 in fermatas:
+                continue
+            if written is None:
+                ratios.append(played)
+            elif not written.free_between(b0, b1) and written.span_at(b0) is written.span_at(b1):
+                ratios.append(played / written.bpm_at(b0))
     if not bpms:
         return 0.0, 0.0
     mean = statistics.mean(bpms)
-    cv = statistics.pstdev(bpms) / mean if mean else 0.0
+    if not ratios:
+        return mean, 0.0
+    centre = statistics.mean(ratios)
+    cv = statistics.pstdev(ratios) / centre if centre else 0.0
     return mean, cv

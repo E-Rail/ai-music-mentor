@@ -45,8 +45,12 @@ export function TempoCurve({ points, targetBpm }: {
 
   const bpms = points.map((point) => point.bpm)
   const reference = targetBpm ?? null
-  const low = Math.min(...bpms, reference ?? Infinity)
-  const high = Math.max(...bpms, reference ?? -Infinity)
+  // What the page marks at each point: one number for most pieces, a step
+  // where a new tempo is written. Older reports carry only the single mark.
+  const marks = points.map((point) => point.targetBpm ?? reference)
+  const written = marks.filter((mark): mark is number => typeof mark === 'number')
+  const low = Math.min(...bpms, ...written)
+  const high = Math.max(...bpms, ...written)
   const margin = Math.max(4, (high - low) * 0.15)
   const yMin = low - margin
   const yMax = high + margin
@@ -58,6 +62,28 @@ export function TempoCurve({ points, targetBpm }: {
   const y = (bpm: number) => PAD.top + (1 - (bpm - yMin) / (yMax - yMin)) * plotHeight
   const path = points.map((point, index) =>
     `${index ? 'L' : 'M'}${x(point.beat).toFixed(1)},${y(point.bpm).toFixed(1)}`).join(' ')
+  // The marked tempo as steps: flat until the page changes it, then straight up
+  // or down, never a slope the page did not write.
+  const targetPath = written.length === points.length
+    ? points.map((point, index) => {
+      const mark = y(marks[index] as number).toFixed(1)
+      if (index === 0) return `M${PAD.left},${mark}`
+      const changed = marks[index] !== marks[index - 1]
+      return `${changed ? `L${x(point.beat).toFixed(1)},${y(marks[index - 1] as number).toFixed(1)} ` : ''}L${x(point.beat).toFixed(1)},${mark}`
+    }).join(' ') + ` L${width - PAD.right},${y(marks[marks.length - 1] as number).toFixed(1)}`
+    : null
+  // Stretches under a written rit. or accel., where moving is reading the page.
+  const shaped: { from: number; to: number; shape: 'slowing' | 'speeding' }[] = []
+  points.forEach((point, index) => {
+    const shape = point.shape
+    if (!shape || shape === 'steady') return
+    const last = shaped[shaped.length - 1]
+    if (last && last.shape === shape && index > 0 && points[index - 1].shape === shape) {
+      last.to = point.beat
+    } else {
+      shaped.push({ from: point.beat, to: point.beat, shape })
+    }
+  })
 
   // One x label per bar at most, and only as many as fit side by side.
   const barStarts = points.filter((point, index) =>
@@ -97,10 +123,16 @@ export function TempoCurve({ points, targetBpm }: {
           <text key={point.beat} className="tempo-axis" x={x(point.beat)} y={HEIGHT - 6}
                 textAnchor="middle">{measureLabel(point.measure)}</text>
         ))}
-        {reference !== null && (
-          <line className="tempo-target" x1={PAD.left} x2={width - PAD.right}
-                y1={y(reference)} y2={y(reference)} />
-        )}
+        {shaped.map((span) => (
+          <g key={span.from}>
+            <rect className="tempo-shaped" x={x(span.from)} y={PAD.top}
+                  width={Math.max(2, x(span.to) - x(span.from))} height={plotHeight} />
+            <text className="tempo-shaped-label" x={x(span.from) + 4} y={PAD.top + 10}>
+              {t(span.shape === 'slowing' ? 'tempoCurveSlowing' : 'tempoCurveSpeeding')}
+            </text>
+          </g>
+        ))}
+        {targetPath && <path className="tempo-target" d={targetPath} />}
         <path className="tempo-line" d={path} />
         <circle className="tempo-end" cx={x(last.beat)} cy={y(last.bpm)} r={4} />
         <text className="tempo-end-label" x={x(last.beat) + 8} y={y(last.bpm)} dy="0.32em">
@@ -117,7 +149,12 @@ export function TempoCurve({ points, targetBpm }: {
       {active && (
         <div className="tempo-tooltip" role="status"
              style={{ left: Math.min(width - 120, Math.max(0, x(active.beat) - 50)) }}>
-          {tf('tempoCurvePoint', { bar: measureLabel(active.measure), bpm: Math.round(active.bpm) })}
+          {typeof active.targetBpm === 'number'
+            ? tf('tempoCurvePointMarked', {
+              bar: measureLabel(active.measure), bpm: Math.round(active.bpm),
+              target: Math.round(active.targetBpm),
+            })
+            : tf('tempoCurvePoint', { bar: measureLabel(active.measure), bpm: Math.round(active.bpm) })}
         </div>
       )}
       <table className="visually-hidden">

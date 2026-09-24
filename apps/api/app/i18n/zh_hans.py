@@ -20,6 +20,18 @@ MESSAGES: dict[str, str] = {
     "word.faster": "快",
     "word.takeMedianVelocity": "相邻演奏中位 velocity {value}",
     "word.steadyBpm": "{bpm} BPM 稳定",
+    "word.noStop": "连续不断",
+    "word.stoppedFor": "停了约 {seconds} 秒",
+    "word.wentBackTo": "回到第 {bar} 小节重弹",
+    "word.shortDetached": "短促、断开",
+    "word.heldPercent": "按住了时值的 {pct}%",
+    "word.joined": "音与音连起来",
+    "word.gapMs": "中间断开 {ms} ms",
+    "word.louderThanAround": "比前后的音更强",
+    "word.crescendo": "渐强",
+    "word.diminuendo": "渐弱",
+    "word.hairpinExpected": "力度逐渐增强至少 {amount}",
+    "word.hairpinExpectedDown": "力度逐渐减弱至少 {amount}",
 
     # ---- what was heard (evidence) --------------------------------------
     "fact.timing": "相对局部速度{direction} {ms} ms",
@@ -35,6 +47,12 @@ MESSAGES: dict[str, str] = {
     "fact.localTempo": "第 {bar} 小节附近存在局部变速：段落速度最慢约 {slowest} BPM，相对整体 {median} BPM 偏离 {pct}%",
     "fact.overallTempo": "整体速度约 {mean} BPM，比乐谱标记 {marked} BPM {direction} {pct}%",
     "fact.tempoSpread": "4 拍滑窗 BPM 变异系数 {cv}%（>8%），区间 {low}–{high} BPM",
+    "fact.pause": "第 {bar} 小节第 {beat} 拍之前停了约 {seconds} 秒（比乐谱多出约 {beats} 拍）",
+    "fact.replay": "在第 {bar} 小节第 {beat} 拍附近停下，回到第 {back} 小节把 {count} 个音重弹了一遍",
+    "fact.staccatoHeld": "第 {start}–{end} 小节的断奏音按得太长：{count} 个音平均按住了时值的 {pct}%",
+    "fact.legatoGaps": "第 {start}–{end} 小节连线内的音没有连起来：{count} 处断开，最长 {ms} ms",
+    "fact.accentFlat": "第 {start}–{end} 小节的重音没有突出：重音力度 {accent}，前后约 {around}（{count} 处）",
+    "fact.hairpin": "第 {start}–{end} 小节的{kind}：力度由约 {from} 变为 {to}，没有做出{kind}",
 
     # ---- one-line summaries on a mistake -------------------------------
     "detail.timingAt": "第 {bar} 小节第 {beat} 拍{direction}",
@@ -44,6 +62,12 @@ MESSAGES: dict[str, str] = {
     "detail.dynamicsOutlier": "相对本轮力度{direction} {amount}",
     "detail.barSpan": "第 {start}–{end} 小节",
     "detail.overallTempo": "整体比标记速度{direction} {pct}%（第 {start}–{end} 小节；本次拍点本身是稳的）",
+    "detail.pause": "第 {bar} 小节第 {beat} 拍前停顿 {seconds} 秒",
+    "detail.replay": "第 {bar} 小节停下，回到第 {back} 小节重弹",
+    "detail.staccato": "第 {start}–{end} 小节断奏按太长",
+    "detail.legato": "第 {start}–{end} 小节连线断开",
+    "detail.accent": "第 {start}–{end} 小节重音不明显",
+    "detail.hairpin": "第 {start}–{end} 小节没有{kind}",
 
     # ---- patterns and likely causes ----------------------------------------
     "pattern.repeated": "{name}（覆盖 {count} 处，分布于第 {start}–{end} 小节）",
@@ -75,6 +99,9 @@ MESSAGES: dict[str, str] = {
     "limit.difficultyDrift": "建议分句配合节拍器",
     "cause.fatigueSlowdown": "可能体力/紧张导致后半段减速",
     "limit.fatigueSlowdown": "需多次演奏交叉验证",
+    "pattern.hesitation": "演奏多次停顿或回头重弹，疑似还没把这些地方连起来",
+    "cause.stopsBeforeHard": "可能是难点前手指或读谱还没准备好，只能停下来找",
+    "limit.stopsBeforeHard": "停顿的原因需要结合多次演奏判断：总在同一处停，才是这里本身难",
 
     # ---- report warnings and method notes ----------------------------------
     "warning.takeKeptNotScored": "录音已接收并完成处理，但当前证据不足，未生成演奏分数或错误判断。",
@@ -92,6 +119,8 @@ MESSAGES: dict[str, str] = {
     "note.tolerantAlignment": "已使用容错序列对齐：错音、多音和漏音只影响对应位置，不会拖移后续检测。",
     "note.dynamicsByMarks": "力度按谱面标记的强弱记号逐音比较；力度差只影响对应位置。",
     "note.guitarOctave": "已按乐谱中的吉他八度移调标记，将实声音高换算为书写音高。",
+    "note.writtenTempo": "速度按乐谱每处写的速度判断；rit.、accel. 等写明的速度变化不算速度不稳。",
+    "note.pedalledReleases": "有 {count} 个音松键时踏板是踩着的，声音被踏板延续，所以没有判断这些音的时值。",
     "analysis.noScoreInRange": "练习范围内没有乐谱事件",
     "analysis.noEvents": "没有演奏事件，请重录或缩短片段",
     "analysis.noUsableEvents": "没有可用于分析的演奏事件，请重录",
@@ -217,6 +246,7 @@ MESSAGES: dict[str, str] = {
     "type.duration_anomaly": "时值不稳定",
     "type.tempo_instability": "速度不稳",
     "type.dynamics_anomaly": "力度异常",
+    "type.hesitation": "停顿/重弹",
     "strategy.chunk_connect": "动机连接",
     "strategy.slow_ladder": "慢速阶梯",
     "strategy.rhythm_variant": "节奏变体",

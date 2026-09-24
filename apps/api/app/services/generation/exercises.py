@@ -18,18 +18,10 @@ import uuid
 from pathlib import Path
 
 from app.i18n import Msg, localized, msg, say
+from app.services.generation.remedies import remedy_for
 from app.schemas.models import (DiagnosisReport, ErrorType, Exercise,
                                 ExerciseParams, ScoreBundle, ScoreEvent)
 
-STRATEGY_RULES = {
-    ErrorType.wrong_pitch: "chunk_connect",
-    ErrorType.missed_note: "chunk_connect",
-    ErrorType.extra_note: "chunk_connect",
-    ErrorType.early_late: "slow_ladder",
-    ErrorType.tempo_instability: "slow_ladder",
-    ErrorType.duration_anomaly: "rhythm_variant",
-    ErrorType.dynamics_anomaly: "chunk_connect",
-}
 
 
 class ExerciseGenerationError(Exception):
@@ -46,7 +38,7 @@ def suggest_strategy(report: DiagnosisReport) -> str:
     top = sorted(report.errors,
                  key=lambda e: (sev_rank.get(e.severity.value, 3),
                                 -e.confidence))[0]
-    return STRATEGY_RULES.get(top.type, "loop")
+    return remedy_for(top.type)
 
 
 def select_measures(report: DiagnosisReport, error_ids: list[str],

@@ -8,6 +8,9 @@
 - |onset residual| > max(80ms, 0.12 beat) → 提前/延后（early_late）
 - |duration ratio − 1| > 0.35 → 时值异常（duration_anomaly）
 - 4 拍滑窗 BPM CV>8% / 连续减速>12% / 整体偏离标称>10% → 速度不稳
+  （相对每处的书面速度；rit./accel. 段落不计）
+- 乐谱没写的停顿、回头重弹 → 犹豫（hesitation，见 fluency.py）
+- 断奏、连线、重音、渐强渐弱记号 → 见 expression.py
 
 特殊处理：和弦不同步（某音延迟超过 70ms 窗口形成独立演奏组）=
 Substitute(缺音) + Insert(延迟音) → 合并为 early_late（低严重度），
@@ -16,96 +19,66 @@ Substitute(缺音) + Insert(延迟音) → 合并为 early_late（低严重度�
 from __future__ import annotations
 
 import statistics
+from dataclasses import dataclass
 
 from app.schemas.models import (AlignmentPair, AlignOp, ErrorEvent, ErrorType,
                                 Evidence, PerformanceGroup, Severity, TempoPoint)
 from app.services.alignment.onset import ScoreOnset, score_onset_beat
 from app.services.alignment.tempo import TempoMap, local_bpm_series
-from app.i18n import Msg, localized, msg
+from app.i18n import Msg, msg
 from app.services.diagnosis.confidence import confidence
-
-NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-
-def pitch_name(midi: int) -> str:
-    return f"{NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
+from app.services.diagnosis.expression import Shaping, judge_shaping
+from app.services.diagnosis.fluency import find_pauses, report_restarts
+from app.services.diagnosis.ledger import Ledger, pitch_name, pitch_set_str  # noqa: F401
+from app.services.diagnosis.take import SHORT_MARKS, Take
 
 
-def pitch_set_str(pitches) -> str:
-    return "/".join(pitch_name(p) for p in sorted(pitches))
+@dataclass
+class Findings:
+    errors: list[ErrorEvent]
+    evidences: list[Evidence]
+    shaping: Shaping
+    #: Onsets that came straight after an unwritten stop, and how long it ran (ms).
+    after_pause: dict[str, float]
+    replays: int
+    #: Onsets a restart went back to, and how long the abandoned attempt took (ms).
+    went_back_to: dict[str, float]
+    #: When each written note actually arrived: onset → pitch → (group, ms).
+    #: A chord played apart lands in several groups, and a note the chord
+    #: window swept into the next group still belongs here; this is the one
+    #: record of where every written note went.
+    arrivals: dict[str, dict[int, tuple[str, float]]]
+
+    @property
+    def stops(self) -> dict[str, float]:
+        """Every gap the music stopped for, by the onset after it."""
+        return {**self.went_back_to, **self.after_pause}
 
 
-class _Ctx:
-    def __init__(self, measure_labels: list[str] | None = None):
-        self.errors: list[ErrorEvent] = []
-        self.evidences: list[Evidence] = []
-        self._err_n = 0
-        self._ev_n = 0
-        self._labels = measure_labels or []
-
-    def label(self, measure: int) -> str:
-        """What the page calls this bar.
-
-        ``measureNo`` is a position in the timeline and always counts 1, 2, 3…,
-        which is what alignment and event IDs need. It is not what is printed:
-        a piece that opens with a pickup numbers that bar 0, so every printed
-        number after it is one lower. location.measure keeps the position — the
-        interface relabels that itself — but a sentence a student reads has to
-        say the number on their page, or it sends them to the wrong bar.
-        """
-        if 1 <= measure <= len(self._labels):
-            return self._labels[measure - 1]
-        return str(measure)
-
-    def add_evidence(self, measure: int, beat: float, fact: Msg,
-                     expected: Msg | str = "", actual: Msg | str = "",
-                     delta_ms: float | None = None,
-                     delta_velocity: float | None = None,
-                     expected_pitches=(), actual_pitches=()) -> str:
-        self._ev_n += 1
-        ev_id = f"ev_{self._ev_n:04d}"
-        self.evidences.append(Evidence(
-            id=ev_id, measureNo=measure, beat=beat, deltaMs=delta_ms,
-            deltaVelocity=delta_velocity,
-            expectedPitches=sorted(expected_pitches),
-            actualPitches=sorted(actual_pitches),
-            **localized(fact=fact, expected=expected, actual=actual)))
-        return ev_id
-
-    def add_error(self, err_type: ErrorType, measure: int, beat: float,
-                  event_ids: list[str], severity: Severity,
-                  evidence_ids: list[str], detail: Msg | str = "") -> None:
-        self._err_n += 1
-        conf = confidence(err_type, len(evidence_ids), 1)
-        self.errors.append(ErrorEvent(
-            id=f"err_{self._err_n:04d}", type=err_type,
-            location={"measure": measure, "beat": beat,
-                      "eventId": event_ids[0] if event_ids else None,
-                      "eventIds": event_ids},
-            severity=severity, evidenceIds=evidence_ids, confidence=conf,
-            **localized(detail=detail)))
-
-    def at(self, o: ScoreOnset) -> dict[str, str]:
-        """The printed bar and beat of an onset, as message parameters."""
-        return {"bar": self.label(o.measureNo), "beat": f"{o.onsetBeat + 1:g}"}
+_SEVERITY_ORDER = {Severity.high: 0, Severity.medium: 1, Severity.low: 2}
 
 
-def classify_errors(pairs: list[AlignmentPair],
-                    onset_index: dict[str, ScoreOnset],
-                    group_index: dict[str, PerformanceGroup],
-                    tempo_map: TempoMap,
-                    beats_per_measure: float,
-                    bpm: float,
-                    group_pitch_onsets: dict[str, dict[int, float]] | None = None,
+def classify_errors(take: Take,
                     include_duration_errors: bool = True,
                     duration_tolerance: float = .35,
                     include_dynamics_errors: bool = True,
                     has_notated_dynamics: bool = False,
-                    measure_labels: list[str] | None = None,
-                    ) -> tuple[list[ErrorEvent], list[Evidence]]:
-    ctx = _Ctx(measure_labels)
+                    ) -> Findings:
+    pairs = take.pairs
+    onset_index = take.onsets
+    group_index = take.groups
+    tempo_map = take.tempo_map
+    beats_per_measure = take.beats_per_measure
+    bpm = take.bpm
+    group_pitch_onsets = take.pitch_onsets
+    ctx = Ledger(take.measure_labels)
     beat_ms = 60000.0 / bpm
     timing_threshold = max(80.0, 0.12 * beat_ms)
+
+    # A stop and a passage begun again are each one event. Name them first:
+    # the note after a stop is not also "late".
+    went_back_to = report_restarts(ctx, take, take.restarts)
+    after_pause = find_pauses(ctx, take, explained=went_back_to)
 
     # 局部趋势修正残差：残差减去 ±2 拍邻域中位数。
     # 持续性的局部变速（拖拍段）被邻域吸收 → 不报单音提前/延后；
@@ -127,6 +100,7 @@ def classify_errors(pairs: list[AlignmentPair],
     delete_pairs = {p.scoreEventId: p for p in pairs
                     if p.operation == AlignOp.delete and p.scoreEventId in onset_index}
     reassigned: dict[str, tuple[str, float]] = {}   # onsetId → (groupId, residMs)
+    arrivals: dict[str, dict[int, tuple[str, float]]] = {}
     consumed_extra: dict[str, set[int]] = {}        # groupId → 被重分配的音高
     for p in pairs:
         if p.operation != AlignOp.substitute:
@@ -153,6 +127,8 @@ def classify_errors(pairs: list[AlignmentPair],
             if abs(resid) > 1.2 * beat_ms:
                 continue
             reassigned[d_o.onsetId] = (g.id, resid)
+            arrivals[d_o.onsetId] = {pitch: (g.id, gpo.get(pitch, g.tOnMs))
+                                     for pitch in d_o.pitches}
             consumed_extra.setdefault(g.id, set()).update(d_o.pitches)
             del delete_pairs[d_pid]
             break
@@ -184,6 +160,8 @@ def classify_errors(pairs: list[AlignmentPair],
         if not g:
             continue
         matched_onsets.append((o, g, p))
+        arrivals[o.onsetId] = {pitch: (g.id, group_pitch_onsets[g.id].get(pitch, g.tOnMs))
+                               for pitch in o.pitches if pitch in g.pitches}
 
         missing = sorted(set(o.pitches) - set(g.pitches))
         extra = sorted(set(g.pitches) - set(o.pitches)
@@ -220,6 +198,9 @@ def classify_errors(pairs: list[AlignmentPair],
                     continue
                 missing = sorted(set(missing) - set(claimed))
                 absorbed = True
+                for pitch in claimed:
+                    arrivals[o.onsetId][pitch] = (
+                        g_ins.id, group_pitch_onsets[g_ins.id].get(pitch, g_ins.tOnMs))
                 # 整组都被认领才算吸收；只认领了一部分时，组仍要走多音分支，
                 # 由 consumed_extra 把已认领的音扣掉，避免重复报。
                 if set(claimed) >= set(g_ins.pitches):
@@ -245,10 +226,11 @@ def classify_errors(pairs: list[AlignmentPair],
                               member_ids, Severity.low, [ev_id],
                               msg("detail.chordSpread"))
             if absorbed and not missing and not extra:
-                flagged_timing = _maybe_timing(ctx, o, p, timing_threshold, adjusted)
+                flagged_timing = (o.onsetId not in after_pause and
+                                  _maybe_timing(ctx, o, p, timing_threshold, adjusted))
                 if not flagged_timing:
                     if include_duration_errors:
-                        _maybe_duration(ctx, o, p, duration_tolerance)
+                        _maybe_duration(ctx, take, o, arrivals.get(o.onsetId, {}), duration_tolerance)
                 continue
 
         # ---------- 音高类错误 ----------
@@ -292,10 +274,11 @@ def classify_errors(pairs: list[AlignmentPair],
                     pass
 
         # ---------- 时间与时值 ----------
-        flagged_timing = _maybe_timing(ctx, o, p, timing_threshold, adjusted)
+        flagged_timing = (o.onsetId not in after_pause and
+                          _maybe_timing(ctx, o, p, timing_threshold, adjusted))
         if not flagged_timing:
             if include_duration_errors:
-                _maybe_duration(ctx, o, p, duration_tolerance)
+                _maybe_duration(ctx, take, o, arrivals.get(o.onsetId, {}), duration_tolerance)
 
     # ---------- 未吸收的 Insert → 多音 ----------
     for ins in inserts:
@@ -322,14 +305,18 @@ def classify_errors(pairs: list[AlignmentPair],
                       msg("detail.extra", pitches=pitch_set_str(remaining)))
 
     # ---------- 速度不稳 ----------
-    _tempo_instability(ctx, matched_onsets, onset_beat_abs, bpm)
+    _tempo_instability(ctx, take, {**went_back_to, **after_pause})
+
+    # ---------- 奏法与表情记号 ----------
+    shaping = judge_shaping(ctx, take)
 
     # ---------- 力度 ----------
     # Velocity is evaluated only after alignment, so one hard/soft or accidental
     # press remains attached to its local score position and cannot shift the
     # surrounding note sequence.
     if include_dynamics_errors:
-        _dynamics_anomalies(ctx, matched_onsets,
+        _dynamics_anomalies(ctx, [item for item in matched_onsets
+                                  if item[0].onsetId not in shaping.accented_onsets],
                             has_notated_dynamics=has_notated_dynamics)
 
     # ---------- 回填跨重复一致性 ----------
@@ -339,7 +326,17 @@ def classify_errors(pairs: list[AlignmentPair],
     for e in ctx.errors:
         e.confidence = confidence(e.type, len(e.evidenceIds),
                                   type_counts.get(e.type, 1))
-    return ctx.errors, ctx.evidences
+    # In the order a player meets them on the page. The first is where the
+    # report says to start, so it must be the first problem, not the first
+    # rule that happened to run.
+    errors = sorted(ctx.errors, key=lambda e: (
+        e.location["measure"], e.location["beat"], _SEVERITY_ORDER[e.severity]))
+    for number, error in enumerate(errors, start=1):
+        error.id = f"err_{number:04d}"
+    evidences = sorted(ctx.evidences, key=lambda ev: (ev.measureNo, ev.beat))
+    return Findings(errors=errors, evidences=evidences, shaping=shaping,
+                    after_pause=after_pause, replays=len(went_back_to),
+                    went_back_to=went_back_to, arrivals=arrivals)
 
 
 def _median_velocity(group: PerformanceGroup) -> float | None:
@@ -348,7 +345,7 @@ def _median_velocity(group: PerformanceGroup) -> float | None:
 
 
 def _dynamics_anomalies(
-        ctx: _Ctx,
+        ctx: Ledger,
         matched_onsets: list[tuple[ScoreOnset, PerformanceGroup, AlignmentPair]],
         target_tolerance: float = 18.0,
         outlier_floor: float = 22.0,
@@ -430,7 +427,7 @@ def _dynamics_anomalies(
         )
 
 
-def _maybe_timing(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
+def _maybe_timing(ctx: Ledger, o: ScoreOnset, p: AlignmentPair,
                   threshold: float,
                   adjusted: dict[str, float] | None = None) -> bool:
     resid = (adjusted or {}).get(p.scoreEventId or "", p.onsetResidualMs)
@@ -444,7 +441,7 @@ def _direction(delta_ms: float) -> Msg:
     return msg("word.early" if delta_ms < 0 else "word.late")
 
 
-def _report_timing(ctx: _Ctx, o: ScoreOnset, resid: float) -> None:
+def _report_timing(ctx: Ledger, o: ScoreOnset, resid: float) -> None:
     sev = Severity.high if abs(resid) > 200 else Severity.medium
     ev_id = ctx.add_evidence(
         o.measureNo, o.onsetBeat,
@@ -455,7 +452,7 @@ def _report_timing(ctx: _Ctx, o: ScoreOnset, resid: float) -> None:
                   msg("detail.timingAt", **ctx.at(o), direction=_direction(resid)))
 
 
-def _missed_evidence(ctx: _Ctx, o: ScoreOnset, member) -> str:
+def _missed_evidence(ctx: Ledger, o: ScoreOnset, member) -> str:
     return ctx.add_evidence(
         o.measureNo, o.onsetBeat,
         msg("fact.missed", bar=ctx.label(o.measureNo),
@@ -470,44 +467,92 @@ def _beats(value: float, fmt: str) -> Msg:
     return msg("word.beatOne" if shown == "1" else "word.beats", n=shown)
 
 
-def _maybe_duration(ctx: _Ctx, o: ScoreOnset, p: AlignmentPair,
+def _maybe_duration(ctx: Ledger, take: Take, o: ScoreOnset,
+                    arrived: dict[int, tuple[str, float]],
                     tolerance: float = .35) -> None:
-    ratio = p.durationRatio
-    if abs(ratio - 1.0) <= tolerance:
+    """Judge how long each hand held its own notes against their own value.
+
+    Per hand, not per chord: a right-hand crotchet over a left-hand semibreve
+    is two lengths, and holding the crotchet for a crotchet is correct however
+    long the other hand holds on.
+
+    Length is the smallest thing a note can get wrong. A note already named
+    for its pitch or its timing — a correction struck late and so held short
+    — is not named again for the length that followed from it.
+    """
+    if any(error.location["measure"] == o.measureNo and error.location["beat"] == o.onsetBeat
+           for error in ctx.errors):
         return
+    worst: tuple[float, float] | None = None       # (durationBeat, ratio)
+    # The player's own pulse around this note, not the tempo map's slope: a
+    # stop right after a long note stretches the map there, and the note would
+    # be judged against a beat nobody played.
+    ms_per_beat = take.local_ms_per_beat(take.beat(o))
+    for member in o.members:
+        # A staccato is meant to be short and has its own rule; a fermata is
+        # held as long as the player chooses.
+        if member.optional or set(member.articulations) & (SHORT_MARKS | {"fermata"}):
+            continue
+        notes = [note for pitch in member.pitches if pitch in arrived
+                 for note in take.notes_in(take.groups[arrived[pitch][0]], [pitch])]
+        held = [note.tOffMs - note.tOnMs for note in notes if note.tOffMs > note.tOnMs]
+        if not held:
+            continue
+        ratio = max(held) / max(1.0, member.durationBeat * ms_per_beat)
+        # Let go of the key with the pedal down and the note keeps sounding:
+        # the key was short, the note was not.
+        if ratio < 1.0 and any(note.pedalAtRelease for note in notes):
+            continue
+        if abs(ratio - 1.0) > tolerance and (worst is None or abs(ratio - 1) > abs(worst[1] - 1)):
+            worst = (member.durationBeat, ratio)
+    if worst is None:
+        return
+    value, ratio = worst
     ev_id = ctx.add_evidence(
         o.measureNo, o.onsetBeat,
-        msg("fact.duration", expected=_beats(o.durationBeat, "g"),
-            actual=_beats(o.durationBeat * ratio, ".2f")),
-        expected=_beats(o.durationBeat, "g"), actual=_beats(o.durationBeat * ratio, ".2f"))
+        msg("fact.duration", expected=_beats(value, "g"),
+            actual=_beats(value * ratio, ".2f")),
+        expected=_beats(value, "g"), actual=_beats(value * ratio, ".2f"))
     ctx.add_error(ErrorType.duration_anomaly, o.measureNo, o.onsetBeat,
                   [m.eventId for m in o.members], Severity.low, [ev_id])
 
 
-def _tempo_instability(ctx: _Ctx,
-                       matched_onsets: list[tuple[ScoreOnset, PerformanceGroup, AlignmentPair]],
-                       onset_beat_abs, bpm: float) -> None:
-    beats_ms = [(onset_beat_abs(o), g.tOnMs, o.measureNo) for o, g, _ in matched_onsets]
+def _tempo_instability(ctx: Ledger, take: Take, stops: dict[str, float]) -> None:
+    """Judge the pulse against the tempo the page asks for at each point.
+
+    Every played tempo is read as a share of the written one there, so a new
+    metronome mark is not a lapse, and the stretches under a written *rit.* or
+    *accel.* are left out: slowing there is reading the page.
+    """
+    written = take.written
+    beats_ms = [(beat, ms, onset.measureNo)
+                for beat, ms, onset in take.played_without_stops(stops)]
     if len(beats_ms) < 4:
         return
-    series = local_bpm_series([(b, m) for b, m, _ in beats_ms])
+    series = [(beat, value) for beat, value in local_bpm_series([(b, m) for b, m, _ in beats_ms])
+              if written.steady_around(beat, 2.0)]
     if len(series) < 3:
         return
     bpms = [v for _, v in series]
-    mean_bpm = statistics.mean(bpms)
-    cv = statistics.pstdev(bpms) / mean_bpm if mean_bpm else 0.0
-    first_third = statistics.mean(bpms[: max(1, len(bpms) // 3)])
-    last_third = statistics.mean(bpms[-max(1, len(bpms) // 3):])
+    ratios = [v / written.bpm_at(b) for b, v in series]
+    mean_ratio = statistics.mean(ratios)
+    cv = statistics.pstdev(ratios) / mean_ratio if mean_ratio else 0.0
+    third = max(1, len(ratios) // 3)
+    first_third = statistics.mean(ratios[:third])
+    last_third = statistics.mean(ratios[-third:])
     slowdown = (first_third - last_third) / first_third if first_third else 0.0
-    overall_dev = abs(mean_bpm - bpm) / bpm if bpm else 0.0
+    overall_dev = abs(mean_ratio - 1.0)
+    first_bpm = statistics.mean(bpms[:third])
+    last_bpm = statistics.mean(bpms[-third:])
+    mean_bpm = statistics.mean(bpms)
+    marked = written.mean_bpm(series[0][0], series[-1][0])
 
-    # 局部段落偏离：任一滑窗中位 BPM 相对整体中位数偏离 >12%（局部拖拍段）
-    med_bpm = statistics.median(bpms)
-    seg_dev = max((abs(v - med_bpm) / med_bpm for v in bpms), default=0.0)
-    # 位置定位到偏离最大的窗口所在小节（而非全曲起点）
-    seg_beat = max(series, key=lambda kv: abs(kv[1] - med_bpm))[0]
-    seg_measure = min((m for b, _, m in beats_ms),
-                      key=lambda m: 0) if False else None
+    # 局部段落偏离：任一滑窗相对整体中位数偏离 >12%（局部拖拍段）
+    med_ratio = statistics.median(ratios)
+    deviations = [abs(r - med_ratio) / med_ratio for r in ratios]
+    seg_dev = max(deviations, default=0.0)
+    worst = deviations.index(seg_dev)
+    seg_beat = series[worst][0]
     # beat → measure：找最近的锚点小节
     seg_measure = min(beats_ms, key=lambda t: abs(t[0] - seg_beat))[2]
 
@@ -518,17 +563,17 @@ def _tempo_instability(ctx: _Ctx,
         span = {"start": ctx.label(m_start), "end": ctx.label(m_end)}
         detail = msg("detail.barSpan", **span)
         if slowdown > 0.12:
-            fact = msg("fact.slowdown", **span, **{"from": f"{first_third:.0f}"},
-                       to=f"{last_third:.0f}", pct=f"{slowdown * 100:.0f}")
+            fact = msg("fact.slowdown", **span, **{"from": f"{first_bpm:.0f}"},
+                       to=f"{last_bpm:.0f}", pct=f"{slowdown * 100:.0f}")
             loc_measure = m_start
         elif seg_dev > 0.12:
             fact = msg("fact.localTempo", bar=ctx.label(seg_measure),
-                       slowest=f"{min(bpms):.0f}", median=f"{med_bpm:.0f}",
+                       slowest=f"{min(bpms):.0f}", median=f"{statistics.median(bpms):.0f}",
                        pct=f"{seg_dev * 100:.0f}")
             loc_measure = seg_measure
         elif overall_dev > 0.10:
-            direction = msg("word.slower" if mean_bpm < bpm else "word.faster")
-            fact = msg("fact.overallTempo", mean=f"{mean_bpm:.0f}", marked=f"{bpm:.0f}",
+            direction = msg("word.slower" if mean_ratio < 1 else "word.faster")
+            fact = msg("fact.overallTempo", mean=f"{mean_bpm:.0f}", marked=f"{marked:.0f}",
                        direction=direction, pct=f"{overall_dev * 100:.0f}")
             # A steady take at a slower tempo is a tempo *choice*, not shaky
             # playing — and it is exactly what the slow-practice exercises ask
@@ -539,7 +584,7 @@ def _tempo_instability(ctx: _Ctx,
             fact = msg("fact.tempoSpread", cv=f"{cv * 100:.1f}",
                        low=f"{min(bpms):.0f}", high=f"{max(bpms):.0f}")
         ev_id = ctx.add_evidence(loc_measure, 0.0, fact,
-                                 expected=msg("word.steadyBpm", bpm=f"{bpm:.0f}"),
+                                 expected=msg("word.steadyBpm", bpm=f"{marked:.0f}"),
                                  actual=f"{min(bpms):.0f}–{max(bpms):.0f} BPM")
         ctx.add_error(ErrorType.tempo_instability, loc_measure, 0.0, [],
                       Severity.medium, [ev_id], detail)
@@ -585,26 +630,22 @@ def _adjusted_residuals(pairs: list[AlignmentPair],
     return out
 
 
-def played_tempo_curve(pairs: list[AlignmentPair],
-                       onset_index: dict[str, ScoreOnset],
-                       group_index: dict[str, PerformanceGroup],
-                       beats_per_measure: float) -> list[TempoPoint]:
+def played_tempo_curve(take: Take, stops: dict[str, float]) -> list[TempoPoint]:
     """The tempo the player actually kept, note by note.
 
     The same 4-beat sliding median the tempo-instability check reads, so the
     curve a player sees is the evidence that check judged — not a second,
-    differently smoothed opinion of the same take.
+    differently smoothed opinion of the same take. Each point carries the
+    written tempo there, so a marked tempo change is drawn as a step. Stops
+    are cut out, as the check cuts them: each is named once, as a stop.
     """
-    anchors = []
-    for pair in pairs:
-        if pair.operation not in (AlignOp.match, AlignOp.substitute):
-            continue
-        onset = onset_index.get(pair.scoreEventId or "")
-        group = group_index.get(pair.performanceId or "")
-        if onset and group:
-            anchors.append((score_onset_beat(onset, beats_per_measure),
-                            group.tOnMs, onset.measureNo))
+    anchors = [(beat, ms, onset.measureNo)
+               for beat, ms, onset in take.played_without_stops(stops)]
     measure_at = {beat: measure for beat, _, measure in anchors}
-    return [TempoPoint(beat=round(beat, 3), measure=measure_at.get(beat, 1),
-                       bpm=round(bpm, 1))
-            for beat, bpm in local_bpm_series([(b, ms) for b, ms, _ in anchors])]
+    points = []
+    for beat, bpm in local_bpm_series([(b, ms) for b, ms, _ in anchors]):
+        span = take.written.span_at(beat)
+        points.append(TempoPoint(beat=round(beat, 3), measure=measure_at.get(beat, 1),
+                                 bpm=round(bpm, 1), targetBpm=round(span.bpm, 1),
+                                 shape=span.shape))
+    return points

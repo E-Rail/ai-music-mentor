@@ -15,6 +15,8 @@ RULE_SPECIFICITY = {
     ErrorType.duration_anomaly: 0.75,
     ErrorType.tempo_instability: 0.70,
     ErrorType.dynamics_anomaly: 0.60,
+    # A stop of half a second or more is not a subtle reading.
+    ErrorType.hesitation: 0.85,
 }
 
 

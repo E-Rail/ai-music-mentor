@@ -200,7 +200,10 @@ export function detectPolyphony(
 }
 
 const DEFAULTS = {
-  minPitchHz: 110,
+  // Just under C2. The left hand lives down here — C2, G2, the bass of every
+  // I–IV–V — and a floor at A2 left the live panel blind to it. The room's
+  // hum is learned and subtracted, so reaching lower does not hear it.
+  minPitchHz: 62,
   maxPitchHz: 1_400,
   minIntervalMs: 95,
   clarityThreshold: 0.72,

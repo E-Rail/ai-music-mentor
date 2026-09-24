@@ -108,7 +108,7 @@ GENERATED_RETENTION_HOURS = int(os.environ.get("GENERATED_RETENTION_HOURS", str(
 LOCAL_PROFILE_ID = "local"
 # Bump when the importer changes what it derives from the same file, so builtin
 # fixtures are re-ingested on machines that already ran an older build.
-SCORE_IMPORTER_VERSION = "2026.08.12-measure-labels"
+SCORE_IMPORTER_VERSION = "2026.09.24-ties-and-marks"
 
 if MENTOR_RESPONSE_MODE not in {"json_schema", "json_object", "prompt_json"}:
     raise ValueError("MENTOR_RESPONSE_MODE must be json_schema, json_object, or prompt_json")

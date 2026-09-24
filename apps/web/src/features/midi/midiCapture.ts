@@ -283,6 +283,7 @@ export class MidiCapture implements PerformanceInputAdapter {
       channel: note.channel,
       source: 'web-midi',
       pedalDown: this.isPedalDown(note.tOn),
+      pedalAtRelease: this.isPedalDown(tOffMs),
       receivedTimeMs: note.receivedTimeMs,
     })
   }

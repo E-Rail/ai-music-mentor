@@ -167,6 +167,25 @@ describe('LiveNoteDetector in a noisy room', () => {
   })
 })
 
+describe('the left hand\'s bass register', () => {
+  it('hears a bass note under the melody', () => {
+    // C2 and G2 are ordinary left-hand notes; the detector used to stop at A2
+    // and the live panel never showed them.
+    const detector = build(0.01, 41)
+    const signal = roomNoise(3, 0.01, 43)
+    mixInto(signal, note(midiToHz(36), 1.2, 0.4), Math.floor(SAMPLE_RATE * 0.5))
+    mixInto(signal, note(midiToHz(43), 1.2, 0.4), Math.floor(SAMPLE_RATE * 1.8))
+    const found = detect(detector, signal)
+    expect(found.map((item) => item.pitches.includes(36) || item.pitches.includes(43)))
+      .toEqual([true, true])
+  })
+
+  it('does not hear mains hum and rumble as bass notes', () => {
+    const detector = build(0.03, 47)
+    expect(detect(detector, roomNoise(3, 0.03, 53))).toEqual([])
+  })
+})
+
 describe('LiveNoteDetector without a learned room', () => {
   it('still works ungated when the noise check was skipped', () => {
     const detector = new LiveNoteDetector({ sampleRate: SAMPLE_RATE })

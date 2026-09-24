@@ -16,7 +16,8 @@ from defusedxml import ElementTree as SafeET
 
 from app import config
 from app.i18n import say
-from app.schemas.models import ScoreBundle, ScoreEvent, ScoreMeta
+from app.schemas.models import (Hairpin, ScoreBundle, ScoreEvent, ScoreMeta,
+                                TempoSpan)
 
 
 class ScoreUnsupportedError(Exception):
@@ -110,6 +111,8 @@ def parse_musicxml(xml_bytes: bytes, score_id: str) -> ScoreBundle:
             say("import.tooManyBars", count=meta.measureCount, limit=config.MAX_MEASURES))
 
     events = _extract_events(expanded, score_id)
+    meta.tempoPlan = tempo_plan(expanded, meta.tempo)
+    meta.hairpins = hairpins(expanded)
     if not events:
         raise ScoreUnsupportedError(say("import.noNotes"))
     note_count = sum(len(event.pitches) for event in events)
@@ -251,11 +254,100 @@ def _linear_measure_number(measure: music21.stream.Measure | None) -> int:
     return max(1, int(measure.measureNumber or 1))
 
 
+_ARTICULATIONS = {
+    "Staccato": "staccato", "Staccatissimo": "staccatissimo",
+    "Tenuto": "tenuto", "Accent": "accent", "StrongAccent": "marcato",
+}
+
+
+def _articulations(element) -> list[str]:
+    """The marks on a note that ask for something beyond pitch and length."""
+    found = [_ARTICULATIONS[type(mark).__name__]
+             for mark in getattr(element, "articulations", [])
+             if type(mark).__name__ in _ARTICULATIONS]
+    if any(isinstance(mark, music21.expressions.Fermata)
+           for mark in getattr(element, "expressions", [])):
+        found.append("fermata")
+    return found
+
+
+def _continues_a_tie(note) -> bool:
+    """The second half of a tie: written again, but held rather than struck."""
+    tie = getattr(note, "tie", None)
+    return tie is not None and tie.type in ("stop", "continue")
+
+
+def _origin(element):
+    """The element as the file wrote it, before repeats were unrolled."""
+    seen = 0
+    while seen < 16 and element.derivation.origin is not None:
+        element = element.derivation.origin
+        seen += 1
+    return element
+
+
+def _timeline(part) -> dict[int, list[tuple[float, float]]]:
+    """Where every written note of a part lands on the performance timeline.
+
+    Slurs and hairpins still point at the notes as written: unrolling repeats
+    copies the notes but not what spans them. Each copy remembers the note it
+    came from, so a slur in a repeated bar is found on both passes through it.
+    """
+    index: dict[int, list[tuple[float, float]]] = {}
+    for note in part.recurse().notes:
+        try:
+            beat = float(note.getOffsetInHierarchy(part))
+        except music21.sites.SitesException:
+            continue
+        place = (beat, float(note.duration.quarterLength))
+        index.setdefault(id(note), []).append(place)
+        origin = _origin(note)
+        if origin is not note:
+            index.setdefault(id(origin), []).append(place)
+    return index
+
+
+def _spans(spanner, timeline: dict[int, list[tuple[float, float]]]
+           ) -> list[tuple[float, float, float]]:
+    """Each stretch of the timeline one spanner covers: (first onset, last
+    onset, where the last note stops sounding).
+
+    A spanner in a repeated passage covers it once per pass: every copy of its
+    first note is paired with the next copy of its last.
+    """
+    elements = list(spanner.getSpannedElements())
+    if not elements:
+        return []
+    lasts = sorted(timeline.get(id(elements[-1]), []))
+    spans = []
+    for first, _ in sorted(timeline.get(id(elements[0]), [])):
+        last = next(((beat, length) for beat, length in lasts if beat >= first - 1e-6), None)
+        if last is not None:
+            spans.append((first, last[0], last[0] + last[1]))
+    return spans
+
+
+def _slurs(part) -> list[tuple[float, float]]:
+    """Each slur in this part as the span of beats it joins."""
+    timeline = _timeline(part)
+    return [(first, last) for slur in part.spannerBundle.getByClass(music21.spanner.Slur)
+            for first, last, _ in _spans(slur, timeline) if last > first]
+
+
 def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEvent]:
-    """按声部提取 ScoreEvent；和弦合并；装饰音标记 optional。"""
+    """按声部提取 ScoreEvent；和弦合并；装饰音标记 optional。
+
+    A tied note is one note however many times it is written. The second half
+    of a tie is folded into the note it continues, so a player who holds it —
+    as the page asks — is not told they missed a note they were never meant to
+    strike again.
+    """
     events: list[ScoreEvent] = []
     for p_idx, part in enumerate(score.parts):
         part_name = _detect_part_name(part, p_idx)
+        part_events: list[ScoreEvent] = []
+        # (timeline beat, voice, pitch, length, marks) for each tie continuation
+        held: list[tuple[float, int, int, float, list[str]]] = []
         # 展平到 measure 层级，按 (measure, onset) 聚合和弦
         measures = part.getElementsByClass(music21.stream.Measure)
         for m_no, meas in enumerate(measures, start=1):
@@ -274,15 +366,20 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                 if key not in groups:
                     groups[key] = {"pitches": [], "dur": 0.0,
                                    "optional": False, "voice": voice,
-                                   "dynamicTargets": []}
+                                   "dynamicTargets": [], "marks": []}
                 g = groups[key]
-                if el.isChord:
-                    g["pitches"].extend(n.pitch.midi for n in el.notes)
-                else:
-                    g["pitches"].append(el.pitch.midi)
-                g["dur"] = max(g["dur"], float(el.duration.quarterLength))
+                length = float(el.duration.quarterLength)
+                marks = _articulations(el)
+                for note in (el.notes if el.isChord else [el]):
+                    if _continues_a_tie(note):
+                        held.append((float(meas.offset) + onset_q, voice,
+                                     note.pitch.midi, length, marks))
+                    else:
+                        g["pitches"].append(note.pitch.midi)
+                        g["dur"] = max(g["dur"], length)
                 if el.duration.isGrace:
                     g["optional"] = True
+                g["marks"].extend(marks)
                 dynamic_target = _dynamic_target(el)
                 if dynamic_target is not None:
                     g["dynamicTargets"].append(dynamic_target)
@@ -291,7 +388,7 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                 if not g["pitches"]:
                     continue
                 onset_token = re.sub(r"\.", "_", f"{onset_q:g}")
-                events.append(ScoreEvent(
+                part_events.append(ScoreEvent(
                     eventId=f"{score_id}:{part_name}:m{m_no}:b{onset_token}:{idx}",
                     measureNo=m_no,
                     onsetBeat=onset_q,
@@ -304,10 +401,128 @@ def _extract_events(score: music21.stream.Score, score_id: str) -> list[ScoreEve
                                          len(g["dynamicTargets"]))
                                    if g["dynamicTargets"] else None),
                     optional=g["optional"],
+                    articulations=sorted(set(g["marks"])),
                 ))
+        _fold_ties(part_events, held)
+        _mark_legato(part_events, _slurs(part))
+        events.extend(part_events)
     # 全局按 (measure, onset, part) 排序
     events.sort(key=lambda e: (e.measureNo, e.onsetBeat, 0 if e.part == "RH" else 1))
     return events
+
+
+def _fold_ties(events: list[ScoreEvent],
+               held: list[tuple[float, int, int, float, list[str]]]) -> None:
+    """Lengthen each tied note by the notes that continue it.
+
+    Continuations are applied in timeline order, so a note tied across three
+    bars grows one bar at a time. A fermata written on the held half belongs
+    to the note that is sounding.
+    """
+    for beat, voice, pitch, length, marks in sorted(held):
+        origin = next((event for event in reversed(events)
+                       if pitch in event.pitches and event.voice == voice
+                       and abs((event.absoluteBeat or 0) + event.durationBeat - beat) < 1e-6),
+                      None)
+        if origin is None:
+            # A tie with nothing to continue — sloppy export. Keep the note.
+            continue
+        origin.durationBeat += length
+        if "fermata" in marks and "fermata" not in origin.articulations:
+            origin.articulations = sorted([*origin.articulations, "fermata"])
+
+
+def _mark_legato(events: list[ScoreEvent], slurs: list[tuple[float, float]]) -> None:
+    """Mark each note a slur joins to the next note of its voice."""
+    if not slurs:
+        return
+    by_voice: dict[int, list[ScoreEvent]] = {}
+    for event in events:
+        by_voice.setdefault(event.voice, []).append(event)
+    for voice_events in by_voice.values():
+        voice_events.sort(key=lambda event: event.absoluteBeat or 0)
+        for current, following in zip(voice_events, voice_events[1:]):
+            start, end = current.absoluteBeat or 0, following.absoluteBeat or 0
+            current.legatoToNext = any(
+                first - 1e-6 <= start and end <= last + 1e-6 for first, last in slurs)
+
+
+_SLOWING = re.compile(r"\b(rit|ritard|ritardando|rall|rallentando|allarg|allargando|"
+                      r"calando|morendo|smorz|smorzando|slower)\b", re.IGNORECASE)
+_SPEEDING = re.compile(r"\b(accel|accelerando|stringendo|string|faster)\b", re.IGNORECASE)
+_RESUMING = re.compile(r"\b(a tempo|tempo primo|tempo i|tempo 1)\b", re.IGNORECASE)
+
+
+def _timeline_beat(element, part) -> float | None:
+    """Where a direction (a mark, a word) sits on the performance timeline."""
+    try:
+        return float(element.getOffsetInHierarchy(part))
+    except (music21.sites.SitesException, AttributeError):
+        return None
+
+
+def tempo_plan(score: music21.stream.Score, initial_bpm: float) -> list[TempoSpan]:
+    """The written tempo through the piece: metronome marks and tempo words.
+
+    A later metronome mark starts a new steady tempo. *rit.* and *rall.* start
+    a slowing stretch and *accel.* a quickening one, each running until the
+    next mark or *a tempo*, which returns to the last steady tempo.
+    """
+    parts = list(score.parts)
+    if not parts:
+        return [TempoSpan(startBeat=0.0, bpm=initial_bpm)]
+    part = parts[0]
+    cues: list[tuple[float, int, str, float | None]] = []
+    for element in part.recurse().getElementsByClass(
+            (music21.tempo.MetronomeMark, music21.expressions.TextExpression)):
+        beat = _timeline_beat(element, part)
+        if beat is None:
+            continue
+        if isinstance(element, music21.tempo.MetronomeMark):
+            if element.number:
+                cues.append((beat, 0, "mark", float(element.number)))
+            continue
+        words = str(getattr(element, "content", "") or "")
+        if _RESUMING.search(words):
+            cues.append((beat, 1, "resume", None))
+        elif _SLOWING.search(words):
+            cues.append((beat, 2, "slowing", None))
+        elif _SPEEDING.search(words):
+            cues.append((beat, 2, "speeding", None))
+    plan = [TempoSpan(startBeat=0.0, bpm=initial_bpm)]
+    steady = initial_bpm
+    for beat, _order, kind, bpm in sorted(cues):
+        if kind == "mark":
+            steady = bpm or steady
+            span = TempoSpan(startBeat=beat, bpm=steady)
+        elif kind == "resume":
+            span = TempoSpan(startBeat=beat, bpm=steady)
+        else:
+            span = TempoSpan(startBeat=beat, bpm=plan[-1].bpm, shape=kind)
+        if abs(plan[-1].startBeat - beat) < 1e-6:
+            # Two cues on one beat: a mark and its "a tempo" say one thing.
+            if kind in ("resume",) and plan[-1].shape == "steady":
+                continue
+            plan[-1] = span
+        else:
+            plan.append(span)
+    return plan
+
+
+def hairpins(score: music21.stream.Score) -> list[Hairpin]:
+    """Every written crescendo and diminuendo, as the beats it spans."""
+    found: list[Hairpin] = []
+    for part in score.parts:
+        timeline = _timeline(part)
+        for wedge in part.spannerBundle.getByClass(music21.dynamics.DynamicWedge):
+            kind = ("crescendo" if isinstance(wedge, music21.dynamics.Crescendo)
+                    else "diminuendo" if isinstance(wedge, music21.dynamics.Diminuendo)
+                    else None)
+            if kind is None:
+                continue
+            found.extend(Hairpin(startBeat=start, endBeat=end, kind=kind)
+                         for start, _, end in _spans(wedge, timeline) if end > start)
+    return sorted(found, key=lambda hairpin: hairpin.startBeat)
 
 
 def export_reference_midi(bundle: ScoreBundle, out_path) -> None:

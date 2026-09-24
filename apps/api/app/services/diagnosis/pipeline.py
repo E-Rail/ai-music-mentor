@@ -27,9 +27,12 @@ from app.services.alignment.onset import (ScoreOnset, build_onsets,
 from app.services.alignment.tempo import fit_piecewise_tempo, initial_tempo_map
 from app.i18n import Msg, localized, msg, say
 from app.services.diagnosis.errors import classify_errors, played_tempo_curve
+from app.services.diagnosis.fluency import find_restarts
 from app.services.diagnosis.metrics import calculate_metrics
 from app.services.diagnosis.patterns import aggregate_patterns, build_hypotheses
+from app.services.diagnosis.performance import profile as performance_profile
 from app.services.diagnosis.profiles import accepted_events, resolve_profile
+from app.services.diagnosis.take import Take, Written
 
 
 class LowConfidenceAlignmentError(Exception):
@@ -232,6 +235,17 @@ def run_analysis(bundle: ScoreBundle,
 
     # 1. 乐谱 onset 聚类 + 演奏和弦分组（慢速曲窗口上调）
     onsets = build_onsets(score_events)
+    written = Written(meta, onsets)
+    # A passage begun, abandoned and begun again is one restart. Its first
+    # attempt is set aside before alignment, so the attempt that carried on is
+    # the one read against the score and the abandoned one is not a burst of
+    # extra notes.
+    restarts = find_restarts(perf_events, onsets)
+    abandoned = {event_id for restart in restarts for event_id in restart.abandoned}
+    if abandoned and len(perf_events) - len(abandoned) >= 3:
+        perf_events = [event for event in perf_events if event.id not in abandoned]
+    else:
+        restarts = []
     groups = group_chord_onsets(perf_events, window_ms=profile.chord_window_ms, bpm=bpm)
 
     # 2. 两遍对齐：无门限的容错序列粗对齐 → 速度拟合 → 精对齐。
@@ -264,7 +278,18 @@ def run_analysis(bundle: ScoreBundle,
     # player makes many pitch mistakes, structural pairs provide timing-only
     # anchors so those mistakes can still be localized.
     tempo_anchors = anchors if len(anchors) >= 3 else paired_timing
-    tempo_map = (fit_piecewise_tempo(tempo_anchors, bpm)
+    # The first note the player strikes starts the clock — the live layer's
+    # rule, and the analysis keeps it. A first chord with a voice missing is
+    # not a pitch anchor, and without it the fit extends the tempo backwards
+    # from the second note: a player who paused after their first note was
+    # told that note came early.
+    if paired_timing and (not tempo_anchors or paired_timing[0][0] < tempo_anchors[0][0]):
+        tempo_anchors = sorted([paired_timing[0], *tempo_anchors])
+    # A fermata is held as long as the player likes; the gap after it is a
+    # jump in the timeline, not a tempo.
+    free_after = {score_onset_beat(onset, bpm_per_measure) for onset in onsets
+                  if onset.onsetId in written.fermata_onsets}
+    tempo_map = (fit_piecewise_tempo(tempo_anchors, bpm, free_after=free_after)
                  if len(tempo_anchors) >= 2 else tmap0)
     pairs = global_align(
         onsets, groups, tempo_map, bpm_per_measure, bpm,
@@ -290,14 +315,6 @@ def run_analysis(bundle: ScoreBundle,
 
     # 3. 错误分类 / 模式 / 指标
     perf_by_id = {e.id: e for e in perf_events}
-    group_pitch_onsets: dict[str, dict[int, float]] = {}
-    for g in groups:
-        po: dict[int, float] = {}
-        for eid in g.eventIds:
-            ev = perf_by_id.get(eid)
-            if ev and (ev.pitch not in po or ev.tOnMs < po[ev.pitch]):
-                po[ev.pitch] = ev.tOnMs
-        group_pitch_onsets[g.id] = po
     # Dynamics may only be judged when the page actually asks for a dynamic and
     # the input can measure one. A microphone reports Basic Pitch amplitude,
     # which is not MIDI velocity and must not be graded as if it were.
@@ -305,18 +322,30 @@ def run_analysis(bundle: ScoreBundle,
     has_dynamics = (meta.hasNotatedDynamics and
                     any(e.dynamicTarget is not None for e in score_events))
     grade_dynamics = has_dynamics and input_measures_dynamics
-    errors, evidences = classify_errors(pairs, onset_index, group_index,
-                                        tempo_map, bpm_per_measure, bpm,
-                                        group_pitch_onsets,
-                                        include_duration_errors=profile.include_duration_errors,
-                                        duration_tolerance=profile.duration_tolerance,
-                                        include_dynamics_errors=input_measures_dynamics,
-                                        has_notated_dynamics=has_dynamics,
-                                        measure_labels=bundle.meta.measureLabels)
+    take = Take(
+        pairs=pairs, onsets=onset_index, groups=group_index, tempo_map=tempo_map,
+        beats_per_measure=bpm_per_measure, bpm=bpm, notes=perf_by_id,
+        written=written,
+        measures_dynamics=input_measures_dynamics,
+        measures_release=source != InputSource.microphone,
+        measure_labels=bundle.meta.measureLabels,
+        restarts=restarts,
+    )
+    findings = classify_errors(take,
+                               include_duration_errors=profile.include_duration_errors,
+                               duration_tolerance=profile.duration_tolerance,
+                               include_dynamics_errors=input_measures_dynamics,
+                               has_notated_dynamics=has_dynamics)
+    errors, evidences = findings.errors, findings.evidences
     patterns = aggregate_patterns(errors, bundle.meta.measureLabels)
     metrics: Metrics = calculate_metrics(pairs, onset_index, group_index,
-                                         bpm_per_measure, bpm, grade_dynamics)
+                                         bpm_per_measure, bpm, grade_dynamics,
+                                         written=take.written,
+                                         after_pause=findings.after_pause,
+                                         went_back_to=findings.went_back_to,
+                                         replays=findings.replays)
     hypotheses = build_hypotheses(errors, patterns)
+    performance = performance_profile(take, findings)
 
     event_confidences = [event.transcriptionConfidence for event in perf_events
                          if event.transcriptionConfidence is not None]
@@ -337,6 +366,10 @@ def run_analysis(bundle: ScoreBundle,
         notes.append(msg("note.tolerantAlignment"))
     if grade_dynamics:
         notes.append(msg("note.dynamicsByMarks"))
+    if take.written.changes_tempo:
+        notes.append(msg("note.writtenTempo"))
+    if performance.pedalledReleases:
+        notes.append(msg("note.pedalledReleases", count=performance.pedalledReleases))
     if alignment_quality.confidence < 0.45:
         warnings.append(msg("warning.lowAlignment"))
     quality_status = ("high" if alignment_quality.confidence >= 0.75 else
@@ -384,7 +417,8 @@ def run_analysis(bundle: ScoreBundle,
             transcriptionEngine=meta_capture.transcriptionEngine,
             transcriptionVersion=meta_capture.transcriptionVersion,
         ),
-        tempoCurve=played_tempo_curve(pairs, onset_index, group_index, bpm_per_measure),
+        tempoCurve=played_tempo_curve(take, findings.stops),
         targetBpm=bpm,
+        performance=performance,
         scoreHash=meta.scoreHash, createdAt=created_at,
         **localized(warnings=warnings, notes=notes))

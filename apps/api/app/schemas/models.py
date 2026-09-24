@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ALGORITHM_VERSION = "1.2.0"
+ALGORITHM_VERSION = "1.3.0"
 DEFAULT_THRESHOLD_PROFILE = "default-v3-velocity"
 
 
@@ -71,6 +71,33 @@ class ScoreEvent(BaseModel):
     voice: int = 1
     dynamicTarget: Optional[int] = None
     optional: bool = False      # 装饰音，不参与主评分
+    # What the page asks of the note beyond its pitch and length: staccato,
+    # staccatissimo, tenuto, accent, marcato, fermata. Read from the notation,
+    # so a MIDI import never has any.
+    articulations: list[str] = Field(default_factory=list)
+    # Under a slur that carries on to this part's next note: the page asks for
+    # the two to be joined.
+    legatoToNext: bool = False
+
+
+class TempoSpan(BaseModel):
+    """A stretch of the piece at one written tempo, or moving away from one.
+
+    ``shape`` is what the words over the staff ask for: *rit.* and *rall.* slow
+    down, *accel.* speeds up, and a new metronome mark or *a tempo* is steady.
+    A player who slows at a written *rit.* is reading the page, not losing
+    the beat, and the tempo rules must be able to tell the two apart.
+    """
+    startBeat: float
+    bpm: float
+    shape: Literal["steady", "slowing", "speeding"] = "steady"
+
+
+class Hairpin(BaseModel):
+    """A written crescendo or diminuendo, in timeline beats."""
+    startBeat: float
+    endBeat: float
+    kind: Literal["crescendo", "diminuendo"]
 
 
 class ScoreMeta(BaseModel):
@@ -94,6 +121,10 @@ class ScoreMeta(BaseModel):
     # printed as 0 and every bar after it is one lower than its position. The
     # app must say the number that is printed on the page the student is reading.
     measureLabels: list[str] = Field(default_factory=list)
+    # The written tempo through the piece, in timeline order. Empty for a score
+    # imported before it was read, which means one steady tempo throughout.
+    tempoPlan: list[TempoSpan] = Field(default_factory=list)
+    hairpins: list[Hairpin] = Field(default_factory=list)
     scoreHash: str = ""
     builtin: bool = False
 
@@ -134,6 +165,10 @@ class PerformanceEvent(BaseModel):
     channel: int = Field(default=0, ge=0, le=15)
     source: str = Field(default="web-midi", min_length=1, max_length=32)
     pedalDown: bool = False
+    # The sustain pedal was down when the key came up, so the note kept
+    # sounding after its release: how long the key was held says nothing about
+    # how long the note was heard.
+    pedalAtRelease: bool = False
     receivedTimeMs: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     transcriptionConfidence: Optional[float] = Field(default=None, ge=0, le=1)
     pitchBendCents: Optional[float] = Field(default=None, ge=-1200, le=1200,
@@ -187,6 +222,9 @@ class ErrorType(str, Enum):
     duration_anomaly = "duration_anomaly"
     tempo_instability = "tempo_instability"
     dynamics_anomaly = "dynamics_anomaly"
+    # The music stopped where the page does not: a pause before a note, or
+    # going back to play a passage again.
+    hesitation = "hesitation"
 
 
 class Severity(str, Enum):
@@ -283,6 +321,54 @@ class TempoPoint(BaseModel):
     beat: float
     measure: int
     bpm: float
+    # What the page asks for here, so a written tempo change draws as a step
+    # and not as the player drifting off one number.
+    targetBpm: Optional[float] = None
+    shape: Literal["steady", "slowing", "speeding"] = "steady"
+
+
+class HandProfile(BaseModel):
+    """How one hand did, measured on its own notes."""
+    hand: Literal["RH", "LH"]
+    expected: int = 0
+    correct: int = 0
+    # Mean absolute distance from where the take's own pulse put each note.
+    timingMaeMs: Optional[float] = None
+    # Median signed distance: + behind the pulse, − ahead of it.
+    timingBiasMs: Optional[float] = None
+    # Median key velocity. Only from an input that measures one (MIDI).
+    medianVelocity: Optional[float] = None
+
+
+class PerformanceProfile(BaseModel):
+    """The measurements behind a teacher's second look at a take.
+
+    Nothing here is a mistake on its own. The rules that grade — a written
+    staccato held, a hairpin ignored — report errors; these are the numbers
+    those rules and a musician read from: each hand on its own, how the hands
+    line up, how wide the dynamics were, how the page's marks were met.
+    """
+    hands: list[HandProfile] = Field(default_factory=list)
+    # Median of (left-hand onset − right-hand onset) where the page puts both
+    # hands on one beat: + means the left hand lands after the right.
+    handLagMs: Optional[float] = None
+    handLagSamples: int = 0
+    # Key velocities across the take: 10th percentile, median, 90th.
+    velocityRange: Optional[list[float]] = None
+    # Right-hand median velocity minus left-hand. + the right hand is louder.
+    handBalance: Optional[float] = None
+    staccatoChecked: int = 0
+    staccatoMet: int = 0
+    legatoChecked: int = 0
+    legatoMet: int = 0
+    accentsChecked: int = 0
+    accentsMet: int = 0
+    hairpinsChecked: int = 0
+    hairpinsMet: int = 0
+    # Note lengths not judged because the pedal carried the note on.
+    pedalledReleases: int = 0
+    hesitations: int = 0
+    restarts: int = 0
 
 
 class DiagnosisReport(Voiced):
@@ -305,6 +391,7 @@ class DiagnosisReport(Voiced):
     notes: list[str] = Field(default_factory=list)
     tempoCurve: list[TempoPoint] = Field(default_factory=list)
     targetBpm: Optional[float] = None
+    performance: Optional[PerformanceProfile] = None
     createdAt: str = ""
 
 

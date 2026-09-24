@@ -20,10 +20,11 @@ from app.schemas.models import (DiagnosisReport, ExerciseParams,
                                 ExercisePlannerResponse, MentorChatTurn,
                                 MentorChatResponse, MentorResponse)
 from app.i18n import reply_language, say
+from app.services.generation.remedies import remedies_for, remedy_for
 from app.services.mentor import templates
 
-PROMPT_VERSION = "mentor-summary-v6-language"
-CHAT_PROMPT_VERSION = "mentor-chat-v6-language"
+PROMPT_VERSION = "mentor-summary-v7-performance"
+CHAT_PROMPT_VERSION = "mentor-chat-v7-performance"
 EXERCISE_PROMPT_VERSION = "exercise-planner-v4-language"
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ SYSTEM_PROMPT = """你是专业的音乐练习导师。请解释输入中的结�
 5. 结合提供的有限对话历史回答当前问题，不得假装看过历史以外的内容。
 6. inputQuality 为 insufficient 时必须说明录音已接收但不能评分；不得把占位的 0 分解释为演奏表现。
 7. 仅输出符合 MentorResponse Schema 的 JSON，不输出 Markdown。
-8. 所有面向用户的文字（summary、fact、plan 的 label 与 successCriterion、encouragement 等）一律使用上下文 replyLanguage 指定的语言；只有用户当前消息明确要求另一种语言时才改用那种语言。"""
+8. 所有面向用户的文字（summary、fact、plan 的 label 与 successCriterion、encouragement 等）一律使用上下文 replyLanguage 指定的语言；只有用户当前消息明确要求另一种语言时才改用那种语言。
+9. performance 是测量值：每只手的正确数与时间偏差、两手同拍时的时差（handLagMs，正数表示左手晚）、力度范围与两手平衡、断奏/连线/重音/渐强渐弱记号做到了几处、停顿与回头重弹次数。可以引用这些数字说明问题，但它们不是错误列表，也不得改写。"""
 
 CHAT_SYSTEM_PROMPT = """You are a professional music tutor for piano,
 guitar, and violin. Return only JSON matching MentorChatResponse. Follow these
@@ -63,6 +65,11 @@ priorities in order:
    current message always wins. If the user corrects old memory, follow the correction.
 12. When inputQuality is insufficient, explicitly say the recording was accepted
    but cannot support scoring. Never interpret placeholder zero metrics as performance.
+13. immutableDiagnosis.performance holds measurements, not mistakes: each hand's
+   notes right and timing, handLagMs (positive = the left hand lands after the
+   right), the velocity range and hand balance (keyboard only), how many written
+   staccato, slur, accent and hairpin marks were met, and the count of stops and
+   restarts. Cite them as measured facts when they answer the question.
 """
 
 # i18n: deliberate — a brief for the model, not copy.
@@ -134,13 +141,7 @@ def _diagnosis_payload(report: DiagnosisReport, selected_error_id: str | None) -
     for error in errors[:3]:
         if not error:
             continue
-        exercise_type = {
-            "early_late": "slow_ladder", "tempo_instability": "slow_ladder",
-            "duration_anomaly": "rhythm_variant",
-            "dynamics_anomaly": "chunk_connect",
-            "wrong_pitch": "chunk_connect", "missed_note": "chunk_connect",
-            "extra_note": "chunk_connect",
-        }.get(error.type.value, "chunk_connect")
+        exercise_type = remedy_for(error.type)
         candidates.append({
             "exerciseType": exercise_type,
             "measures": [int(error.location["measure"])],
@@ -162,6 +163,8 @@ def _diagnosis_payload(report: DiagnosisReport, selected_error_id: str | None) -
         "deterministicExerciseCandidates": candidates,
         "inputQuality": report.inputQuality.model_dump(mode="json"),
         "warnings": report.warnings[:8],
+        "performance": (report.performance.model_dump(mode="json", exclude_none=True)
+                        if report.performance else None),
     }
 
 
@@ -568,15 +571,7 @@ def _local_exercise_plan(report: DiagnosisReport, user_note: str,
     strategy = current.strategy
     if strategy == "auto":
         top_type = errors[0].type.value if errors else ""
-        candidates = {
-            "early_late": ["slow_ladder", "chunk_connect", "rhythm_variant"],
-            "tempo_instability": ["slow_ladder", "rhythm_variant", "chunk_connect"],
-            "duration_anomaly": ["rhythm_variant", "slow_ladder", "chunk_connect"],
-            "dynamics_anomaly": ["chunk_connect", "rhythm_variant", "loop"],
-            "wrong_pitch": ["chunk_connect", "loop", "rhythm_variant"],
-            "missed_note": ["chunk_connect", "loop", "hands_separate"],
-            "extra_note": ["chunk_connect", "slow_ladder", "loop"],
-        }.get(top_type, ["chunk_connect", "rhythm_variant", "slow_ladder"])
+        candidates = list(remedies_for(top_type or None))
         recent_strategies = [str(item.get("strategy") or "")
                              for item in (recent_plans or [])[:2]]
         strategy = next((candidate for candidate in candidates

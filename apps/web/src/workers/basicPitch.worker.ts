@@ -7,9 +7,8 @@ import {
 import '@tensorflow/tfjs-backend-cpu'
 import { setWasmPaths } from '@tensorflow/tfjs-backend-wasm'
 import * as tf from '@tensorflow/tfjs-core'
-import type { PerformanceEvent } from '../types'
-import { cleanupTranscribedNotes } from '../features/microphone/noteCleanup'
-import { profileForNoise } from '../features/microphone/profiles'
+import { cleanupTranscribedNotes, type TranscribedNote } from '../features/microphone/noteCleanup'
+import { confidenceKindFor, profileForNoise } from '../features/microphone/profiles'
 import type { TranscribeRequest } from '../features/microphone/engineProtocol'
 // `tf` is TensorFlow here, so the formatter comes in under its own name.
 import { tf as format } from '../i18n/messages'
@@ -44,6 +43,24 @@ async function evaluateBasicPitch(audio: Float32Array,
     try { (await model.model).dispose() } catch { /* a failed model load has nothing to dispose */ }
     try { tf.engine().endScope() } catch { /* keep the CPU retry available after a backend failure */ }
   }
+}
+
+/** Basic Pitch's lowest pitch: column 0 of every activation matrix is MIDI 21. */
+const MIDI_OFFSET = 21
+
+/**
+ * How sure the onset head was that this note was struck, at its first frame.
+ *
+ * Read a frame either side because the decoder may start a note on an onset it
+ * inferred from the frame head, a frame off the onset head's own peak.
+ */
+function attackAt(onsets: number[][], startFrame: number, pitchMidi: number): number {
+  const column = Math.round(pitchMidi) - MIDI_OFFSET
+  let attack = 0
+  for (let frame = startFrame - 1; frame <= startFrame + 2; frame += 1) {
+    attack = Math.max(attack, onsets[frame]?.[column] ?? 0)
+  }
+  return attack
 }
 
 function meanPitchBend(note: NoteEventTime): number | null {
@@ -93,27 +110,39 @@ workerScope.onmessage = async (message: MessageEvent<TranscribeRequest>) => {
 
     const { frames, onsets, contours } = output
 
-    const notes = noteFramesToTime(addPitchBendsToNoteEvents(
-      contours, outputToNotesPoly(
-        frames, onsets, message.data.onsetThreshold, message.data.frameThreshold, 5),
-    ))
-    const raw: PerformanceEvent[] = notes.map((note, index) => ({
-      id: `mic_raw_${index + 1}`,
-      tOnMs: Math.max(0, note.startTimeSeconds * 1000),
-      tOffMs: Math.max(0, (note.startTimeSeconds + note.durationSeconds) * 1000),
-      pitch: Math.max(0, Math.min(127, Math.round(note.pitchMidi))),
-      velocity: Math.max(1, Math.min(127, Math.round(note.amplitude * 127))),
-      channel: 0,
-      source: 'microphone',
-      pedalDown: false,
-      transcriptionConfidence: Math.max(0, Math.min(1, note.amplitude)),
-      pitchBendCents: meanPitchBend(note),
-    }))
-    const baseProfile = profileForNoise(message.data.instrument, message.data.noiseFloorDb)
+    // The decoder's thresholds only propose candidates. Whether one was struck
+    // is decided from the onset head in cleanup, not by lowering these.
+    const framed = outputToNotesPoly(
+      frames, onsets, message.data.onsetThreshold, message.data.frameThreshold, 5)
+    const attacks = framed.map((note) => attackAt(onsets, note.startFrame, note.pitchMidi))
+    const notes = noteFramesToTime(addPitchBendsToNoteEvents(contours, framed))
+    const kind = confidenceKindFor(message.data.instrument)
+    const raw: TranscribedNote[] = notes.map((note, index) => {
+      const amplitude = Math.max(0, Math.min(1, note.amplitude))
+      return {
+        id: `mic_raw_${index + 1}`,
+        tOnMs: Math.max(0, note.startTimeSeconds * 1000),
+        tOffMs: Math.max(0, (note.startTimeSeconds + note.durationSeconds) * 1000),
+        pitch: Math.max(0, Math.min(127, Math.round(note.pitchMidi))),
+        velocity: Math.max(1, Math.min(127, Math.round(amplitude * 127))),
+        channel: 0,
+        source: 'microphone',
+        pedalDown: false,
+        // For a struck instrument the certainty that matters is that a key
+        // went down, not how loudly the pitch rang afterwards: a soft left
+        // hand is still played.
+        transcriptionConfidence: kind === 'onset' ? attacks[index] : amplitude,
+        attack: attacks[index],
+        pitchBendCents: meanPitchBend(note),
+      }
+    })
+    const baseProfile = profileForNoise(message.data.instrument, message.data.noiseFloorDb, kind)
+    const adjustment = message.data.confidenceAdjustment
     const cleaned = cleanupTranscribedNotes(raw, {
       ...baseProfile,
-      minConfidence: Math.max(0.25,
-        baseProfile.minConfidence + message.data.confidenceAdjustment),
+      minConfidence: Math.max(0.25, baseProfile.minConfidence + adjustment),
+      attackFloor: baseProfile.attackFloor === null
+        ? null : baseProfile.attackFloor + adjustment,
     })
     workerScope.postMessage({
       type: 'complete', events: cleaned.events,

@@ -17,6 +17,7 @@ CAUSE_CANDIDATES = {
     ErrorType.early_late: ["localTempoSense", "rushDrag"],
     ErrorType.duration_anomaly: ["durationConcept"],
     ErrorType.tempo_instability: ["difficultyDrift", "fatigueSlowdown"],
+    ErrorType.hesitation: ["stopsBeforeHard"],
 }
 
 PATTERN_NAMES = {
@@ -27,6 +28,7 @@ PATTERN_NAMES = {
     ErrorType.duration_anomaly: "pattern.duration",
     ErrorType.tempo_instability: "pattern.tempo",
     ErrorType.dynamics_anomaly: "pattern.dynamics",
+    ErrorType.hesitation: "pattern.hesitation",
 }
 
 

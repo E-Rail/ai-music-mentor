@@ -6,7 +6,9 @@ import type {
 import {
   ERROR_TYPE_LABEL, METRIC_LABEL, SEVERITY_LABEL, labelled, percent, t, tf,
 } from '../../i18n/messages'
-import { ProEvidence, ProHands, ProInputQuality, ProMethod, ProTempo } from './ProDetail'
+import {
+  ProArticulation, ProDynamics, ProEvidence, ProHands, ProInputQuality, ProMethod, ProTempo,
+} from './ProDetail'
 import { errorColor, errorDetailForDisplay, evidenceNotes } from './errorPresentation'
 import { MentorSummary } from '../mentor/MentorSummary'
 import { MentorChat, type MentorChatMessage } from '../mentor/MentorChat'
@@ -160,6 +162,8 @@ export function CoachReport({
               <>
                 <ProTempo report={report} />
                 <ProHands report={report} />
+                <ProDynamics report={report} />
+                <ProArticulation report={report} />
                 <ProEvidence report={report} measureLabel={measureLabel} />
                 <ProInputQuality report={report} />
                 <ProMethod report={report} />

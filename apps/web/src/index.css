@@ -1337,6 +1337,8 @@ input[type=checkbox] { accent-color: var(--brass); }
 /* A section of the report, whichever mode drew it. */
 .report-section h3 { margin: 0 0 var(--gap-sm); color: var(--chalk); font-size: calc(13px * var(--scale)); font-weight: 600; }
 .report-section > p { margin: 0; }
+.report-section > * + .report-line, .report-section > * + .fact-table { margin-top: var(--gap-sm); }
+.report-line { font-size: calc(12.5px * var(--scale)); color: var(--chalk); }
 .closer-look .report-section + .report-section { margin-top: var(--gap-lg); }
 .closer-look-more { margin: var(--gap) 0 0; }
 
@@ -1389,7 +1391,9 @@ input[type=checkbox] { accent-color: var(--brass); }
 .tempo-curve svg { display: block; overflow: visible; }
 .tempo-grid { stroke: var(--rule-soft); stroke-width: 1; }
 .tempo-axis { fill: var(--chalk-faint); font-family: var(--font-num); font-size: calc(10px * var(--scale)); }
-.tempo-target { stroke: var(--chalk-faint); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.tempo-target { fill: none; stroke: var(--chalk-faint); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.tempo-shaped { fill: var(--chalk-faint); opacity: .12; }
+.tempo-shaped-label { fill: var(--chalk-faint); font-size: calc(10.5px * var(--scale)); font-style: italic; }
 .tempo-line { fill: none; stroke: var(--brass); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .tempo-end { fill: var(--brass); stroke: var(--case); stroke-width: 2; }
 .tempo-end-label { fill: var(--chalk); font-family: var(--font-num); font-size: calc(11px * var(--scale)); font-weight: 600; }

@@ -85,7 +85,7 @@ export const instrumentLabel = (instrument: string): string =>
 // stayed Chinese whatever the interface was set to.
 
 const ERROR_TYPES = ['wrong_pitch', 'missed_note', 'extra_note', 'early_late',
-  'duration_anomaly', 'tempo_instability', 'dynamics_anomaly'] as const
+  'duration_anomaly', 'tempo_instability', 'dynamics_anomaly', 'hesitation'] as const
 const CADENCES = ['half', 'deceptive', 'plagal', 'authentic'] as const
 const SEVERITIES = ['high', 'medium', 'low'] as const
 const METRICS = ['overallScore', 'pitchScore', 'rhythmScore', 'fluencyScore',

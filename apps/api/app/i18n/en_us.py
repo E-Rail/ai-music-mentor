@@ -23,6 +23,18 @@ MESSAGES: dict[str, str] = {
     "word.faster": "faster",
     "word.takeMedianVelocity": "median velocity of this take, {value}",
     "word.steadyBpm": "a steady {bpm} BPM",
+    "word.noStop": "no stop here",
+    "word.stoppedFor": "a {seconds} s stop",
+    "word.wentBackTo": "went back to bar {bar}",
+    "word.shortDetached": "short and detached",
+    "word.heldPercent": "held for {pct}% of its value",
+    "word.joined": "joined note to note",
+    "word.gapMs": "a {ms} ms gap",
+    "word.louderThanAround": "louder than the notes around it",
+    "word.crescendo": "crescendo",
+    "word.diminuendo": "diminuendo",
+    "word.hairpinExpected": "velocity rising by at least {amount}",
+    "word.hairpinExpectedDown": "velocity falling by at least {amount}",
 
     # ---- what was heard (evidence) --------------------------------------
     "fact.timing": "{ms} ms {direction} against the local tempo",
@@ -38,6 +50,12 @@ MESSAGES: dict[str, str] = {
     "fact.localTempo": "The tempo shifts near bar {bar}: slowest about {slowest} BPM, {pct}% off the take's {median} BPM",
     "fact.overallTempo": "About {mean} BPM overall, {pct}% {direction} than the marked {marked} BPM",
     "fact.tempoSpread": "Tempo varies {cv}% across 4-beat windows (over 8%), from {low} to {high} BPM",
+    "fact.pause": "Stopped for about {seconds} s before bar {bar}, beat {beat} (about {beats} beats longer than written)",
+    "fact.replay": "Stopped near bar {bar}, beat {beat} and went back to bar {back}, playing {count} notes again",
+    "fact.staccatoHeld": "Staccato notes in bars {start}–{end} were held too long, for {pct}% of their value on average ({count} affected)",
+    "fact.legatoGaps": "Slurred notes in bars {start}–{end} were not joined; the longest gap was {ms} ms ({count} affected)",
+    "fact.accentFlat": "Accents in bars {start}–{end} did not stand out: accented velocity {accent}, around {around} nearby ({count} affected)",
+    "fact.hairpin": "The {kind} in bars {start}–{end} went from about {from} to {to} in velocity, so it was not shaped",
 
     # ---- one-line summaries on a mistake -------------------------------
     "detail.timingAt": "{direction} at bar {bar}, beat {beat}",
@@ -47,6 +65,12 @@ MESSAGES: dict[str, str] = {
     "detail.dynamicsOutlier": "{direction} by {amount} against this take",
     "detail.barSpan": "Bars {start}–{end}",
     "detail.overallTempo": "{pct}% {direction} than marked overall (bars {start}–{end}; the beat itself was steady)",
+    "detail.pause": "Stopped {seconds} s before bar {bar}, beat {beat}",
+    "detail.replay": "Stopped at bar {bar} and went back to bar {back}",
+    "detail.staccato": "Staccato held too long, bars {start}–{end}",
+    "detail.legato": "Slurs not joined, bars {start}–{end}",
+    "detail.accent": "Accents not brought out, bars {start}–{end}",
+    "detail.hairpin": "No {kind} in bars {start}–{end}",
 
     # ---- patterns and likely causes ----------------------------------------
     "pattern.repeated": "{name} ({count} times, bars {start}–{end})",
@@ -78,6 +102,9 @@ MESSAGES: dict[str, str] = {
     "limit.difficultyDrift": "Try it phrase by phrase with a metronome",
     "cause.fatigueSlowdown": "Possibly tiring or tensing up so the second half slows",
     "limit.fatigueSlowdown": "Needs several takes to confirm",
+    "pattern.hesitation": "The music keeps stopping or going back, which suggests these spots are not yet joined up",
+    "cause.stopsBeforeHard": "Possibly the fingers or the reading are not ready before a hard spot, so the music stops to find it",
+    "limit.stopsBeforeHard": "Needs several takes to tell: stopping at the same place every time is what marks a genuinely hard spot",
 
     # ---- report warnings and method notes ----------------------------------
     "warning.takeKeptNotScored": "The recording was received and processed, but there isn't enough evidence to score it or name specific mistakes.",
@@ -95,6 +122,8 @@ MESSAGES: dict[str, str] = {
     "note.tolerantAlignment": "Matched with a mistake-tolerant alignment: a wrong, extra or missed note only affects its own position, never the notes after it.",
     "note.dynamicsByMarks": "Dynamics were compared note by note against the marks in the score; a difference only affects its own position.",
     "note.guitarOctave": "Following the score's guitar octave marking, sounding pitches were converted to written pitches.",
+    "note.writtenTempo": "Tempo was judged against what the score marks at each point; a written change such as rit. or accel. is not counted as unsteady.",
+    "note.pedalledReleases": "{count} notes were released with the pedal down, so they kept sounding; their lengths were not judged.",
     "analysis.noScoreInRange": "There are no notes in the practice range",
     "analysis.noEvents": "No notes were played. Record again, or choose a shorter passage",
     "analysis.noUsableEvents": "No notes could be used for analysis. Please record again",
@@ -220,6 +249,7 @@ MESSAGES: dict[str, str] = {
     "type.duration_anomaly": "uneven note length",
     "type.tempo_instability": "unsteady tempo",
     "type.dynamics_anomaly": "dynamics off",
+    "type.hesitation": "stop or restart",
     "strategy.chunk_connect": "Join the phrases",
     "strategy.slow_ladder": "Slow ladder",
     "strategy.rhythm_variant": "Rhythm variants",

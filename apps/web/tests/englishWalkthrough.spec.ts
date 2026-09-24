@@ -68,9 +68,23 @@ const report = (reportId: string, scoreId: string) => ({
     limitation: "MIDI alone can't confirm fingering" }],
   warnings: ['Some notes were heard with low confidence. Check these findings against the score.'],
   notes: ['Matched with a mistake-tolerant alignment.'],
-  tempoCurve: [{ beat: 0, measure: 1, bpm: 118 }, { beat: 1, measure: 1, bpm: 121 },
-    { beat: 2, measure: 1, bpm: 116 }, { beat: 3, measure: 1, bpm: 119 }],
+  // A written slowing in the middle, so the stepped target and its shading draw.
+  tempoCurve: [{ beat: 0, measure: 1, bpm: 118, targetBpm: 120, shape: 'steady' },
+    { beat: 1, measure: 1, bpm: 121, targetBpm: 120, shape: 'slowing' },
+    { beat: 2, measure: 1, bpm: 106, targetBpm: 100, shape: 'steady' },
+    { beat: 3, measure: 1, bpm: 99, targetBpm: 100, shape: 'steady' }],
   targetBpm: 120,
+  // Every Pro section that reads the profile has something to say.
+  performance: {
+    hands: [
+      { hand: 'RH', expected: 12, correct: 11, timingMaeMs: 24, timingBiasMs: -3, medianVelocity: 82 },
+      { hand: 'LH', expected: 6, correct: 6, timingMaeMs: 61, timingBiasMs: 55, medianVelocity: 88 },
+    ],
+    handLagMs: 58, handLagSamples: 6, velocityRange: [60, 80, 92], handBalance: -6,
+    staccatoChecked: 4, staccatoMet: 3, legatoChecked: 5, legatoMet: 2,
+    accentsChecked: 2, accentsMet: 1, hairpinsChecked: 1, hairpinsMet: 0,
+    pedalledReleases: 3, hesitations: 1, restarts: 1,
+  },
   inputQuality: { source: 'midi-upload', instrument: 'piano', status: 'high', confidence: 0.9,
     acceptedNoteCount: 4, rejectedNoteCount: 0, noiseFloorDb: null,
     transcriptionEngine: '', transcriptionVersion: '' },
@@ -194,6 +208,11 @@ for (const depth of ['standard', 'pro'] as const) {
       if (depth === 'pro') {
         await expect(page.getByRole('heading', { name: 'The tempo you kept' })).toBeVisible()
         await expect(page.getByRole('heading', { name: 'How this take was measured' })).toBeVisible()
+        for (const heading of ['Hands separately', 'Dynamics', 'Articulation']) {
+          await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+        }
+        await expect(page.getByText(/the left lands 58 ms after the right/)).toBeVisible()
+        await expect(page.getByText('stops × 1, restarts × 1')).toBeVisible()
       } else {
         await expect(page.getByRole('heading', { name: 'The tempo you kept' })).toHaveCount(0)
       }

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.i18n import say
 from app.services.importers.vision import (VisionScoreImporter,
                                            read_page_to_events)
 from app.services.vision import ReadPage
@@ -75,7 +76,7 @@ def test_a_note_past_the_end_of_its_bar_is_dropped_and_reported():
     ]}])
     events, notices = read_page_to_events(page, "s1", 4.0)
     assert [event.pitches for event in events] == [[60]]
-    assert any("超出所在小节" in notice for notice in notices)
+    assert any("超出所在小节" in say(notice) for notice in notices)
 
 
 def test_a_note_that_overruns_the_barline_is_cut_at_it():
@@ -106,7 +107,7 @@ def test_an_empty_bar_is_reported_rather_than_silently_padded():
     ])
     events, notices = read_page_to_events(page, "s1", 4.0)
     assert len(events) == 1
-    assert any("没有识别出音符" in notice for notice in notices)
+    assert any("没有识别出音符" in say(notice) for notice in notices)
 
 
 def test_a_meter_the_app_cannot_engrave_is_refused_at_the_boundary():

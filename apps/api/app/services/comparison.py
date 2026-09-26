@@ -7,9 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.i18n import localized, msg
 
+
+# Every metric the comparison table shows needs a change here; dynamics was
+# missing, so its row always read blank.
 METRIC_KEYS = (
-    "pitchScore", "rhythmScore", "fluencyScore", "overallScore",
+    "pitchScore", "rhythmScore", "fluencyScore", "dynamicsScore", "overallScore",
     "timingMaeMs", "avgBpm",
 )
 SCORE_KEYS = ("pitchScore", "rhythmScore", "fluencyScore", "overallScore")
@@ -39,6 +43,7 @@ def compare_reports(baseline: dict[str, Any], retry: dict[str, Any],
     delta = {
         key: round(float(retry_metrics[key]) - float(baseline_metrics[key]), 1)
         for key in METRIC_KEYS
+        if key in retry_metrics and key in baseline_metrics
     }
 
     if target_changed:
@@ -64,37 +69,25 @@ def compare_reports(baseline: dict[str, Any], retry: dict[str, Any],
     timing_improved = delta["timingMaeMs"] < 0
     retry_quality = (retry.get("inputQuality") or {}).get("status")
     if retry_quality == "insufficient":
-        suggestion = (
-            "本轮录音已接收，但输入证据不足，无法与上一轮进行可靠的分数比较。"
-            "你可以保留这次结果并询问导师，或调整麦克风距离后再试。"
-        )
+        suggestion = msg("compare.insufficient")
     elif target_changed and retry.get("errors"):
-        suggestion = (
-            f"本轮生成曲仍检测到 {len(retry.get('errors', []))} 个问题。"
-            "下一份 AI 方案将只依据本轮证据继续调整。"
-        )
+        suggestion = msg("compare.generatedStillHas", count=len(retry.get("errors", [])))
     elif target_changed:
-        suggestion = "本轮生成曲已经达标，可以继续提高难度或回到完整曲目。"
+        suggestion = msg("compare.generatedPassed")
     elif resolved and (improved >= 2 or timing_improved):
-        suggestion = (
-            f"有 {len(resolved)} 处问题已解决，保持当前练习方法；"
-            f"剩余 {len(persistent)} 处建议继续慢速循环。"
-        )
+        suggestion = msg("compare.resolved", resolved=len(resolved), remaining=len(persistent))
     elif persistent:
-        suggestion = (
-            f"{len(persistent)} 处问题仍存在，"
-            "建议降低速度阶梯一级并增加循环次数。"
-        )
+        suggestion = msg("compare.persistent", count=len(persistent))
     elif new:
-        suggestion = f"出现 {len(new)} 处新问题，建议缩短片段并稳定后再提速。"
+        suggestion = msg("compare.newProblems", count=len(new))
     else:
-        suggestion = "指标变化不明显，建议用同一练习再验证一次。"
+        suggestion = msg("compare.unclear")
 
     return {
         "metricDelta": delta,
         "resolvedErrors": resolved,
         "persistentErrors": persistent,
         "newErrors": new,
-        "suggestion": suggestion,
         "targetChanged": target_changed,
+        **localized(suggestion=suggestion),
     }

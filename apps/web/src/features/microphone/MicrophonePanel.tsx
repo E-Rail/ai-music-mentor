@@ -1,26 +1,23 @@
 import type { InstrumentProfile } from '../../types'
-import { t, tf } from '../../i18n/messages'
+import { instrumentLabel, t, tf, type MessageKey } from '../../i18n/messages'
 import type {
   MicrophonePreview, MicrophoneState,
 } from './microphoneCapture'
 import type { InputDeviceDescriptor } from '../input/PerformanceInputAdapter'
 
-const instrumentOptions: [InstrumentProfile, string][] = [
-  ['piano', t('instrumentPiano')],
-  ['guitar', t('instrumentGuitar')],
-  ['violin', t('instrumentViolin')],
-]
+const INSTRUMENTS: InstrumentProfile[] = ['piano', 'guitar', 'violin']
 
-const stateLabels: Record<MicrophoneState, string> = {
-  idle: t('microphoneIdle'),
-  requesting: t('microphoneRequesting'),
-  'noise-check': t('microphoneNoiseCheck'),
-  ready: t('microphoneReady'),
-  recording: t('microphoneRecording'),
-  transcribing: t('microphoneTranscribing'),
-  'permission-denied': t('microphonePermissionDenied'),
-  'device-lost': t('microphoneDeviceLost'),
-  error: t('microphoneError'),
+// Keys, not strings: this table is read at render, so it follows the language.
+const STATE_KEYS: Record<MicrophoneState, MessageKey> = {
+  idle: 'microphoneIdle',
+  requesting: 'microphoneRequesting',
+  'noise-check': 'microphoneNoiseCheck',
+  ready: 'microphoneReady',
+  recording: 'microphoneRecording',
+  transcribing: 'microphoneTranscribing',
+  'permission-denied': 'microphonePermissionDenied',
+  'device-lost': 'microphoneDeviceLost',
+  error: 'microphoneError',
 }
 
 function pitchLabel(frequency: number | null): string {
@@ -66,26 +63,28 @@ export function MicrophonePanel({
     : permissionProblem
       ? t('microphonePermissionGuide')
       : connectionProblem
-        ? (errorDetail || stateLabels[state])
+        ? (errorDetail || t(STATE_KEYS[state]))
         : null
   return (
     <section className="microphone-panel" aria-labelledby="microphone-title">
+      {/* Flat on purpose: the grid places these beside or under each other by
+          the width of the box, so a 380px rail stacks them instead of
+          squeezing the sentence into a column beside the icon. */}
       <div className="mic-panel-heading">
-        <div className="mic-title-lockup">
-          <span className="mic-symbol" aria-hidden="true">MIC</span>
-          <div><h3 id="microphone-title">{t('microphoneTitle')}</h3><p>{t('microphoneHint')}</p></div>
-        </div>
-        <span className={`mic-state ${state}`}>{stateLabels[state]}</span>
+        <span className="mic-symbol" aria-hidden="true">MIC</span>
+        <h3 id="microphone-title">{t('microphoneTitle')}</h3>
+        <span className={`mic-state ${state}`}>{t(STATE_KEYS[state])}</span>
+        <p>{t('microphoneHint')}</p>
       </div>
       <div className="mic-panel-grid">
         <div className="mic-setup-column">
           <section className="mic-setup-step">
             <div className="mic-step-title"><span>1</span><strong>{t('microphoneSetupInstrument')}</strong></div>
             <div className="instrument-choice" role="group" aria-label={t('instrument')}>
-              {instrumentOptions.map(([value, label]) => (
+              {INSTRUMENTS.map((value) => (
                 <button type="button" key={value} aria-pressed={instrument === value}
                         disabled={busy || state === 'recording' || state === 'transcribing'}
-                        onClick={() => onInstrumentChange(value)}>{label}</button>
+                        onClick={() => onInstrumentChange(value)}>{instrumentLabel(value)}</button>
               ))}
             </div>
           </section>

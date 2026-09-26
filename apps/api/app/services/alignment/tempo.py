@@ -11,6 +11,42 @@ import statistics
 from bisect import bisect_right
 
 
+#: A stop is at least this long…
+STOP_MIN_MS = 450.0
+#: …and this much of a beat longer than the page allows…
+STOP_MIN_BEATS = 0.75
+#: …and this share longer than the gap it happened in, so a long written note
+#: held a little long is not a stop.
+STOP_MIN_SHARE = 0.4
+#: After a stop the pulse comes back. If the next gap is this much slower the
+#: player changed tempo; if it is this much quicker they were catching up on
+#: one late note. Neither is a stop.
+RESUME_TOLERANCE = 1.4
+
+
+def stop_excess(gap_ms: float, beats: float, pulse_ms: float,
+                next_ms_per_beat: float | None = None, *,
+                free: bool = False, leeway: float = 1.0) -> float:
+    """How much of a gap between two notes is an unwritten stop, or 0.
+
+    One definition, used twice: the tempo fit treats a stop as a jump in the
+    timeline (so the notes around it are not read as early or short), and the
+    report names it. ``free`` is a gap the page leaves to the player — after a
+    fermata any extra time is a jump, never a tempo. ``leeway`` widens the
+    thresholds where the page allows the tempo to move (a written rit.).
+    """
+    written = beats * pulse_ms
+    excess = gap_ms - written
+    if free:
+        return excess if excess >= 0.1 * pulse_ms else 0.0
+    if excess < leeway * max(STOP_MIN_MS, STOP_MIN_BEATS * pulse_ms, STOP_MIN_SHARE * written):
+        return 0.0
+    if next_ms_per_beat is not None and not (
+            pulse_ms / RESUME_TOLERANCE <= next_ms_per_beat <= pulse_ms * RESUME_TOLERANCE):
+        return 0.0
+    return excess
+
+
 class TempoMap:
     """分段线性 beat→ms 映射。"""
 
@@ -55,11 +91,16 @@ def initial_tempo_map(first_beat: float, first_ms: float, bpm: float) -> TempoMa
 
 def fit_piecewise_tempo(matched: list[tuple[float, float]],
                         bpm: float,
-                        window_beats: float = 4.0) -> TempoMap:
+                        window_beats: float = 4.0,
+                        free_after: set[float] | frozenset[float] = frozenset()) -> TempoMap:
     """matched: [(scoreBeat, onsetMs)] 高置信匹配对，按拍点升序。
 
     相邻匹配对差分得到瞬时 secPerBeat，窗口内取中位数（鲁棒），
     再生成等距锚点构建分段线性映射。
+
+    ``free_after`` are beats whose following gap the page leaves to the player
+    (a fermata). Any extra time there is a jump in the timeline, however short,
+    and never counts as tempo.
     """
     spb_default = 60.0 / bpm
     if len(matched) < 2:
@@ -68,32 +109,49 @@ def fit_piecewise_tempo(matched: list[tuple[float, float]],
     matched = sorted(matched)
     # 相邻对差分。极长间隔先不当成速度；它通常是停顿、重试某个音，
     # 或设备短暂中断。后面将它建模成时间轴上的离散位移。
-    inst: list[tuple[float, float]] = []  # (midBeat, secPerBeat)
-    raw_intervals: list[tuple[float, float, float, float]] = []
+    intervals: list[tuple[float, float, float, float]] = []  # (b0, b1, ms, secPerBeat)
     for (b0, m0), (b1, m1) in zip(matched, matched[1:]):
         db, dm = b1 - b0, m1 - m0
-        if db <= 0 or dm <= 0:
-            continue
-        spb = dm / db / 1000.0
-        raw_intervals.append((b0, b1, dm, spb))
+        if db > 0 and dm > 0:
+            intervals.append((b0, b1, dm, dm / db / 1000.0))
+
+    def free(interval) -> bool:
+        return any(abs(interval[0] - beat) < 1e-6 for beat in free_after)
+
+    def pulse_candidates(excluded: set[tuple[float, float]]) -> list[tuple[float, float]]:
+        """(midBeat, secPerBeat) of every gap that can speak for the tempo."""
         # 过滤异常差分（±60% 以外不纳入）
-        if 0.4 * spb_default <= spb <= 2.5 * spb_default:
-            inst.append(((b0 + b1) / 2, spb))
+        return [((b0 + b1) / 2, spb) for b0, b1, _, spb in intervals
+                if not free((b0, b1)) and (b0, b1) not in excluded
+                and 0.4 * spb_default <= spb <= 2.5 * spb_default]
+
+    inst = pulse_candidates(set())
     if not inst:
         return initial_tempo_map(matched[0][0], matched[0][1], bpm)
 
     normal_spb = statistics.median([spb for _, spb in inst])
     pause_jumps: list[tuple[float, float, float]] = []  # (startBeat, resumeBeat, excessMs)
-    for b0, b1, dm, observed_spb in raw_intervals:
-        if observed_spb <= 2.5 * spb_default:
-            continue
+    for index, interval in enumerate(intervals):
+        b0, b1, dm, observed_spb = interval
         midpoint = (b0 + b1) / 2
         nearby = [spb for beat, spb in inst
-                  if abs(beat - midpoint) <= 1.5 * window_beats]
+                  if 1e-9 < abs(beat - midpoint) <= 1.5 * window_beats]
         reference_spb = statistics.median(nearby) if nearby else normal_spb
         excess_ms = dm - (b1 - b0) * reference_spb * 1000.0
-        if excess_ms >= 0.75 * spb_default * 1000.0:
+        following = intervals[index + 1] if index + 1 < len(intervals) else None
+        next_ms_per_beat = (following[3] * 1000.0
+                            if following and abs(following[0] - b1) < 1e-9 else None)
+        # A very long gap is a jump whatever follows it; a shorter one is a
+        # jump when it is a stop by the one definition the report also uses.
+        very_long = (observed_spb > 2.5 * spb_default
+                     and excess_ms >= 0.75 * spb_default * 1000.0)
+        stop = stop_excess(dm, b1 - b0, reference_spb * 1000.0, next_ms_per_beat,
+                           free=free(interval))
+        if very_long or stop > 0:
             pause_jumps.append((b0, b1, excess_ms))
+    # A stop is a jump, not a tempo: keep it out of the pulse it is measured
+    # against.
+    inst = pulse_candidates({(b0, b1) for b0, b1, _ in pause_jumps}) or inst
 
     b_start, b_end = matched[0][0], matched[-1][0]
     anchors: list[tuple[float, float]] = []

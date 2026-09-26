@@ -3,7 +3,7 @@ import type {
   InputSource, InstrumentProfile, MentorChatResponse, MentorResponse,
   MentorMemoryStatus, PerformanceEvent, ScoreDetail, ScoreMeta, ScoreNormalization,
 } from '../types'
-import { t } from '../i18n/messages'
+import { getLocale, t } from '../i18n/messages'
 
 const BASE = '/api/v1'
 const REQUEST_TIMEOUT_MS = 20_000
@@ -22,8 +22,13 @@ async function req<T>(path: string, init?: RequestInit,
       if (init.signal.aborted) controller.abort()
       else init.signal.addEventListener('abort', () => controller.abort(), { once: true })
     }
+    // Every request says which language the player chose, so everything the
+    // server writes back — findings, warnings, errors, the mentor — is in it.
+    const headers = new Headers(init?.headers)
+    headers.set('Accept-Language', getLocale())
     r = await fetch(`${BASE}${path}`, {
       ...init,
+      headers,
       signal: controller.signal,
     })
   } catch (error) {

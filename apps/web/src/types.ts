@@ -78,6 +78,11 @@ export interface PerformanceEvent {
   channel: number
   source: string
   pedalDown: boolean
+  /**
+   * The sustain pedal was down when the key came up, so the note kept
+   * sounding: the key's length is not the note's.
+   */
+  pedalAtRelease?: boolean
   receivedTimeMs?: number | null
   transcriptionConfidence?: number | null
   pitchBendCents?: number | null
@@ -119,6 +124,9 @@ export interface Evidence {
   beat: number
   expected: string
   actual: string
+  /** The notes behind expected/actual, for playing back. Empty when the evidence is not about notes. */
+  expectedPitches?: number[]
+  actualPitches?: number[]
   deltaMs: number | null
   deltaVelocity?: number | null
 }
@@ -159,7 +167,57 @@ export interface DiagnosisReport {
   scoreHash: string
   sourceReferences?: { artifactId: string; kind: string; sha256: string; originalName: string }[]
   inputQuality?: InputQuality
+  /** Problems with the evidence itself: noise, low confidence. Shown in both modes. */
   warnings?: string[]
+  /** How the take was measured. Method, not a problem; Pro shows it. */
+  notes?: string[]
+  /** The tempo the player kept around each matched note. */
+  tempoCurve?: TempoPoint[]
+  targetBpm?: number | null
+  /** Measurements behind a second look: each hand, dynamics, articulation. */
+  performance?: PerformanceProfile | null
+}
+
+export interface TempoPoint {
+  beat: number
+  measure: number
+  bpm: number
+  /** The tempo the page marks here; steps where a new tempo is written. */
+  targetBpm?: number | null
+  /** A written rit./rall. (slowing) or accel. (speeding) covers this point. */
+  shape?: 'steady' | 'slowing' | 'speeding'
+}
+
+export interface HandProfile {
+  hand: 'RH' | 'LH'
+  expected: number
+  correct: number
+  timingMaeMs?: number | null
+  /** Median distance from the take's own pulse: + behind it, − ahead of it. */
+  timingBiasMs?: number | null
+  medianVelocity?: number | null
+}
+
+export interface PerformanceProfile {
+  hands: HandProfile[]
+  /** Median left-hand onset minus right-hand onset where both share a beat. */
+  handLagMs?: number | null
+  handLagSamples: number
+  /** Key velocities: 10th percentile, median, 90th. MIDI only. */
+  velocityRange?: number[] | null
+  /** Right-hand median velocity minus left-hand. */
+  handBalance?: number | null
+  staccatoChecked: number
+  staccatoMet: number
+  legatoChecked: number
+  legatoMet: number
+  accentsChecked: number
+  accentsMet: number
+  hairpinsChecked: number
+  hairpinsMet: number
+  pedalledReleases: number
+  hesitations: number
+  restarts: number
 }
 
 export interface AnalysisJob {

@@ -10,6 +10,17 @@ export interface AudioDetectionProfile {
   mergeGapMs: number
   chordWindowMs: number
   monophonic: boolean
+  /**
+   * How sure the engine must be that a note *began* for it to count as struck,
+   * or null where notes may begin without a strike and sound alone decides.
+   *
+   * Piano is struck, and Basic Pitch's onset head separates a struck note from
+   * a held one being re-read cleanly: on the rendered takes every played note
+   * scored 0.84 or more, and every re-read and overtone below 0.76, with room
+   * noise mixed in down to 10 dB. A bow can start a note with no attack at
+   * all, and guitar has no measurements yet, so they keep the old rule.
+   */
+  attackFloor: number | null
   vibratoToleranceCents: number
   durationWeight: number
 }
@@ -18,19 +29,19 @@ export const AUDIO_PROFILES: Record<InstrumentProfile, AudioDetectionProfile> = 
   piano: {
     id: 'audio-piano-v2', instrument: 'piano', minPitch: 21, maxPitch: 108,
     minConfidence: 0.35, minDurationMs: 55, mergeGapMs: 75,
-    chordWindowMs: 90, monophonic: false, vibratoToleranceCents: 35,
+    chordWindowMs: 90, monophonic: false, attackFloor: 0.7, vibratoToleranceCents: 35,
     durationWeight: 0.35,
   },
   guitar: {
     id: 'audio-guitar-v2', instrument: 'guitar', minPitch: 40, maxPitch: 88,
     minConfidence: 0.38, minDurationMs: 65, mergeGapMs: 90,
-    chordWindowMs: 75, monophonic: false, vibratoToleranceCents: 45,
+    chordWindowMs: 75, monophonic: false, attackFloor: null, vibratoToleranceCents: 45,
     durationWeight: 0.25,
   },
   violin: {
     id: 'audio-violin-v2', instrument: 'violin', minPitch: 55, maxPitch: 103,
     minConfidence: 0.40, minDurationMs: 85, mergeGapMs: 120,
-    chordWindowMs: 35, monophonic: true, vibratoToleranceCents: 70,
+    chordWindowMs: 35, monophonic: true, attackFloor: null, vibratoToleranceCents: 70,
     durationWeight: 0.10,
   },
 }
@@ -38,13 +49,21 @@ export const AUDIO_PROFILES: Record<InstrumentProfile, AudioDetectionProfile> = 
 /**
  * What an engine's confidence number actually means.
  *
- * Basic Pitch reports a per-note activation, so its number is the model's own
- * certainty and a threshold on it genuinely separates a real note from a
- * spurious one. Onsets and Frames has already made that decision — a note only
- * exists if it crossed the model's onset threshold — and hands back a velocity
- * instead. Thresholding that separates loud from soft, not real from spurious.
+ * - `activation`: how strongly a pitch sounded over the note (Basic Pitch's
+ *   frame head). In a noisy room the room sounds too, so the floor rises.
+ * - `onset`: how sure the engine is that a key was struck (Basic Pitch's onset
+ *   head). Room noise does not strike keys — measured at 10 dB, real attacks
+ *   stayed above 0.84 — so the floor stays where it is.
+ * - `velocity-proxy`: Onsets and Frames has already decided every note it
+ *   reports was struck and hands back a loudness. Thresholding that separates
+ *   loud from soft, not real from spurious.
  */
-export type ConfidenceKind = 'activation' | 'velocity-proxy'
+export type ConfidenceKind = 'activation' | 'onset' | 'velocity-proxy'
+
+/** Which confidence an engine should report for this instrument. */
+export function confidenceKindFor(instrument: InstrumentProfile): ConfidenceKind {
+  return AUDIO_PROFILES[instrument].attackFloor === null ? 'activation' : 'onset'
+}
 
 export function profileForNoise(instrument: InstrumentProfile,
   noiseFloorDb: number | null,
@@ -58,7 +77,7 @@ export function profileForNoise(instrument: InstrumentProfile,
   // voices of a chord, reported by the model with confidence, thrown away for
   // being played gently. Noise robustness on this path is the model's own onset
   // threshold, not a loudness gate bolted on afterwards.
-  if (kind === 'velocity-proxy') return base
+  if (kind !== 'activation') return base
   // In a noisy room require stronger model activation so steady room noise is
   // less likely to survive as a playable note. The original profile is immutable.
   const penalty = Math.min(.30, Math.max(0, (noiseFloorDb + 45) / 20) * .20)

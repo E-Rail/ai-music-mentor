@@ -48,3 +48,28 @@ export function applyEngravingRules(osmd: OpenSheetMusicDisplay): void {
   rules.MeasureNumberLabelOffset = -1.6
   rules.MeasureNumberLabelHeight = 1.3
 }
+
+const TITLE_TAGS = /<(work-title|movement-title)>[\s\S]*?<\/\1>/g
+const ROOT_OPEN = /<score-(?:partwise|timewise)\b[^>]*>/
+
+function escapeText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * Print the title the app calls this piece, not the one in the file.
+ *
+ * A bundled piece is stored under its Chinese name and a music21 export calls
+ * itself "Music21 Fragment", so the engraved heading either contradicted the
+ * library card or stayed Chinese in an English studio. Whatever the card says,
+ * the page says.
+ */
+export function retitle(xml: string, title: string | undefined): string {
+  const wanted = title?.trim()
+  if (!wanted) return xml
+  const escaped = escapeText(wanted)
+  if (/<(work-title|movement-title)>/.test(xml)) {
+    return xml.replace(TITLE_TAGS, (_whole, tag: string) => `<${tag}>${escaped}</${tag}>`)
+  }
+  return xml.replace(ROOT_OPEN, (open) => `${open}<movement-title>${escaped}</movement-title>`)
+}

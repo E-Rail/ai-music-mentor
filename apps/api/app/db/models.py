@@ -25,7 +25,7 @@ class LocalProfileRecord(Base):
     __tablename__ = "local_profiles"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    display_name: Mapped[str] = mapped_column(String(160), default="本机练习者")
+    display_name: Mapped[str] = mapped_column(String(160), default="local")  # never shown; the app has one player
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

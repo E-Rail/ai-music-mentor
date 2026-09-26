@@ -37,6 +37,9 @@ const browser = await chromium.launch()
 const context = await browser.newContext({
   viewport: { width: 1440, height: 1000 },
   permissions: ['microphone'],
+  // The app opens in the browser's language, and every label below is the
+  // Chinese one. A headless browser reports English unless told otherwise.
+  locale: 'zh-CN',
 })
 const page = await context.newPage()
 const pageErrors = []
@@ -178,12 +181,13 @@ await check('the score engraves and shows the note actually played', async () =>
 let reportReady = false
 await check('stop and analyse produces a report', async () => {
   await page.getByRole('button', { name: /停止并分析/ }).click()
-  await page.waitForSelector('.metrics-grid', { timeout: 45_000 })
+  await page.waitForSelector('.scoreline', { timeout: 45_000 })
   await shot('04-report')
   reportReady = true
-  const overall = await page.locator('.metric .value').first().innerText()
-  // A take that played the right notes must not be scored as wrong ones.
-  const pitchScore = Number(await page.locator('.metric .value').nth(1).innerText())
+  const overall = await page.locator('.scoreline-overall .value').innerText()
+  // A take that played the right notes must not be scored as wrong ones. The
+  // scoreline lists pitch first; a change since last time may follow it.
+  const pitchScore = parseFloat(await page.locator('.scoreline-metrics dd').first().innerText())
   if (Number.isFinite(pitchScore) && pitchScore < 60) {
     throw new Error(`correct notes scored ${pitchScore} for pitch`)
   }
@@ -193,7 +197,7 @@ await check('stop and analyse produces a report', async () => {
 await check('the report cites verifiable evidence', async () => {
   if (!reportReady) throw new Error('skipped: no report')
   const errors = await page.locator('.error-item').count()
-  const metrics = await page.locator('.metric').count()
+  const metrics = await page.locator('.scoreline-metrics > div').count()
   if (!metrics) throw new Error('no metrics rendered')
   return `${metrics} metrics, ${errors} located errors`
 })

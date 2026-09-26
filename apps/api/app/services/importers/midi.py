@@ -11,6 +11,7 @@ from pathlib import Path
 import mido
 
 from app import config
+from app.i18n import Msg, localized, msg, say
 from app.schemas.models import (NormalizedScore, ScoreBundle, ScoreDisplayMode,
                                 ScoreEvent, ScoreMeta, ScoreNormalization,
                                 ScoreSourceType)
@@ -60,21 +61,21 @@ def _read_notes(midi: mido.MidiFile) -> tuple[list[_MidiNote], dict[int, list[in
     return notes, pitches_by_track
 
 
-def _default_track_mapping(pitches_by_track: dict[int, list[int]]) -> tuple[dict[str, str], list[str], float]:
+def _default_track_mapping(pitches_by_track: dict[int, list[int]]) -> tuple[dict[str, str], list[Msg], float]:
     tracks = sorted(pitches_by_track)
-    warnings: list[str] = []
+    warnings: list[Msg] = []
     if not tracks:
         return {}, warnings, 0.0
     medians = {track: statistics.median(pitches_by_track[track]) for track in tracks}
     if len(tracks) == 1:
-        warnings.append("单轨 MIDI 无法可靠还原左右手；已按中央 C 自动拆分")
+        warnings.append(msg("import.midiOneTrack"))
         return {str(tracks[0]): "split"}, warnings, 0.68
     ranked = sorted(tracks, key=lambda track: medians[track])
     midpoint = len(ranked) // 2
     mapping = {str(track): ("LH" if index < midpoint else "RH")
                for index, track in enumerate(ranked)}
     if len(tracks) > 2:
-        warnings.append("检测到多个含音符轨道；请在导入复核中确认左右手映射")
+        warnings.append(msg("import.midiManyTracks"))
     return mapping, warnings, 0.84 if len(tracks) == 2 else 0.76
 
 
@@ -85,7 +86,7 @@ def _parse_time_signature(value: str) -> tuple[int, int, float]:
         if numerator < 1 or numerator > 32 or denominator not in {1, 2, 4, 8, 16, 32}:
             raise ValueError
     except ValueError as exc:
-        raise ScoreImportError("拍号必须形如 4/4、3/4 或 6/8") from exc
+        raise ScoreImportError(say("import.badTimeSignature")) from exc
     return numerator, denominator, numerator * 4.0 / denominator
 
 
@@ -96,7 +97,7 @@ class MidiScoreImporter(ScoreImporter):
     def import_bytes(self, filename: str, content: bytes, score_id: str,
                      normalization: ScoreNormalization | None = None) -> ImportResult:
         if not content.startswith(b"MThd"):
-            raise ScoreImportError("文件签名不是标准 MIDI")
+            raise ScoreImportError(say("import.notMidi"))
         try:
             validate_midi_bytes(content)
             midi = mido.MidiFile(file=BytesIO(content))
@@ -104,7 +105,7 @@ class MidiScoreImporter(ScoreImporter):
             raise ScoreImportError(str(exc)) from exc
         notes, pitches_by_track = _read_notes(midi)
         if len(notes) > config.MAX_SCORE_NOTES:
-            raise ScoreLimitError("MIDI 音符数量超过上限")
+            raise ScoreLimitError(say("import.tooManyNotes"))
 
         tempos: list[int] = []
         signatures: list[tuple[int, int]] = []
@@ -126,15 +127,15 @@ class MidiScoreImporter(ScoreImporter):
         default_signature = f"{signatures[0][0]}/{signatures[0][1]}" if signatures else "4/4"
         default_mapping, warnings, confidence = _default_track_mapping(pitches_by_track)
         if not tempos:
-            warnings.append("MIDI 未包含速度标记；已按标准 MIDI 默认值 120 BPM")
+            warnings.append(msg("import.midiNoTempo"))
             confidence -= 0.05
         elif len(set(tempos)) > 1:
-            warnings.append("原始 MIDI 含速度变化；播放保留原时间线，简化谱使用起始速度")
+            warnings.append(msg("import.midiTempoChanges"))
         if not signatures:
-            warnings.append("MIDI 未包含拍号；已默认使用 4/4")
+            warnings.append(msg("import.midiNoMeter"))
             confidence -= 0.05
         if len(set(signatures)) > 1:
-            warnings.append("原始 MIDI 含拍号变化；简化谱使用起始拍号")
+            warnings.append(msg("import.midiMeterChanges"))
 
         resolved = normalization or ScoreNormalization(
             tempo=default_tempo, timeSignature=default_signature,
@@ -172,18 +173,18 @@ class MidiScoreImporter(ScoreImporter):
             item["duration"] = max(float(item["duration"]), duration)
             last_beat = max(last_beat, onset + duration)
         if not grouped:
-            raise ScoreImportError("轨道映射忽略了全部音符")
+            raise ScoreImportError(say("import.mappingIgnoredAll"))
         try:
             duration_seconds = float(midi.length)
         except (ValueError, TypeError):
             duration_seconds = last_beat * 60 / resolved.tempo
         if duration_seconds > config.MAX_SCORE_DURATION_SECONDS:
-            raise ScoreLimitError("MIDI 时长超过上限")
+            raise ScoreLimitError(say("import.tooLong"))
         measure_count = max(key[1] for key in grouped)
         if measure_count > config.MAX_MEASURES:
-            raise ScoreLimitError(f"小节数 {measure_count} 超过上限 {config.MAX_MEASURES}")
+            raise ScoreLimitError(say("import.tooManyBars", count=measure_count, limit=config.MAX_MEASURES))
         if quantization_error > quantum * 0.35:
-            warnings.append("部分音符偏离量化网格较多；简化谱可能与表达性演奏不同")
+            warnings.append(msg("import.midiOffGrid"))
             confidence -= 0.08
 
         events: list[ScoreEvent] = []
@@ -209,7 +210,7 @@ class MidiScoreImporter(ScoreImporter):
                 dynamicTarget=round(statistics.median(item["velocities"])),  # type: ignore[arg-type]
             ))
         bundle = ScoreBundle(meta=ScoreMeta(
-            scoreId=score_id, title=Path(filename).stem or "MIDI 乐曲",
+            scoreId=score_id, title=Path(filename).stem or say("import.midiUntitled"),
             tempo=resolved.tempo, timeSignature=resolved.timeSignature,
             beatsPerMeasure=measure_beats, measureCount=measure_count,
             parts=sorted({event.part for event in events}, reverse=True),
@@ -219,12 +220,13 @@ class MidiScoreImporter(ScoreImporter):
         with tempfile.TemporaryDirectory(prefix="music-mentor-midi-") as temp_dir:
             xml_path = Path(temp_dir) / "render.musicxml"
             events_to_musicxml(events, bundle.meta, resolved.tempo,
-                               f"{bundle.meta.title}（量化简化谱）", xml_path)
+                               say("import.simplifiedTitle", title=bundle.meta.title), xml_path)
             render = xml_path.read_bytes()
         normalized = NormalizedScore(
             scoreId=score_id, sourceType=ScoreSourceType.midi,
             displayMode=ScoreDisplayMode.simplified_quantized_staff,
-            bundle=bundle, warnings=warnings, confidence=max(0.2, min(1.0, confidence)),
+            bundle=bundle, confidence=max(0.2, min(1.0, confidence)),
+            **localized(warnings=warnings),
             normalization=resolved,
         )
         return ImportResult(

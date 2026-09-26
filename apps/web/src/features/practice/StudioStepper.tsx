@@ -1,33 +1,33 @@
 import { t } from '../../i18n/messages'
+import { STAGES, type StageId } from './stages'
 
-export type StudioStage = 'score' | 'input' | 'perform' | 'coach'
-
-const stages: { id: StudioStage; label: ReturnType<typeof t>; hint: ReturnType<typeof t> }[] = [
-  { id: 'score', label: t('stageScore'), hint: t('stageScoreHint') },
-  { id: 'input', label: t('stageInput'), hint: t('stageInputHint') },
-  { id: 'perform', label: t('stagePerform'), hint: t('stagePerformHint') },
-  { id: 'coach', label: t('stageCoach'), hint: t('stageCoachHint') },
-]
-
+/**
+ * The five places in the practice loop, in one line of the top bar.
+ *
+ * A barline, not a numeral: the stages are a passage you move through and can
+ * return to, not a ranked list. The hint rides along as a tooltip and, where
+ * the bar has room for it, under the name.
+ */
 export function StudioStepper({ active, canOpen, onOpen }: {
-  active: StudioStage
-  canOpen: (stage: StudioStage) => boolean
-  onOpen: (stage: StudioStage) => void
+  active: StageId
+  canOpen: (stage: StageId) => boolean
+  onOpen: (stage: StageId) => void
 }) {
-  const activeIndex = stages.findIndex((stage) => stage.id === active)
+  const activeIndex = STAGES.findIndex((stage) => stage.id === active)
   return (
     <nav className="studio-stepper" aria-label={t('workspaceAriaLabel')}>
-      {stages.map((stage, index) => (
-        <button type="button" key={stage.id}
+      {STAGES.map((stage, index) => (
+        <button type="button" key={stage.id} title={t(stage.hint)}
                 className={`${stage.id === active ? 'active' : ''} ${index < activeIndex ? 'done' : ''}`}
                 aria-current={stage.id === active ? 'step' : undefined}
                 disabled={!canOpen(stage.id)} onClick={() => onOpen(stage.id)}>
-          {/* A barline, not a numeral: the stages are a passage you move
-              through and can return to, not a ranked list. */}
           <span className="stage-mark" aria-hidden="true">
             {index < activeIndex ? '♩' : '𝄀'}
           </span>
-          <span><strong>{stage.label}</strong><small>{stage.hint}</small></span>
+          <span className="stage-words">
+            <strong>{t(stage.title)}</strong>
+            <small>{t(stage.hint)}</small>
+          </span>
         </button>
       ))}
     </nav>

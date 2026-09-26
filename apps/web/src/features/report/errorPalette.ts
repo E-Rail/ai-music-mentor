@@ -32,6 +32,10 @@ export const ERROR_INK: Record<string, ErrorInk> = {
   duration_anomaly: { paper: '#96690f', case: '#d6a756', stroke: 'dotted', hollow: false },
   tempo_instability: { paper: '#5f519b', case: '#b3a6e2', stroke: 'dashed', hollow: false },
   dynamics_anomaly: { paper: '#5f519b', case: '#b3a6e2', stroke: 'dotted', hollow: false },
+  // A stop is timing, so brass. Solid, where the other timing faults are
+  // dashed or dotted; never hollow, because the note after a stop did sound —
+  // the silence was before it.
+  hesitation: { paper: '#96690f', case: '#d6a756', stroke: 'solid', hollow: false },
 }
 
 const FALLBACK = ERROR_INK.wrong_pitch

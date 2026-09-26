@@ -1,14 +1,19 @@
 import type { MentorPlanItem, MentorResponse } from '../../types'
-import { t, tf } from '../../i18n/messages'
+import { labelled, percent, t, tf } from '../../i18n/messages'
 import { measureLabel, measureLabelList } from '../score/measureLabels'
 
 type MentorSummaryProps = {
   response: MentorResponse | null
   loading: boolean
   onApplyPlan: (plan: MentorPlanItem) => void
+  /** The summary was written before the player switched language. */
+  otherLanguage?: boolean
+  onRewrite?: () => void
 }
 
-export function MentorSummary({ response, loading, onApplyPlan }: MentorSummaryProps) {
+export function MentorSummary({
+  response, loading, onApplyPlan, otherLanguage, onRewrite,
+}: MentorSummaryProps) {
   if (loading) {
     return (
       <div className="mentor-box mentor-loading" role="status">
@@ -31,6 +36,17 @@ export function MentorSummary({ response, loading, onApplyPlan }: MentorSummaryP
           </div>
         )}
       </div>
+      {/* The AI wrote this; a language switch cannot translate it in place.
+          Say so, and let the player ask for it again rather than spending an
+          AI call on every switch. */}
+      {otherLanguage && onRewrite && (
+        <div className="mentor-other-language" role="status">
+          <span>{t('mentorOtherLanguage')}</span>
+          <button type="button" className="btn btn-sm" onClick={onRewrite}>
+            {t('mentorRewrite')}
+          </button>
+        </div>
+      )}
       <div className="summary">{response.summary}</div>
       {response.evidence.length > 0 && (
         <section className="mentor-section">
@@ -53,8 +69,8 @@ export function MentorSummary({ response, loading, onApplyPlan }: MentorSummaryP
           {response.hypotheses.map((hypothesis, index) => (
             <div key={`${hypothesis.cause}:${index}`} className="hyp">
               • {tf('hypothesisConfidence', {
-                cause: hypothesis.cause, confidence: hypothesis.confidence,
-              })}<br />{t('limitation')}{hypothesis.limitation}
+                cause: hypothesis.cause, confidence: percent(hypothesis.confidence),
+              })}<br />{labelled(t('limitationLabel'), hypothesis.limitation)}
             </div>
           ))}
         </section>

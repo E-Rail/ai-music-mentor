@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Literal
 
 from app import config, storage
+from app.i18n import say
 from app.db import repositories
 from app.schemas.models import NormalizedScore, ScoreNormalization, SourceReference
 from app.services.file_store import artifact_path, local_file_store
 from app.services.importers import detect_importer
-from app.services.importers.base import ScoreImportError, ScoreLimitError
+from app.services.importers.base import (ScoreImportError, ScoreLimitError,
+                                         ScoreNotFoundError)
 from app.services.importers.midi import MidiScoreImporter
 from app.services.importers.vision import VisionScoreImporter
 
@@ -39,10 +41,10 @@ def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
                  builtin: bool = False,
                  library_category: LibraryCategory = "internal") -> NormalizedScore:
     if not content:
-        raise ScoreImportError("文件为空")
+        raise ScoreImportError(say("import.empty"))
     limit = _size_limit(filename, content)
     if len(content) > limit:
-        raise ScoreLimitError(f"文件超过 {limit // (1024 * 1024)} MB 上限")
+        raise ScoreLimitError(say("import.fileTooLarge", mb=limit // (1024 * 1024)))
     resolved_id = score_id or _new_score_id()
     importer = detect_importer(filename, content)
     result = importer.import_bytes(filename, content, resolved_id, normalization)
@@ -72,6 +74,9 @@ def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
         "sourceName": Path(filename).name,
         "displayMode": normalized.displayMode.value,
         "warnings": normalized.warnings,
+        # The warnings' recipes, so the library can say them in the reader's
+        # language rather than the uploader's. See app.i18n.revoice.
+        "i18n": normalized.i18n,
         "confidence": normalized.confidence,
         "normalization": normalized.normalization.model_dump(),
         "sourceReferences": [reference.model_dump() for reference in references],
@@ -87,12 +92,12 @@ def ingest_score(filename: str, content: bytes, *, score_id: str | None = None,
 def renormalize_midi(score_id: str, normalization: ScoreNormalization) -> NormalizedScore:
     existing = storage.get("score", score_id)
     if not existing:
-        raise ScoreImportError("曲目不存在")
+        raise ScoreNotFoundError(say("error.scoreNotFoundPlain"))
     if existing.get("sourceType") != "midi":
-        raise ScoreImportError("MusicXML 保留原始记谱，不需要 MIDI 量化复核")
+        raise ScoreImportError(say("import.noReviewForXml"))
     source_path = artifact_path(existing["sourceArtifactId"])
     if not source_path:
-        raise ScoreImportError("原始 MIDI 文件缺失")
+        raise ScoreImportError(say("import.midiSourceMissing"))
     content = source_path.read_bytes()
     importer = MidiScoreImporter()
     result = importer.import_bytes(existing.get("sourceName", "score.mid"), content,
@@ -116,6 +121,7 @@ def renormalize_midi(score_id: str, normalization: ScoreNormalization) -> Normal
         **existing,
         "bundle": normalized.bundle.model_dump(),
         "warnings": normalized.warnings,
+        "i18n": normalized.i18n,
         "confidence": normalized.confidence,
         "normalization": normalized.normalization.model_dump(),
         "sourceReferences": [reference.model_dump() for reference in references],

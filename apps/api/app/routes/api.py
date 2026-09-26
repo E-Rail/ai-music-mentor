@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from app import config, storage
 from app.db import repositories
+from app.i18n import knows, revoice, say
 from app.schemas.models import (AccompanimentCreate, ApiError, DiagnosisReport,
                                 EventBatchCreate, ExerciseCreate, MentorRequest,
                                 InputSource, MentorChatRequest, MentorChatTurn,
@@ -55,7 +56,7 @@ def _api_prefix(request: Request | None = None) -> str:
 def _load_bundle(score_id: str) -> ScoreBundle:
     data = storage.get("score", score_id)
     if not data:
-        raise _err(404, "SCORE_NOT_FOUND", f"曲目 {score_id} 不存在")
+        raise _err(404, "SCORE_NOT_FOUND", say("error.scoreNotFound", id=score_id))
     return ScoreBundle.model_validate(data["bundle"])
 
 
@@ -64,7 +65,7 @@ def _validated_range(bundle: ScoreBundle, start: int, end: int) -> tuple[int, in
     if (start < 1 or start > bundle.meta.measureCount or
             resolved_end < start or resolved_end > bundle.meta.measureCount):
         raise _err(400, "RANGE_INVALID",
-                   f"练习范围必须在 1–{bundle.meta.measureCount} 小节内")
+                   say("error.rangeInvalid", count=bundle.meta.measureCount))
     return start, resolved_end
 
 
@@ -72,7 +73,7 @@ def _uploaded_midi_path(session_id: str, reference: str) -> Path:
     """Resolve only a performance upload issued for this exact session."""
     if (Path(reference).name != reference or
             not reference.startswith(f"{session_id}_")):
-        raise _err(400, "MIDI_FILE_INVALID", "MIDI 文件引用无效，请重新上传")
+        raise _err(400, "MIDI_FILE_INVALID", say("error.midiRefInvalid"))
     mapping = storage.get("session_upload", reference)
     if mapping and mapping.get("sessionId") == session_id:
         path = artifact_path(mapping.get("artifactId", ""))
@@ -83,9 +84,9 @@ def _uploaded_midi_path(session_id: str, reference: str) -> Path:
     try:
         path.relative_to(config.SESSION_STORAGE_DIR.resolve())
     except ValueError as exc:
-        raise _err(400, "MIDI_FILE_INVALID", "MIDI 文件引用无效，请重新上传") from exc
+        raise _err(400, "MIDI_FILE_INVALID", say("error.midiRefInvalid")) from exc
     if not path.exists() or not path.is_file():
-        raise _err(400, "MIDI_FILE_NOT_FOUND", "上传的 MIDI 文件不存在")
+        raise _err(400, "MIDI_FILE_NOT_FOUND", say("error.midiRefMissing"))
     return path
 
 
@@ -97,11 +98,27 @@ def _assert_event_id_integrity(existing: list[dict], incoming: list[PerformanceE
         prior = known.get(event.id)
         if prior is not None and prior != payload:
             raise _err(409, "EVENT_ID_CONFLICT",
-                       f"演奏事件 {event.id} 的内容与已保存批次不一致")
+                       say("error.eventMismatch", id=event.id))
         known[event.id] = payload
 
 
+def _spoken(record: dict) -> dict:
+    """A stored score as this reader should see it.
+
+    Import warnings are said in the reader's language, and a bundled piece goes
+    by its name in that language — 小星星 in Chinese, "Twinkle, Twinkle, Little
+    Star" in English. A piece someone uploaded keeps the name they gave it.
+    """
+    revoice(record)
+    meta = record.get("bundle", {}).get("meta", {})
+    key = f"score.title.{meta.get('scoreId')}"
+    if _library_category(record) == "demo" and knows(key):
+        meta["title"] = say(key)
+    return record
+
+
 def _score_payload(score_id: str, data: dict, request: Request | None = None) -> dict:
+    data = _spoken(data)
     bundle = ScoreBundle.model_validate(data["bundle"])
     prefix = _api_prefix(request)
     return {
@@ -164,6 +181,7 @@ def _library_category(record: dict) -> str:
 def list_scores():
     scores = []
     for record in storage.list_kind("score"):
+        record = _spoken(record)
         category = _library_category(record)
         if category == "internal":
             continue
@@ -228,7 +246,7 @@ def patch_score_normalization(score_id: str, body: ScoreNormalizationPatch,
     try:
         normalized = renormalize_midi(score_id, ScoreNormalization.model_validate(body.model_dump()))
     except ScoreImportError as exc:
-        code = "SCORE_NOT_FOUND" if "不存在" in str(exc) else getattr(exc, "code", "SCORE_UNSUPPORTED")
+        code = getattr(exc, "code", "SCORE_UNSUPPORTED")
         raise _err(404 if code == "SCORE_NOT_FOUND" else 400, code, str(exc)) from exc
     return _score_payload(score_id, storage.get("score", normalized.scoreId) or {}, request)
 
@@ -237,7 +255,7 @@ def patch_score_normalization(score_id: str, body: ScoreNormalizationPatch,
 def get_score(score_id: str, request: Request):
     data = storage.get("score", score_id)
     if not data:
-        raise _err(404, "SCORE_NOT_FOUND", f"曲目 {score_id} 不存在")
+        raise _err(404, "SCORE_NOT_FOUND", say("error.scoreNotFound", id=score_id))
     return _score_payload(score_id, data, request)
 
 
@@ -246,12 +264,12 @@ def get_score(score_id: str, request: Request):
 def get_score_xml(score_id: str):
     data = storage.get("score", score_id)
     if not data:
-        raise _err(404, "SCORE_NOT_FOUND", f"曲目 {score_id} 不存在")
+        raise _err(404, "SCORE_NOT_FOUND", say("error.scoreNotFound", id=score_id))
     path = artifact_path(data.get("renderArtifactId", ""))
     if not path and data.get("xmlPath"):
         path = Path(data["xmlPath"])
     if not path or not path.exists():
-        raise _err(404, "SCORE_NOT_FOUND", "乐谱渲染文件缺失")
+        raise _err(404, "SCORE_NOT_FOUND", say("error.renderMissing"))
     return FileResponse(path, media_type="application/vnd.recordare.musicxml")
 
 
@@ -259,13 +277,13 @@ def get_score_xml(score_id: str):
 def get_score_timeline(score_id: str):
     data = storage.get("score", score_id)
     if not data:
-        raise _err(404, "SCORE_NOT_FOUND", f"曲目 {score_id} 不存在")
+        raise _err(404, "SCORE_NOT_FOUND", say("error.scoreNotFound", id=score_id))
     timeline_artifact_id = data.get("timelineArtifactId")
     if data.get("sourceType") != "midi" and not timeline_artifact_id:
-        raise _err(404, "TIMELINE_NOT_AVAILABLE", "该 MusicXML 曲目没有原始 MIDI 时间线")
+        raise _err(404, "TIMELINE_NOT_AVAILABLE", say("error.noTimelineForXml"))
     path = artifact_path(timeline_artifact_id or data.get("sourceArtifactId", ""))
     if not path:
-        raise _err(404, "TIMELINE_NOT_AVAILABLE", "原始 MIDI 时间线缺失")
+        raise _err(404, "TIMELINE_NOT_AVAILABLE", say("error.timelineMissing"))
     return FileResponse(path, media_type="audio/midi")
 
 
@@ -300,15 +318,15 @@ def create_session(req: SessionCreate):
 def persist_event_batch(session_id: str, req: EventBatchCreate):
     session = storage.get("session", session_id)
     if not session:
-        raise _err(404, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在")
+        raise _err(404, "SESSION_NOT_FOUND", say("error.sessionNotFound", id=session_id))
     if session.get("status") not in {"recording", "device_lost", "failed"}:
-        raise _err(409, "SESSION_CLOSED", "该会话已提交，不能追加演奏事件")
+        raise _err(409, "SESSION_CLOSED", say("error.sessionClosedAppend"))
     existing_events = repositories.get_session_events(session_id)
     _assert_event_id_integrity(existing_events, req.events)
     existing_ids = {event["id"] for event in existing_events}
     incoming_ids = {event.id for event in req.events}
     if len(existing_ids | incoming_ids) > config.MAX_PERFORMANCE_EVENTS:
-        raise _err(400, "TOO_MANY_EVENTS", "演奏事件数量超过上限，请缩短练习范围")
+        raise _err(400, "TOO_MANY_EVENTS", say("error.tooManyEvents"))
     try:
         return repositories.append_event_batch(
             session_id, req.batchId, req.sequence,
@@ -316,7 +334,7 @@ def persist_event_batch(session_id: str, req: EventBatchCreate):
         )
     except ValueError as exc:
         if str(exc) == "BATCH_ID_CONFLICT":
-            raise _err(409, "BATCH_ID_CONFLICT", "相同批次 ID 的内容不一致") from exc
+            raise _err(409, "BATCH_ID_CONFLICT", say("error.batchConflict")) from exc
         raise
 
 
@@ -324,7 +342,7 @@ def persist_event_batch(session_id: str, req: EventBatchCreate):
 def mark_device_lost(session_id: str):
     session = storage.get("session", session_id)
     if not session:
-        raise _err(404, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在")
+        raise _err(404, "SESSION_NOT_FOUND", say("error.sessionNotFound", id=session_id))
     if session.get("status") == "recording":
         session["status"] = "device_lost"
         storage.put("session", session_id, session)
@@ -335,9 +353,9 @@ def mark_device_lost(session_id: str):
 def discard_session(session_id: str):
     session = storage.get("session", session_id)
     if not session:
-        raise _err(404, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在")
+        raise _err(404, "SESSION_NOT_FOUND", say("error.sessionNotFound", id=session_id))
     if session.get("status") in {"queued", "running", "completed", "analyzed"}:
-        raise _err(409, "SESSION_CLOSED", "已提交分析的会话不能丢弃")
+        raise _err(409, "SESSION_CLOSED", say("error.sessionClosedDiscard"))
     session["status"] = "discarded"
     storage.put("session", session_id, session)
     return Response(status_code=204)
@@ -369,7 +387,7 @@ async def session_events_ws(ws: WebSocket, session_id: str):
                     raise ValueError
             except (ValidationError, ValueError, TypeError):
                 await ws.send_json({"error": {"code": "EVENT_INVALID",
-                                               "message": "MIDI 事件字段不合法"}})
+                                               "message": say("error.eventInvalid")}})
                 continue
             existing_events = repositories.get_session_events(session_id)
             try:
@@ -380,7 +398,7 @@ async def session_events_ws(ws: WebSocket, session_id: str):
             existing_ids = {event["id"] for event in existing_events}
             if len(existing_ids | {event.id for event in events}) > config.MAX_PERFORMANCE_EVENTS:
                 await ws.send_json({"error": {"code": "TOO_MANY_EVENTS",
-                                               "message": "演奏事件数量超过上限"}})
+                                               "message": say("error.tooManyEventsShort")}})
                 await ws.close(code=4400)
                 return
             sequence += 1
@@ -398,18 +416,18 @@ async def session_events_ws(ws: WebSocket, session_id: str):
 async def upload_midi(session_id: str, file: UploadFile = File(...)):
     session = storage.get("session", session_id)
     if not session:
-        raise _err(404, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在")
+        raise _err(404, "SESSION_NOT_FOUND", say("error.sessionNotFound", id=session_id))
     if session.get("status") not in {"recording", "device_lost", "failed"}:
-        raise _err(409, "SESSION_CLOSED", "该会话已提交，不能再上传 MIDI")
+        raise _err(409, "SESSION_CLOSED", say("error.sessionClosedUpload"))
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".mid", ".midi"}:
-        raise _err(400, "MIDI_FILE_INVALID", "仅支持 .mid/.midi 文件")
+        raise _err(400, "MIDI_FILE_INVALID", say("error.midiOnly"))
     content = await file.read(config.MAX_MIDI_BYTES + 1)
     if not content:
-        raise _err(400, "MIDI_FILE_INVALID", "MIDI 文件为空")
+        raise _err(400, "MIDI_FILE_INVALID", say("error.midiEmpty"))
     if len(content) > config.MAX_MIDI_BYTES:
         raise _err(400, "MIDI_FILE_TOO_LARGE",
-                   f"MIDI 文件超过 {config.MAX_MIDI_BYTES // (1024 * 1024)} MB 上限")
+                   say("error.midiTooLarge", mb=config.MAX_MIDI_BYTES // (1024 * 1024)))
     try:
         validate_midi_bytes(content)
     except MidiFileValidationError as exc:
@@ -432,7 +450,7 @@ async def upload_midi(session_id: str, file: UploadFile = File(...)):
 def finish_session(session_id: str, req: SessionFinish):
     session = storage.get("session", session_id)
     if not session:
-        raise _err(404, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在")
+        raise _err(404, "SESSION_NOT_FOUND", say("error.sessionNotFound", id=session_id))
     if session.get("status") in {"completed", "analyzed"} and session.get("reportId"):
         return {"analysisJobId": session.get("jobId"),
                 "reportId": session["reportId"]}
@@ -442,14 +460,14 @@ def finish_session(session_id: str, req: SessionFinish):
             return {"analysisJobId": existing["analysisJobId"],
                     "reportId": existing.get("reportId"), "status": existing["status"]}
     if session.get("status") not in {"recording", "device_lost", "failed"}:
-        raise _err(409, "SESSION_CLOSED", "该会话已关闭，不能提交分析")
+        raise _err(409, "SESSION_CLOSED", say("error.sessionClosedSubmit"))
     events = list(req.events)
     if not events and req.uploadedMidiRef:
         path = _uploaded_midi_path(session_id, req.uploadedMidiRef)
         try:
             events = load_midi_events(str(path))
         except Exception as exc:
-            raise _err(400, "MIDI_FILE_INVALID", "无法解析该 MIDI 文件，请重新导出后上传") from exc
+            raise _err(400, "MIDI_FILE_INVALID", say("error.midiUnparseable")) from exc
     if events:
         _assert_event_id_integrity(
             repositories.get_session_events(session_id), events)
@@ -459,13 +477,13 @@ def finish_session(session_id: str, req: SessionFinish):
         )
     persisted = repositories.get_session_events(session_id)
     if len(persisted) > config.MAX_PERFORMANCE_EVENTS:
-        raise _err(400, "TOO_MANY_EVENTS", "演奏事件数量超过上限，请缩短练习范围")
+        raise _err(400, "TOO_MANY_EVENTS", say("error.tooManyEvents"))
     quality_only_microphone_take = (
         session.get("inputSource") == InputSource.microphone.value
         and req.captureMeta is not None
     )
     if not persisted and not quality_only_microphone_take:
-        raise _err(400, "NO_PERFORMANCE_EVENTS", "没有演奏事件，请重录")
+        raise _err(400, "NO_PERFORMANCE_EVENTS", say("error.noEvents"))
     if req.captureMeta is not None:
         session["captureMeta"] = req.captureMeta.model_dump()
         storage.put("session", session_id, session)
@@ -483,22 +501,23 @@ def finish_session(session_id: str, req: SessionFinish):
 def get_analysis(job_id: str):
     job = repositories.get_job(job_id)
     if not job:
-        raise _err(404, "JOB_NOT_FOUND", f"分析任务 {job_id} 不存在")
-    return job
+        raise _err(404, "JOB_NOT_FOUND", say("error.jobNotFound", id=job_id))
+    return analysis_jobs.public_job(job)
 
 
 @router.get("/reports/{report_id}")
 def get_report(report_id: str):
     report = storage.get("report", report_id)
     if not report:
-        raise _err(404, "REPORT_NOT_FOUND", f"报告 {report_id} 不存在")
-    return report
+        raise _err(404, "REPORT_NOT_FOUND", say("error.reportNotFound", id=report_id))
+    return revoice(report)
 
 
 # ---------------------------------------------------------------- exercise / accompaniment / mentor / comparison
 
 def _public_exercise(exercise_id: str, exercise: dict, request: Request) -> dict:
     """Return only stable, client-safe exercise fields for create and recovery."""
+    exercise = revoice(exercise)
     prefix = _api_prefix(request)
     optional = {
         key: exercise[key]
@@ -527,12 +546,12 @@ def _public_exercise(exercise_id: str, exercise: dict, request: Request) -> dict
 def create_exercise(req: ExerciseCreate, request: Request):
     report_data = storage.get("report", req.reportId)
     if not report_data:
-        raise _err(404, "REPORT_NOT_FOUND", f"报告 {req.reportId} 不存在")
-    report = DiagnosisReport.model_validate(report_data)
+        raise _err(404, "REPORT_NOT_FOUND", say("error.reportNotFound", id=req.reportId))
+    report = revoice(DiagnosisReport.model_validate(report_data))
     bundle = _load_bundle(report.scoreId)
     parent_data = storage.get("score", report.scoreId)
     if not parent_data:
-        raise _err(404, "SCORE_NOT_FOUND", f"曲目 {report.scoreId} 不存在")
+        raise _err(404, "SCORE_NOT_FOUND", say("error.scoreNotFound", id=report.scoreId))
     root_score_id = parent_data.get("rootScoreId") or report.scoreId
     lineage_scores = [
         record for record in storage.list_kind("score")
@@ -615,7 +634,7 @@ def create_exercise(req: ExerciseCreate, request: Request):
 
     practice_data = storage.get("score", practice_score_id)
     if not practice_data or not parent_data:
-        raise _err(500, "EXERCISE_SCORE_FAILED", "生成练习无法注册为可分析曲目")
+        raise _err(500, "EXERCISE_SCORE_FAILED", say("error.exerciseScoreFailed"))
     lineage_depth = int(parent_data.get("lineageDepth", 0)) + 1
     timeline_reference = {
         "artifactId": midi_artifact.artifact_id, "kind": "score-timeline",
@@ -660,7 +679,7 @@ def create_exercise(req: ExerciseCreate, request: Request):
 def get_exercise(exercise_id: str, request: Request):
     exercise = storage.get("exercise", exercise_id)
     if not exercise:
-        raise _err(404, "EXERCISE_NOT_FOUND", "练习不存在或已经过期")
+        raise _err(404, "EXERCISE_NOT_FOUND", say("error.exerciseExpired"))
     return _public_exercise(exercise_id, exercise, request)
 
 
@@ -668,7 +687,7 @@ def get_exercise(exercise_id: str, request: Request):
 def get_exercise_xml(exercise_id: str):
     exercise = storage.get("exercise", exercise_id)
     if not exercise or not Path(exercise["musicXmlPath"]).exists():
-        raise _err(404, "EXERCISE_NOT_FOUND", "练习不存在")
+        raise _err(404, "EXERCISE_NOT_FOUND", say("error.exerciseNotFound"))
     return FileResponse(exercise["musicXmlPath"], media_type="application/vnd.recordare.musicxml")
 
 
@@ -676,7 +695,7 @@ def get_exercise_xml(exercise_id: str):
 def get_exercise_midi(exercise_id: str):
     exercise = storage.get("exercise", exercise_id)
     if not exercise or not Path(exercise["midiPath"]).exists():
-        raise _err(404, "EXERCISE_NOT_FOUND", "练习不存在")
+        raise _err(404, "EXERCISE_NOT_FOUND", say("error.exerciseNotFound"))
     return FileResponse(exercise["midiPath"], media_type="audio/midi")
 
 
@@ -709,7 +728,7 @@ def create_accompaniment(req: AccompanimentCreate, request: Request):
 def get_accompaniment_midi(acc_id: str):
     accompaniment = storage.get("accompaniment", acc_id)
     if not accompaniment or not Path(accompaniment["midiPath"]).exists():
-        raise _err(404, "ACCOMPANIMENT_NOT_FOUND", "伴奏不存在")
+        raise _err(404, "ACCOMPANIMENT_NOT_FOUND", say("error.accompanimentNotFound"))
     return FileResponse(accompaniment["midiPath"], media_type="audio/midi")
 
 
@@ -718,8 +737,8 @@ def get_accompaniment_midi(acc_id: str):
 def mentor_respond(req: MentorRequest):
     report_data = storage.get("report", req.reportId)
     if not report_data:
-        raise _err(404, "REPORT_NOT_FOUND", f"报告 {req.reportId} 不存在")
-    report = DiagnosisReport.model_validate(report_data)
+        raise _err(404, "REPORT_NOT_FOUND", say("error.reportNotFound", id=req.reportId))
+    report = revoice(DiagnosisReport.model_validate(report_data))
     outcome = mentor_adapter.respond(report, req.question, req.errorId, req.history)
     repositories.save_mentor_interaction({
         "reportId": req.reportId, "provider": outcome.provider,
@@ -745,12 +764,12 @@ def mentor_respond(req: MentorRequest):
 def mentor_chat(req: MentorChatRequest):
     report_data = storage.get("report", req.reportId)
     if not report_data:
-        raise _err(404, "REPORT_NOT_FOUND", f"报告 {req.reportId} 不存在")
-    report = DiagnosisReport.model_validate(report_data)
+        raise _err(404, "REPORT_NOT_FOUND", say("error.reportNotFound", id=req.reportId))
+    report = revoice(DiagnosisReport.model_validate(report_data))
     session = storage.get("session", report.sessionId) or {}
-    score = storage.get("score", report.scoreId) or {}
+    score = _spoken(storage.get("score", report.scoreId) or {})
     score_meta = score.get("bundle", {}).get("meta", {})
-    comparison = repositories.latest_comparison_for_report(report.reportId)
+    comparison = revoice(repositories.latest_comparison_for_report(report.reportId))
     root_score_id = score.get("rootScoreId") or report.scoreId
     memory_scope = f"score:{root_score_id}"
     memory = repositories.get_mentor_memory(memory_scope)
@@ -823,7 +842,7 @@ def mentor_chat(req: MentorChatRequest):
 def _memory_scope_for_report(report_id: str) -> str:
     report_data = storage.get("report", report_id)
     if not report_data:
-        raise _err(404, "REPORT_NOT_FOUND", f"报告 {report_id} 不存在")
+        raise _err(404, "REPORT_NOT_FOUND", say("error.reportNotFound", id=report_id))
     report = DiagnosisReport.model_validate(report_data)
     score = storage.get("score", report.scoreId) or {}
     return f"score:{score.get('rootScoreId') or report.scoreId}"
@@ -846,7 +865,7 @@ def compare_sessions(baselineId: str, retryId: str):
     baseline = storage.get("report", baselineId)
     retry = storage.get("report", retryId)
     if not baseline or not retry:
-        raise _err(404, "REPORT_NOT_FOUND", "对比报告不存在")
+        raise _err(404, "REPORT_NOT_FOUND", say("error.comparisonReportNotFound"))
     baseline_score_id = baseline.get("scoreId", "")
     retry_score_id = retry.get("scoreId", "")
     baseline_score = storage.get("score", baseline_score_id) or {}
@@ -854,7 +873,7 @@ def compare_sessions(baselineId: str, retryId: str):
     baseline_root = baseline_score.get("rootScoreId") or baseline_score_id
     retry_root = retry_score.get("rootScoreId") or retry_score_id
     if baseline_root != retry_root:
-        raise _err(400, "COMPARISON_MISMATCH", "只能对比同一首曲目的两次演奏")
+        raise _err(400, "COMPARISON_MISMATCH", say("error.comparisonMismatch"))
     target_changed = baseline_score_id != retry_score_id
     result = {"baselineId": baselineId, "retryId": retryId,
               "baselineScoreId": baseline_score_id, "retryScoreId": retry_score_id,

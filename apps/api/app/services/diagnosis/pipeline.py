@@ -25,14 +25,27 @@ from app.services.alignment.grouping import group_chord_onsets
 from app.services.alignment.onset import (ScoreOnset, build_onsets,
                                           score_onset_beat)
 from app.services.alignment.tempo import fit_piecewise_tempo, initial_tempo_map
-from app.services.diagnosis.errors import classify_errors
+from app.i18n import Msg, localized, msg, say
+from app.services.diagnosis.errors import classify_errors, played_tempo_curve
+from app.services.diagnosis.fluency import find_restarts
 from app.services.diagnosis.metrics import calculate_metrics
 from app.services.diagnosis.patterns import aggregate_patterns, build_hypotheses
+from app.services.diagnosis.performance import profile as performance_profile
 from app.services.diagnosis.profiles import accepted_events, resolve_profile
+from app.services.diagnosis.take import Take, Written
 
 
 class LowConfidenceAlignmentError(Exception):
-    """ALIGNMENT_LOW_CONFIDENCE：整体无法可靠对齐，不给确定性评分。"""
+    """ALIGNMENT_LOW_CONFIDENCE：整体无法可靠对齐，不给确定性评分。
+
+    Carries the message rather than a sentence: analysis runs on a worker
+    thread, long after the request that asked for it, so the language the
+    player reads it in is decided when they read it.
+    """
+
+    def __init__(self, message: Msg):
+        super().__init__(say(message))
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -105,7 +118,7 @@ def _limited_evidence_report(
         profile_id: str,
         capture_meta: CaptureMeta,
         rejected_count: int,
-        reason: str,
+        reason: Msg,
         created_at: str,
 ) -> DiagnosisReport:
     """Complete a microphone take even when it cannot support musical scoring.
@@ -122,13 +135,9 @@ def _limited_evidence_report(
         else (sum(confidences) / len(confidences) if confidences else 0.0)
     )
     accepted_count = len(perf_events)
-    warnings = [
-        "录音已接收并完成处理，但当前证据不足，未生成演奏分数或错误判断。",
-        reason,
-        "你可以直接查看本次结果、询问 AI 导师，或在更靠近乐器的位置再次录制。",
-    ]
+    warnings = [msg("warning.takeKeptNotScored"), reason, msg("warning.whatNext")]
     if capture_meta.noiseFloorDb is not None and capture_meta.noiseFloorDb > -25:
-        warnings.append("环境底噪较高；建议关闭扬声器伴奏并把麦克风靠近乐器。")
+        warnings.append(msg("warning.noisyRoomMoveCloser"))
     return DiagnosisReport(
         reportId=report_id,
         sessionId=session_id,
@@ -149,10 +158,17 @@ def _limited_evidence_report(
             transcriptionEngine=capture_meta.transcriptionEngine,
             transcriptionVersion=capture_meta.transcriptionVersion,
         ),
-        warnings=list(dict.fromkeys(warnings)),
         scoreHash=bundle.meta.scoreHash,
         createdAt=created_at,
+        **localized(warnings=_distinct(warnings)),
     )
+
+
+def _distinct(messages: list[Msg]) -> list[Msg]:
+    seen: dict[str, Msg] = {}
+    for message in messages:
+        seen.setdefault(message.model_dump_json(), message)
+    return list(seen.values())
 
 
 def run_analysis(bundle: ScoreBundle,
@@ -168,7 +184,7 @@ def run_analysis(bundle: ScoreBundle,
     meta = bundle.meta
     score_events = filter_range(bundle.events, range_start, range_end)
     if not score_events:
-        raise LowConfidenceAlignmentError("练习范围内没有乐谱事件")
+        raise LowConfidenceAlignmentError(msg("analysis.noScoreInRange"))
 
     source = InputSource(input_source)
     selected_instrument = InstrumentProfile(instrument)
@@ -181,10 +197,10 @@ def run_analysis(bundle: ScoreBundle,
                 bundle, score_events, [], report_id, session_id, source,
                 selected_instrument, profile.profile_id, meta_capture,
                 meta_capture.rejectedNoteCount,
-                "没有检测到足够清晰的音符；这不会丢弃录音。",
+                msg("warning.noClearNotes"),
                 created_at,
             )
-        raise LowConfidenceAlignmentError("没有演奏事件，请重录或缩短片段")
+        raise LowConfidenceAlignmentError(msg("analysis.noEvents"))
 
     perf_events, profile_rejected = accepted_events(perf_events, profile)
     guitar_pitch_offset = 0
@@ -202,16 +218,16 @@ def run_analysis(bundle: ScoreBundle,
                 bundle, score_events, [], report_id, session_id, source,
                 selected_instrument, profile.profile_id, meta_capture,
                 profile_rejected,
-                "检测到的片段都低于当前乐器配置的可靠阈值；这不会丢弃录音。",
+                msg("warning.belowThreshold"),
                 created_at,
             )
-        raise LowConfidenceAlignmentError("没有可用于分析的演奏事件，请重录")
+        raise LowConfidenceAlignmentError(msg("analysis.noUsableEvents"))
     if source == InputSource.microphone and len(perf_events) < 3:
         return _limited_evidence_report(
             bundle, score_events, perf_events, report_id, session_id, source,
             selected_instrument, profile.profile_id, meta_capture,
             profile_rejected,
-            "可靠音符少于 3 个，因此本轮只展示输入质量，不做确定性评分。",
+            msg("warning.fewerThanThree"),
             created_at,
         )
 
@@ -219,6 +235,17 @@ def run_analysis(bundle: ScoreBundle,
 
     # 1. 乐谱 onset 聚类 + 演奏和弦分组（慢速曲窗口上调）
     onsets = build_onsets(score_events)
+    written = Written(meta, onsets)
+    # A passage begun, abandoned and begun again is one restart. Its first
+    # attempt is set aside before alignment, so the attempt that carried on is
+    # the one read against the score and the abandoned one is not a burst of
+    # extra notes.
+    restarts = find_restarts(perf_events, onsets)
+    abandoned = {event_id for restart in restarts for event_id in restart.abandoned}
+    if abandoned and len(perf_events) - len(abandoned) >= 3:
+        perf_events = [event for event in perf_events if event.id not in abandoned]
+    else:
+        restarts = []
     groups = group_chord_onsets(perf_events, window_ms=profile.chord_window_ms, bpm=bpm)
 
     # 2. 两遍对齐：无门限的容错序列粗对齐 → 速度拟合 → 精对齐。
@@ -251,7 +278,18 @@ def run_analysis(bundle: ScoreBundle,
     # player makes many pitch mistakes, structural pairs provide timing-only
     # anchors so those mistakes can still be localized.
     tempo_anchors = anchors if len(anchors) >= 3 else paired_timing
-    tempo_map = (fit_piecewise_tempo(tempo_anchors, bpm)
+    # The first note the player strikes starts the clock — the live layer's
+    # rule, and the analysis keeps it. A first chord with a voice missing is
+    # not a pitch anchor, and without it the fit extends the tempo backwards
+    # from the second note: a player who paused after their first note was
+    # told that note came early.
+    if paired_timing and (not tempo_anchors or paired_timing[0][0] < tempo_anchors[0][0]):
+        tempo_anchors = sorted([paired_timing[0], *tempo_anchors])
+    # A fermata is held as long as the player likes; the gap after it is a
+    # jump in the timeline, not a tempo.
+    free_after = {score_onset_beat(onset, bpm_per_measure) for onset in onsets
+                  if onset.onsetId in written.fermata_onsets}
+    tempo_map = (fit_piecewise_tempo(tempo_anchors, bpm, free_after=free_after)
                  if len(tempo_anchors) >= 2 else tmap0)
     pairs = global_align(
         onsets, groups, tempo_map, bpm_per_measure, bpm,
@@ -270,21 +308,13 @@ def run_analysis(bundle: ScoreBundle,
             bundle, score_events, perf_events, report_id, session_id, source,
             selected_instrument, profile.profile_id, meta_capture,
             profile_rejected,
-            (f"只对齐到 {alignment_quality.paired_count}/{len(onsets)} 个谱面拍点；"
-             "录音已保留，但其余位置不生成推测性错误。"),
+            msg("warning.fewAligned", paired=alignment_quality.paired_count,
+                total=len(onsets)),
             created_at,
         )
 
     # 3. 错误分类 / 模式 / 指标
     perf_by_id = {e.id: e for e in perf_events}
-    group_pitch_onsets: dict[str, dict[int, float]] = {}
-    for g in groups:
-        po: dict[int, float] = {}
-        for eid in g.eventIds:
-            ev = perf_by_id.get(eid)
-            if ev and (ev.pitch not in po or ev.tOnMs < po[ev.pitch]):
-                po[ev.pitch] = ev.tOnMs
-        group_pitch_onsets[g.id] = po
     # Dynamics may only be judged when the page actually asks for a dynamic and
     # the input can measure one. A microphone reports Basic Pitch amplitude,
     # which is not MIDI velocity and must not be graded as if it were.
@@ -292,18 +322,30 @@ def run_analysis(bundle: ScoreBundle,
     has_dynamics = (meta.hasNotatedDynamics and
                     any(e.dynamicTarget is not None for e in score_events))
     grade_dynamics = has_dynamics and input_measures_dynamics
-    errors, evidences = classify_errors(pairs, onset_index, group_index,
-                                        tempo_map, bpm_per_measure, bpm,
-                                        group_pitch_onsets,
-                                        include_duration_errors=profile.include_duration_errors,
-                                        duration_tolerance=profile.duration_tolerance,
-                                        include_dynamics_errors=input_measures_dynamics,
-                                        has_notated_dynamics=has_dynamics,
-                                        measure_labels=bundle.meta.measureLabels)
+    take = Take(
+        pairs=pairs, onsets=onset_index, groups=group_index, tempo_map=tempo_map,
+        beats_per_measure=bpm_per_measure, bpm=bpm, notes=perf_by_id,
+        written=written,
+        measures_dynamics=input_measures_dynamics,
+        measures_release=source != InputSource.microphone,
+        measure_labels=bundle.meta.measureLabels,
+        restarts=restarts,
+    )
+    findings = classify_errors(take,
+                               include_duration_errors=profile.include_duration_errors,
+                               duration_tolerance=profile.duration_tolerance,
+                               include_dynamics_errors=input_measures_dynamics,
+                               has_notated_dynamics=has_dynamics)
+    errors, evidences = findings.errors, findings.evidences
     patterns = aggregate_patterns(errors, bundle.meta.measureLabels)
     metrics: Metrics = calculate_metrics(pairs, onset_index, group_index,
-                                         bpm_per_measure, bpm, grade_dynamics)
+                                         bpm_per_measure, bpm, grade_dynamics,
+                                         written=take.written,
+                                         after_pause=findings.after_pause,
+                                         went_back_to=findings.went_back_to,
+                                         replays=findings.replays)
     hypotheses = build_hypotheses(errors, patterns)
+    performance = performance_profile(take, findings)
 
     event_confidences = [event.transcriptionConfidence for event in perf_events
                          if event.transcriptionConfidence is not None]
@@ -313,40 +355,44 @@ def run_analysis(bundle: ScoreBundle,
     rejected_count = max(meta_capture.rejectedNoteCount, profile_rejected)
     accepted_count = len(perf_events)
     rejection_ratio = rejected_count / max(1, accepted_count + rejected_count)
-    warnings: list[str] = []
+    # Warnings are about the evidence (is this reading trustworthy?); notes are
+    # about the method (how was it read?). A report that flags its own method
+    # as a problem trains a player to ignore the yellow box.
+    warnings: list[Msg] = []
+    notes: list[Msg] = []
     tolerant_operation_count = sum(
         1 for pair in pairs if pair.operation != AlignOp.match)
     if tolerant_operation_count:
-        warnings.append(
-            "已使用容错序列对齐：错音、多音和漏音只影响对应位置，不会拖移后续检测。")
+        notes.append(msg("note.tolerantAlignment"))
     if grade_dynamics:
-        warnings.append(
-            "力度按谱面标记的强弱记号逐音比较；力度差只影响对应位置。")
+        notes.append(msg("note.dynamicsByMarks"))
+    if take.written.changes_tempo:
+        notes.append(msg("note.writtenTempo"))
+    if performance.pedalledReleases:
+        notes.append(msg("note.pedalledReleases", count=performance.pedalledReleases))
     if alignment_quality.confidence < 0.45:
-        warnings.append(
-            "本次对齐覆盖偏低；已生成可定位的逐音错误，但未匹配区域请按低置信度解读。")
+        warnings.append(msg("warning.lowAlignment"))
     quality_status = ("high" if alignment_quality.confidence >= 0.75 else
                       "medium" if alignment_quality.confidence >= 0.45 else "low")
     quality_confidence = alignment_quality.confidence
     if source == InputSource.microphone:
         if meta_capture.lowVolumeRecovered:
-            warnings.append(
-                f"检测到输入音量偏低，已仅为本地识别增加约 {meta_capture.inputGainDb or 0:.1f} dB；原始录音未被替换。")
+            warnings.append(msg("warning.lowVolumeGain",
+                                gain=f"{meta_capture.inputGainDb or 0:.1f}"))
         quality_confidence = min(mean_confidence, alignment_quality.confidence)
         if guitar_pitch_offset:
-            warnings.append(
-                "已按乐谱中的吉他八度移调标记，将实声音高换算为书写音高。")
+            notes.append(msg("note.guitarOctave"))
         if (mean_confidence < 0.45 or accepted_count < 5 or
                 alignment_quality.confidence < 0.35):
             quality_status = "low"
-            warnings.append("输入质量偏低；请把麦克风靠近乐器并在安静环境中重录。")
+            warnings.append(msg("warning.lowInput"))
         elif (mean_confidence < 0.68 or rejection_ratio > 0.35 or
               alignment_quality.confidence < 0.65):
             quality_status = "medium"
-            warnings.append("部分音符的转录置信度较低，结论应结合谱面证据谨慎解读。")
+            warnings.append(msg("warning.someLowConfidence"))
         if meta_capture.noiseFloorDb is not None and meta_capture.noiseFloorDb > -25:
             quality_status = "low"
-            warnings.append("环境底噪较高，建议关闭扬声器伴奏并重新录制。")
+            warnings.append(msg("warning.noisyRoom"))
         # Confidence belongs to the transcription, not the musical rule. Keep
         # deterministic classifications but make their uncertainty visible.
         for error in errors:
@@ -371,4 +417,8 @@ def run_analysis(bundle: ScoreBundle,
             transcriptionEngine=meta_capture.transcriptionEngine,
             transcriptionVersion=meta_capture.transcriptionVersion,
         ),
-        warnings=warnings, scoreHash=meta.scoreHash, createdAt=created_at)
+        tempoCurve=played_tempo_curve(take, findings.stops),
+        targetBpm=bpm,
+        performance=performance,
+        scoreHash=meta.scoreHash, createdAt=created_at,
+        **localized(warnings=warnings, notes=notes))
